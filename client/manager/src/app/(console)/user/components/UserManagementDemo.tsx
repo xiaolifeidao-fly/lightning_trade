@@ -38,10 +38,10 @@ import { useUserManagement } from "../hooks/useUserManagement";
 const { Text } = Typography;
 
 const roleColors: Record<string, string> = {
-  admin: "var(--manager-green-soft)",
+  admin: "var(--manager-gold-soft)",
   manager: "var(--manager-blue-soft)",
-  auditor: "var(--manager-gold-soft)",
-  member: "#f7faf5",
+  auditor: "var(--manager-green-soft)",
+  member: "rgba(255,255,255,0.04)",
 };
 
 const statusColors: Record<string, string> = {
@@ -448,7 +448,7 @@ export function UserManagementDemo() {
           </Space>
 
           <Space wrap>
-            <Tag style={{ color: "var(--manager-text-soft)", background: "var(--manager-green-soft)", border: "none" }}>
+            <Tag style={{ color: "var(--manager-primary)", background: "var(--manager-gold-soft)", border: "1px solid rgba(240,185,11,0.28)" }}>
               共 {total} 条
             </Tag>
             <Button
@@ -456,9 +456,11 @@ export function UserManagementDemo() {
               icon={<PlusOutlined />}
               onClick={handleCreate}
               style={{
-                color: "#ffffff",
+                color: "#0B0E11",
                 border: "none",
-                background: "linear-gradient(135deg, #145535 0%, #237a4b 100%)",
+                background: "linear-gradient(135deg, #FCD535 0%, #F0B90B 100%)",
+                fontWeight: 700,
+                boxShadow: "0 10px 22px rgba(240, 185, 11, 0.28)",
               }}
             >
               新建用户

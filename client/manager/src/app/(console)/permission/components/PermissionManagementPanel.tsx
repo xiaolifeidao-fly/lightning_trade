@@ -416,7 +416,7 @@ export function PermissionManagementPanel() {
                     ]}
                   >
                     <List.Item.Meta
-                      avatar={<TeamOutlined style={{ color: active ? "#fff" : "var(--manager-primary)" }} />}
+                      avatar={<TeamOutlined style={{ color: active ? "#0B0E11" : "var(--manager-primary)" }} />}
                       title={<Text strong>{role.name || role.code}</Text>}
                       description={<Text type="secondary">{role.code || `角色 #${role.id}`}</Text>}
                     />

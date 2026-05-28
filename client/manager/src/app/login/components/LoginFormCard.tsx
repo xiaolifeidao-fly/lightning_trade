@@ -53,15 +53,15 @@ export function LoginFormCard() {
       <div
         className="manager-shell-card manager-stagger-4 manager-form-skin manager-brand-frame"
         style={{
-          borderRadius: 8,
+          borderRadius: 16,
           padding: "32px 32px 30px",
-          background: "#ffffff",
+          background: "transparent",
         }}
       >
         <Space direction="vertical" size={8} style={{ width: "100%", marginBottom: 24 }}>
           <div className="manager-brand-chip" style={{ margin: "0 auto" }}>
             <span className="manager-brand-dot" />
-            收粮管理端
+            Lightning Trade · 闪电量化
           </div>
         </Space>
         <Title
@@ -74,7 +74,7 @@ export function LoginFormCard() {
             textAlign: "center",
           }}
         >
-          后台登录
+          管理控制台登录
         </Title>
         <Typography.Text
           style={{
@@ -84,7 +84,7 @@ export function LoginFormCard() {
             color: "var(--manager-text-soft)",
           }}
         >
-          进入粮站业务数据工作台
+          进入数字资产量化合约管理工作台
         </Typography.Text>
 
         <Form<LoginValues>
@@ -100,7 +100,7 @@ export function LoginFormCard() {
             rules={[{ required: true, message: "请输入登录账号" }]}
           >
             <Input
-              prefix={<MailOutlined style={{ color: "rgba(16,40,64,0.42)" }} />}
+              prefix={<MailOutlined style={{ color: "var(--manager-text-faint)" }} />}
               placeholder="请输入邮箱或账号"
               size="large"
             />
@@ -112,7 +112,7 @@ export function LoginFormCard() {
             rules={[{ required: true, message: "请输入登录密码" }]}
           >
             <Input.Password
-              prefix={<LockOutlined style={{ color: "rgba(16,40,64,0.42)" }} />}
+              prefix={<LockOutlined style={{ color: "var(--manager-text-faint)" }} />}
               placeholder="请输入密码"
               size="large"
             />
@@ -132,13 +132,14 @@ export function LoginFormCard() {
             loading={submitting}
             style={{
               height: 50,
-              color: "#ffffff",
-              background: "linear-gradient(135deg, #145535 0%, #237a4b 100%)",
+              color: "#0B0E11",
+              background: "linear-gradient(135deg, #FCD535 0%, #F0B90B 100%)",
               border: "none",
               fontWeight: 800,
+              boxShadow: "0 12px 28px rgba(240, 185, 11, 0.32)",
             }}
           >
-            登录后台
+            登录控制台
           </Button>
         </Form>
       </div>

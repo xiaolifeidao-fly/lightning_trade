@@ -2,106 +2,298 @@
 
 import {
   AlertOutlined,
+  ArrowDownOutlined,
+  ArrowUpOutlined,
   AuditOutlined,
-  BankOutlined,
-  DatabaseOutlined,
-  FileDoneOutlined,
-  TeamOutlined,
+  DollarCircleOutlined,
+  FundOutlined,
+  LineChartOutlined,
+  RiseOutlined,
+  SafetyCertificateOutlined,
+  ThunderboltOutlined,
+  WalletOutlined,
 } from "@ant-design/icons";
 import { Button, Progress, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 
 const { Text, Title } = Typography;
 
-interface StationRecord {
+type Direction = "long" | "short" | "neutral";
+type StrategyStatus = "running" | "paused" | "warn";
+
+interface StrategyRecord {
   key: string;
-  station: string;
-  area: string;
-  salesmen: string;
-  farmers: string;
-  records: string;
-  weight: string;
-  amount: string;
-  status: "normal" | "warn";
+  name: string;
+  category: string;
+  symbol: string;
+  leverage: string;
+  direction: Direction;
+  notional: string;
+  unrealizedPnl: string;
+  unrealizedPnlPct: number;
+  winRate: number;
+  status: StrategyStatus;
 }
 
-const stationData: StationRecord[] = [
+const strategyData: StrategyRecord[] = [
   {
-    key: "north",
-    station: "北城粮站",
-    area: "周口示范区",
-    salesmen: "6 人",
-    farmers: "28 户",
-    records: "42 笔",
-    weight: "62.4 吨",
-    amount: "¥27.8万",
-    status: "normal",
+    key: "grid-btc",
+    name: "网格 · BTC 主力",
+    category: "区间网格",
+    symbol: "BTC/USDT",
+    leverage: "5x",
+    direction: "long",
+    notional: "$2,486,210",
+    unrealizedPnl: "+$48,210",
+    unrealizedPnlPct: 1.94,
+    winRate: 68,
+    status: "running",
   },
   {
-    key: "south",
-    station: "南环粮站",
-    area: "南环收购片区",
-    salesmen: "4 人",
-    farmers: "16 户",
-    records: "25 笔",
-    weight: "38.2 吨",
-    amount: "¥16.9万",
+    key: "trend-eth",
+    name: "趋势跟随 · ETH",
+    category: "动量趋势",
+    symbol: "ETH/USDT",
+    leverage: "10x",
+    direction: "short",
+    notional: "$1,820,450",
+    unrealizedPnl: "+$22,860",
+    unrealizedPnlPct: 1.26,
+    winRate: 57,
+    status: "running",
+  },
+  {
+    key: "arb-sol",
+    name: "跨期套利 · SOL",
+    category: "期现套利",
+    symbol: "SOL/USDT",
+    leverage: "3x",
+    direction: "neutral",
+    notional: "$986,310",
+    unrealizedPnl: "+$6,420",
+    unrealizedPnlPct: 0.65,
+    winRate: 82,
+    status: "running",
+  },
+  {
+    key: "funding-bnb",
+    name: "资金费率套利 · BNB",
+    category: "资金费",
+    symbol: "BNB/USDT",
+    leverage: "2x",
+    direction: "long",
+    notional: "$642,100",
+    unrealizedPnl: "-$1,840",
+    unrealizedPnlPct: -0.29,
+    winRate: 74,
     status: "warn",
   },
   {
-    key: "west",
-    station: "西郊粮站",
-    area: "西郊临时点",
-    salesmen: "3 人",
-    farmers: "7 户",
-    records: "19 笔",
-    weight: "26.2 吨",
-    amount: "¥11.7万",
-    status: "normal",
+    key: "ma-doge",
+    name: "均线突破 · DOGE",
+    category: "动量趋势",
+    symbol: "DOGE/USDT",
+    leverage: "5x",
+    direction: "short",
+    notional: "$284,560",
+    unrealizedPnl: "-$3,210",
+    unrealizedPnlPct: -1.13,
+    winRate: 49,
+    status: "paused",
   },
 ];
 
-const columns: ColumnsType<StationRecord> = [
+const directionMeta: Record<Direction, { label: string; color: string; bg: string }> = {
+  long: { label: "多", color: "#0ECB81", bg: "rgba(14,203,129,0.14)" },
+  short: { label: "空", color: "#F6465D", bg: "rgba(246,70,93,0.14)" },
+  neutral: { label: "中性", color: "#4D7EFF", bg: "rgba(77,126,255,0.14)" },
+};
+
+const statusMeta: Record<StrategyStatus, { label: string; color: string }> = {
+  running: { label: "运行中", color: "green" },
+  paused: { label: "已暂停", color: "default" },
+  warn: { label: "需关注", color: "gold" },
+};
+
+const columns: ColumnsType<StrategyRecord> = [
   {
-    title: "粮站",
-    dataIndex: "station",
-    width: 180,
+    title: "策略",
+    dataIndex: "name",
+    width: 220,
     render: (value, record) => (
       <div className="manager-dashboard-table-title">
         {value}
-        <Text className="manager-dashboard-table-subtitle">{record.area}</Text>
+        <Text className="manager-dashboard-table-subtitle">{record.category}</Text>
       </div>
     ),
   },
-  { title: "业务员", dataIndex: "salesmen", width: 120 },
-  { title: "农户数", dataIndex: "farmers", width: 120 },
-  { title: "录入笔数", dataIndex: "records", width: 120 },
-  { title: "收粮量", dataIndex: "weight", width: 120 },
   {
-    title: "金额",
-    dataIndex: "amount",
-    width: 120,
-    render: (value) => <span className="manager-dashboard-money">{value}</span>,
+    title: "交易对",
+    dataIndex: "symbol",
+    width: 140,
+    render: (value, record) => (
+      <Space size={6}>
+        <span style={{ fontFamily: '"JetBrains Mono", "SF Mono", monospace', fontWeight: 600 }}>{value}</span>
+        <Tag style={{ marginInlineEnd: 0, borderColor: "#2B3139", background: "#14171D", color: "#B7BDC6" }}>
+          {record.leverage}
+        </Tag>
+      </Space>
+    ),
+  },
+  {
+    title: "方向",
+    dataIndex: "direction",
+    width: 90,
+    render: (value: Direction) => {
+      const meta = directionMeta[value];
+      return (
+        <Tag
+          style={{
+            marginInlineEnd: 0,
+            color: meta.color,
+            background: meta.bg,
+            border: `1px solid ${meta.color}33`,
+            fontWeight: 700,
+          }}
+        >
+          {meta.label}
+        </Tag>
+      );
+    },
+  },
+  { title: "名义本金", dataIndex: "notional", width: 140 },
+  {
+    title: "未实现盈亏",
+    dataIndex: "unrealizedPnl",
+    width: 160,
+    render: (value: string, record) => {
+      const up = record.unrealizedPnlPct >= 0;
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <span
+            style={{
+              color: up ? "#0ECB81" : "#F6465D",
+              fontWeight: 700,
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {value}
+          </span>
+          <Text style={{ color: up ? "#0ECB81" : "#F6465D", fontSize: 12 }}>
+            {up ? <ArrowUpOutlined /> : <ArrowDownOutlined />} {Math.abs(record.unrealizedPnlPct).toFixed(2)}%
+          </Text>
+        </div>
+      );
+    },
+  },
+  {
+    title: "胜率",
+    dataIndex: "winRate",
+    width: 160,
+    render: (value: number) => (
+      <div className="manager-dashboard-rate-cell">
+        <Progress
+          percent={value}
+          showInfo={false}
+          strokeColor={{ from: "#FCD535", to: "#F0B90B" }}
+          trailColor="#2B3139"
+          size="small"
+        />
+        <span style={{ color: "var(--manager-text)", fontVariantNumeric: "tabular-nums" }}>{value}%</span>
+      </div>
+    ),
   },
   {
     title: "状态",
     dataIndex: "status",
-    width: 120,
-    render: (value: StationRecord["status"]) =>
-      value === "warn" ? <Tag color="gold">4 笔待补</Tag> : <Tag color="green">正常</Tag>,
+    width: 110,
+    render: (value: StrategyStatus) => {
+      const meta = statusMeta[value];
+      return <Tag color={meta.color}>{meta.label}</Tag>;
+    },
   },
 ];
 
 const stats = [
-  { label: "今日收粮量", value: "126.8", unit: "吨", hint: "较昨日 +9.6%" },
-  { label: "今日金额", value: "56.4", unit: "万", hint: "均价 2.22 元/kg" },
-  { label: "待复核记录", value: "18", unit: "笔", hint: "其中 4 笔资料待补" },
-  { label: "建档农户", value: "1,286", unit: "户", hint: "今日新增 9 户" },
+  {
+    label: "24h 已实现 PnL",
+    value: "+184,520",
+    unit: "USDT",
+    hint: "净胜率 62.4% · 收益率 +1.48%",
+    icon: <LineChartOutlined />,
+    positive: true,
+  },
+  {
+    label: "持仓总市值",
+    value: "6.22",
+    unit: "M USDT",
+    hint: "多头 58% · 空头 42%",
+    icon: <FundOutlined />,
+    positive: true,
+  },
+  {
+    label: "历史夏普比率",
+    value: "2.18",
+    unit: "",
+    hint: "近 90 日年化波动 12.6%",
+    icon: <RiseOutlined />,
+    positive: true,
+  },
+  {
+    label: "最大回撤",
+    value: "-6.4",
+    unit: "%",
+    hint: "近 30 日 · 触发于 04-19",
+    icon: <AlertOutlined />,
+    positive: false,
+  },
 ];
 
-const todos = [
-  { type: "资料", title: "张秀兰银行卡照片待补", desc: "业务员赵敏提交，影响后期开票与付款核对" },
-  { type: "价格", title: "陈玉山小麦单价偏高", desc: "系统计算 1.42 元/斤，超过预警线" },
+const totals = [
+  {
+    label: "资产总额 AUM",
+    value: "$12,486,320",
+    icon: <WalletOutlined />,
+  },
+  {
+    label: "今日成交笔数",
+    value: "1,286",
+    icon: <ThunderboltOutlined />,
+  },
+  {
+    label: "在跑策略",
+    value: "14 / 18",
+    icon: <SafetyCertificateOutlined />,
+  },
+];
+
+const alerts = [
+  {
+    level: "高风险",
+    color: "red",
+    title: "BTC/USDT 主力网格 接近止损线",
+    desc: "未实现亏损 -1.92%，距强平价 ¥1,840，建议人工复核。",
+  },
+  {
+    level: "资金费",
+    color: "gold",
+    title: "BNB 永续 资金费率连续 3 期为负",
+    desc: "近 8 小时累计成本 +0.18%，可考虑减仓或切换合约。",
+  },
+  {
+    level: "API",
+    color: "blue",
+    title: "Binance API 调用速率达到 78%",
+    desc: "近 5 分钟权重 1,560 / 2,400，临近限额。",
+  },
+];
+
+const allocation = [
+  { name: "BTC", value: 42, color: "#F7931A" },
+  { name: "ETH", value: 26, color: "#627EEA" },
+  { name: "SOL", value: 14, color: "#14F195" },
+  { name: "BNB", value: 10, color: "#F0B90B" },
+  { name: "其他", value: 8, color: "#848E9C" },
 ];
 
 export default function ManagerDashboardPage() {
@@ -109,20 +301,32 @@ export default function ManagerDashboardPage() {
     <div className="manager-page-stack manager-dashboard">
       <section className="manager-dashboard-hero">
         <div>
-          <Text className="manager-section-label">今日全局概览</Text>
+          <Text className="manager-section-label">实盘控制台 · 24H Overview</Text>
           <Title level={1} className="manager-dashboard-hero__title">
-            今日已录入 86 笔，覆盖 51 户农户，合计收粮 126.8 吨。
+            净值 +1.48%，已实现盈亏 +184,520 USDT，14 条策略持续运行中。
           </Title>
           <Text className="manager-dashboard-hero__subtitle">
-            按粮站、业务员、农户、品类汇总收粮业务数据，异常提交与价格波动在管理端集中处理。
+            汇总交易所账户、策略实盘、风控告警于一屏。多空敞口、资金费率与回撤指标实时同步。
           </Text>
         </div>
         <Space wrap className="manager-dashboard-hero__actions">
-          <Button type="primary" icon={<DatabaseOutlined />}>
-            查看收粮记录
+          <Button type="primary" icon={<LineChartOutlined />}>
+            查看实时净值
           </Button>
-          <Button icon={<AuditOutlined />}>处理待审核</Button>
+          <Button icon={<AuditOutlined />}>风控复核台</Button>
         </Space>
+      </section>
+
+      <section className="manager-dashboard-total-strip">
+        {totals.map((item) => (
+          <div key={item.label} className="manager-dashboard-total-strip__item">
+            <span className="manager-dashboard-total-strip__icon">{item.icon}</span>
+            <div>
+              <span className="manager-dashboard-total-strip__label">{item.label}</span>
+              <strong>{item.value}</strong>
+            </div>
+          </div>
+        ))}
       </section>
 
       <section className="manager-dashboard-metric-grid">
@@ -130,11 +334,14 @@ export default function ManagerDashboardPage() {
           <div key={item.label} className="manager-dashboard-metric">
             <div className="manager-dashboard-metric__topline">
               <span>{item.label}</span>
-              <FileDoneOutlined className="manager-dashboard-metric__icon" />
+              <span className="manager-dashboard-metric__icon">{item.icon}</span>
             </div>
-            <div className="manager-dashboard-metric__value">
+            <div
+              className="manager-dashboard-metric__value"
+              style={{ color: item.positive ? "#EAECEF" : "#F6465D" }}
+            >
               {item.value}
-              <span>{item.unit}</span>
+              {item.unit ? <span>{item.unit}</span> : null}
             </div>
             <Text className="manager-dashboard-metric__hint">{item.hint}</Text>
           </div>
@@ -144,19 +351,19 @@ export default function ManagerDashboardPage() {
       <section className="manager-dashboard-main-grid">
         <div className="manager-dashboard-panel manager-dashboard-panel--wide">
           <div className="manager-dashboard-panel__header">
-            <BankOutlined className="manager-dashboard-panel__icon" />
+            <DollarCircleOutlined className="manager-dashboard-panel__icon" />
             <div>
-              <h3>今日粮站表现</h3>
-              <Text>管理员可跨粮站查看汇总，粮站角色只显示本站。</Text>
+              <h3>策略实盘表现</h3>
+              <Text>按策略、交易对、方向汇总持仓与未实现盈亏；管理员可查看全部账户。</Text>
             </div>
           </div>
           <div className="manager-table">
-            <Table<StationRecord>
+            <Table<StrategyRecord>
               rowKey="key"
               columns={columns}
-              dataSource={stationData}
+              dataSource={strategyData}
               pagination={false}
-              scroll={{ x: 900 }}
+              scroll={{ x: 980 }}
             />
           </div>
         </div>
@@ -165,16 +372,16 @@ export default function ManagerDashboardPage() {
           <div className="manager-dashboard-panel__header">
             <AlertOutlined className="manager-dashboard-panel__icon" />
             <div>
-              <h3>待办</h3>
-              <Text>需要管理端处理或关注的异常。</Text>
+              <h3>风控告警</h3>
+              <Text>仓位、资金费率、接口配额异常会聚合到此。</Text>
             </div>
           </div>
           <div className="manager-dashboard-category-list">
-            {todos.map((todo) => (
-              <div key={todo.title} className="manager-dashboard-task">
-                <Tag color={todo.type === "资料" ? "blue" : "gold"}>{todo.type}</Tag>
-                <strong>{todo.title}</strong>
-                <Text>{todo.desc}</Text>
+            {alerts.map((alert) => (
+              <div key={alert.title} className="manager-dashboard-task">
+                <Tag color={alert.color}>{alert.level}</Tag>
+                <strong>{alert.title}</strong>
+                <Text>{alert.desc}</Text>
               </div>
             ))}
           </div>
@@ -182,31 +389,31 @@ export default function ManagerDashboardPage() {
 
         <div className="manager-dashboard-panel">
           <div className="manager-dashboard-panel__header">
-            <TeamOutlined className="manager-dashboard-panel__icon" />
+            <FundOutlined className="manager-dashboard-panel__icon" />
             <div>
-              <h3>品类占比</h3>
-              <Text>今日已录入粮食品类结构。</Text>
+              <h3>持仓分布</h3>
+              <Text>按底层资产汇总名义本金占比。</Text>
             </div>
           </div>
           <div className="manager-dashboard-category-list">
-            <Category name="小麦" value={62} />
-            <Category name="玉米" value={31} />
-            <Category name="其他" value={7} />
+            {allocation.map((item) => (
+              <Allocation key={item.name} name={item.name} value={item.value} color={item.color} />
+            ))}
           </div>
         </div>
 
         <div className="manager-dashboard-panel">
           <div className="manager-dashboard-panel__header">
-            <AuditOutlined className="manager-dashboard-panel__icon" />
+            <SafetyCertificateOutlined className="manager-dashboard-panel__icon" />
             <div>
               <h3>权限说明</h3>
-              <Text>管理端按角色控制数据范围。</Text>
+              <Text>管理端按角色控制资金与策略操作范围。</Text>
             </div>
           </div>
           <div className="manager-dashboard-role-list">
-            <Role label="管理员" value="全量操作" tag="全局" />
-            <Role label="粮站" value="站点数据" tag="受限" />
-            <Role label="业务员" value="本人数据" tag="小程序" />
+            <Role label="超管" value="全账户 · 资金划转" tag="全局" tagColor="gold" />
+            <Role label="交易员" value="策略启停 · 改参数" tag="受限" tagColor="blue" />
+            <Role label="风控" value="只读 · 强平干预" tag="只读" tagColor="green" />
           </div>
         </div>
       </section>
@@ -214,24 +421,48 @@ export default function ManagerDashboardPage() {
   );
 }
 
-function Category({ name, value }: { name: string; value: number }) {
+function Allocation({ name, value, color }: { name: string; value: number; color: string }) {
   return (
     <div className="manager-dashboard-category-row">
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-        <span className="manager-dashboard-category-name">{name}</span>
-        <span>{value}%</span>
+        <span className="manager-dashboard-category-name" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: 999,
+              background: color,
+              boxShadow: `0 0 10px ${color}aa`,
+              display: "inline-block",
+            }}
+          />
+          {name}
+        </span>
+        <span style={{ color: "var(--manager-text)", fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>
+          {value}%
+        </span>
       </div>
-      <Progress percent={value} showInfo={false} strokeColor="#237a4b" trailColor="#e1e7dc" />
+      <Progress percent={value} showInfo={false} strokeColor={color} trailColor="#2B3139" />
     </div>
   );
 }
 
-function Role({ label, value, tag }: { label: string; value: string; tag: string }) {
+function Role({
+  label,
+  value,
+  tag,
+  tagColor,
+}: {
+  label: string;
+  value: string;
+  tag: string;
+  tagColor: string;
+}) {
   return (
     <div className="manager-dashboard-role-row">
       <span>{label}</span>
       <strong>{value}</strong>
-      <Tag color={tag === "全局" ? "green" : tag === "受限" ? "blue" : "gold"}>{tag}</Tag>
+      <Tag color={tagColor}>{tag}</Tag>
     </div>
   );
 }

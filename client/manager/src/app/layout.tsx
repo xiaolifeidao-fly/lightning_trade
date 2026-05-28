@@ -7,8 +7,8 @@ import { modernTheme } from "@/styles/theme";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "管理台",
-  description: "",
+  title: "Lightning Trade · 量化合约管理台",
+  description: "Lightning Trade 数字资产量化合约管理控制台",
 };
 
 export default function RootLayout({

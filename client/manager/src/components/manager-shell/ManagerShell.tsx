@@ -2,14 +2,11 @@
 
 import {
   AppstoreOutlined,
-  BankOutlined,
   BellOutlined,
   CompassOutlined,
-  DatabaseOutlined,
   LogoutOutlined,
   SafetyCertificateOutlined,
   TeamOutlined,
-  UsergroupAddOutlined,
 } from "@ant-design/icons";
 import { Avatar, Badge, Button, Layout, Menu, Space, Tag, Typography } from "antd";
 import type { MenuProps } from "antd";
@@ -27,48 +24,12 @@ type MenuItem = Required<MenuProps>["items"][number];
 const pageTitleMap: Record<string, string> = {
   "/manager-dashboard": "数据总览",
   "/user": "用户管理",
-  "/permission": "权限管理",
-  "/grain/stations": "粮站列表",
-  "/grain/config": "基础设置",
-  "/grain/payment-methods": "付款方式",
-  "/grain/farmers": "农户管理",
-  "/app-user": "业务员管理",
-  "/grain/entries": "收粮明细",
+  "/permission": "角色管理",
 };
 
 function getOpenKeys(pathname: string) {
-  if (pathname.startsWith("/activation-code")) {
-    return ["/activation-code"];
-  }
-  if (pathname.startsWith("/product")) {
-    return ["/product"];
-  }
-  if (pathname.startsWith("/collect")) {
-    return ["/collect"];
-  }
-  if (pathname.startsWith("/shop")) {
-    return ["/shop"];
-  }
-  if (pathname.startsWith("/app-user")) {
-    return ["/grain-farmer-group"];
-  }
   if (pathname.startsWith("/permission")) {
     return ["/system-group"];
-  }
-  if (pathname.startsWith("/grain")) {
-    if (
-      pathname.startsWith("/grain/stations") ||
-      pathname.startsWith("/grain/config") ||
-      pathname.startsWith("/grain/payment-methods")
-    ) {
-      return ["/grain-station-group"];
-    }
-    if (pathname.startsWith("/grain/farmers")) {
-      return ["/grain-farmer-group"];
-    }
-    if (pathname.startsWith("/grain/entries")) {
-      return ["/grain-purchase-group"];
-    }
   }
   return [];
 }
@@ -92,18 +53,8 @@ export function ManagerShell({ children }: ManagerShellProps) {
       },
       {
         key: "/permission",
-        label: "权限管理",
+        label: "角色管理",
         icon: <SafetyCertificateOutlined />,
-      },
-      {
-        key: "/app-user",
-        label: "业务员管理",
-        icon: <TeamOutlined />,
-      },
-      {
-        key: "/grain/entries",
-        label: "收粮明细",
-        icon: <DatabaseOutlined />,
       },
     ],
     [],
@@ -127,59 +78,14 @@ export function ManagerShell({ children }: ManagerShellProps) {
         children: [
           {
             key: "/permission",
-            label: "角色资源",
-          },
-        ],
-      },
-      {
-        key: "/grain-station-group",
-        icon: <BankOutlined />,
-        label: "粮站管理",
-        children: [
-          {
-            key: "/grain/stations",
-            label: "粮站列表",
-          },
-          {
-            key: "/grain/config",
-            label: "基础设置",
-          },
-          {
-            key: "/grain/payment-methods",
-            label: "付款方式",
-          },
-        ],
-      },
-      {
-        key: "/grain-farmer-group",
-        icon: <UsergroupAddOutlined />,
-        label: "粮户管理",
-        children: [
-          {
-            key: "/grain/farmers",
-            label: "农户管理",
-          },
-          {
-            key: "/app-user",
-            label: "业务员管理",
-          },
-        ],
-      },
-      {
-        key: "/grain-purchase-group",
-        icon: <DatabaseOutlined />,
-        label: "收粮管理",
-        children: [
-          {
-            key: "/grain/entries",
-            label: "收粮明细",
+            label: "角色管理",
           },
         ],
       },
     ],
     [],
   );
-  const selectedKey = activePath === "/activation-code" ? "/activation-code/admin" : activePath;
+  const selectedKey = activePath;
 
   useEffect(() => {
     const pathOpenKeys = getOpenKeys(activePath);
@@ -224,12 +130,12 @@ export function ManagerShell({ children }: ManagerShellProps) {
               }}
             >
               <div>
-                <div className="manager-brand-kicker">管理控制台</div>
+                <div className="manager-brand-kicker">Lightning Trade</div>
                 <Space align="start" size={12} style={{ marginTop: 18 }}>
                   <div className="manager-crest" />
                   <div className="manager-wordmark">
-                    <strong style={{ color: "#fff" }}>收粮管理端</strong>
-                    <span style={{ color: "rgba(255,255,255,0.66)" }}>Shennong Admin</span>
+                    <strong style={{ color: "#fff" }}>闪电量化</strong>
+                    <span style={{ color: "rgba(255,255,255,0.66)" }}>Crypto Futures Console</span>
                   </div>
                 </Space>
               </div>
@@ -252,9 +158,9 @@ export function ManagerShell({ children }: ManagerShellProps) {
                 }}
               />
               <div className="manager-sidebar-foot">
-                <span>权限模式</span>
-                <strong>系统角色权限</strong>
-                <Tag bordered={false}>按角色授权</Tag>
+                <span>当前模式</span>
+                <strong>实盘 · 合约交易</strong>
+                <Tag bordered={false}>已加密 · 多签授权</Tag>
               </div>
             </div>
           </Sider>
@@ -328,9 +234,9 @@ export function ManagerShell({ children }: ManagerShellProps) {
                   <div
                     style={{
                       padding: "8px 12px 8px 8px",
-                      borderRadius: 8,
+                      borderRadius: 10,
                       border: "1px solid var(--manager-border)",
-                      background: "#ffffff",
+                      background: "#1E2329",
                     }}
                   >
                     <Space size={12}>
@@ -338,16 +244,16 @@ export function ManagerShell({ children }: ManagerShellProps) {
                         style={{
                           width: 38,
                           height: 38,
-                          background: "linear-gradient(135deg, var(--manager-primary), #4f8f5f)",
-                          color: "#fff",
-                          fontWeight: 700,
+                          background: "linear-gradient(135deg, #FCD535, #F0B90B)",
+                          color: "#0B0E11",
+                          fontWeight: 800,
                         }}
                       >
                         A
                       </Avatar>
                       <div>
-                        <div style={{ fontWeight: 700, color: "var(--manager-text)" }}>林安</div>
-                        <Text style={{ color: "var(--manager-text-soft)" }}>系统管理员</Text>
+                        <div style={{ fontWeight: 700, color: "var(--manager-text)" }}>Admin</div>
+                        <Text style={{ color: "var(--manager-text-soft)" }}>超级管理员</Text>
                       </div>
                       <Button
                         type="text"
