@@ -34,7 +34,6 @@ export interface CrudRecord {
   id: number;
   createdTime?: string;
   updatedTime?: string;
-  [key: string]: unknown;
 }
 
 export interface CrudOption {
@@ -78,7 +77,7 @@ export interface CrudListQuery {
   [key: string]: string | number | undefined;
 }
 
-interface CrudApi<R extends CrudRecord, P extends Record<string, unknown>> {
+interface CrudApi<R extends CrudRecord, P extends object> {
   list: (query: CrudListQuery) => Promise<PageResult<R>>;
   create: (payload: P) => Promise<unknown>;
   update: (id: number, payload: Partial<P>) => Promise<unknown>;
@@ -91,7 +90,7 @@ interface CrudActionContext {
   setSubmitting: (submitting: boolean) => void;
 }
 
-interface CrudManagementPanelProps<R extends CrudRecord, P extends Record<string, unknown>> {
+interface CrudManagementPanelProps<R extends CrudRecord, P extends object> {
   title: string;
   createText: string;
   searchPlaceholder: string;
@@ -101,6 +100,7 @@ interface CrudManagementPanelProps<R extends CrudRecord, P extends Record<string
   api: CrudApi<R, P>;
   statusField?: Extract<keyof R, string>;
   statusOptions?: CrudOption[];
+  filters?: CrudField<R>[];
   rowActions?: (record: R, context: CrudActionContext) => ReactNode;
   actionWidth?: number;
 }
@@ -111,6 +111,14 @@ function compactPayload(values: Record<string, unknown>) {
   return Object.fromEntries(
     Object.entries(values).filter(([, value]) => value !== undefined && value !== ""),
   );
+}
+
+function compactQueryPayload(values: Record<string, unknown>): CrudListQuery {
+  return Object.fromEntries(
+    Object.entries(values).filter(([, value]) => {
+      return (typeof value === "string" && value !== "") || typeof value === "number";
+    }),
+  ) as CrudListQuery;
 }
 
 function renderValue(value: unknown) {
@@ -124,13 +132,14 @@ function renderValue(value: unknown) {
 }
 
 function buildInitialFormValues<R extends CrudRecord>(record: R, fields: CrudField<R>[]) {
-  const values: Record<string, unknown> = { ...record };
+  const values = Object.assign({}, record) as unknown as Record<string, unknown>;
+  const recordValues = Object(record) as Record<string, unknown>;
   fields.forEach((field) => {
     if (field.type !== "cascader" || !field.linkedNames) {
       return;
     }
     values[field.name] = field.linkedNames
-      .map((name) => record[name])
+      .map((name) => recordValues[name])
       .filter((value) => typeof value === "string" && value !== "");
   });
   return values;
@@ -173,7 +182,7 @@ function statusTag(value: unknown, label?: string) {
   return <Tag color={color}>{text}</Tag>;
 }
 
-export function CrudManagementPanel<R extends CrudRecord, P extends Record<string, unknown>>({
+export function CrudManagementPanel<R extends CrudRecord, P extends object>({
   title,
   createText,
   searchPlaceholder,
@@ -183,10 +192,12 @@ export function CrudManagementPanel<R extends CrudRecord, P extends Record<strin
   api,
   statusField,
   statusOptions,
+  filters = [],
   rowActions,
   actionWidth = 132,
 }: CrudManagementPanelProps<R, P>) {
   const [form] = Form.useForm();
+  const [filterForm] = Form.useForm();
   const [records, setRecords] = useState<R[]>([]);
   const [total, setTotal] = useState(0);
   const [query, setQuery] = useState<Required<Pick<CrudListQuery, "pageIndex" | "pageSize">>>({
@@ -316,7 +327,32 @@ export function CrudManagementPanel<R extends CrudRecord, P extends Record<strin
     pageIndex: 1,
     [searchParam]: searchValue.trim() || undefined,
     ...(statusField ? { [statusField]: statusValue } : {}),
+    ...compactQueryPayload(filterForm.getFieldsValue()),
   });
+
+  const renderFilterField = (field: CrudField<R>) => {
+    if (field.type === "number") {
+      return (
+        <InputNumber
+          min={field.min}
+          precision={field.precision}
+          placeholder={field.placeholder ?? field.label}
+          style={{ width: 160 }}
+        />
+      );
+    }
+    if (field.type === "select") {
+      return (
+        <Select
+          allowClear
+          placeholder={field.placeholder ?? field.label}
+          options={field.options}
+          style={{ width: 160 }}
+        />
+      );
+    }
+    return <Input placeholder={field.placeholder ?? field.label} style={{ width: 180 }} />;
+  };
 
   const handleSubmit = async () => {
     const rawValues = compactPayload(form.getFieldsValue());
@@ -386,6 +422,17 @@ export function CrudManagementPanel<R extends CrudRecord, P extends Record<strin
                 options={statusOptions}
                 style={{ width: 180 }}
               />
+            ) : null}
+            {filters.length > 0 ? (
+              <Form form={filterForm} component={false}>
+                <Space wrap size={12}>
+                  {filters.map((field) => (
+                    <Form.Item key={field.name} name={field.name as string} noStyle>
+                      {renderFilterField(field)}
+                    </Form.Item>
+                  ))}
+                </Space>
+              </Form>
             ) : null}
             <Button type="primary" icon={<SearchOutlined />} onClick={() => void loadRecords(filterQuery())}>
               查询

@@ -14,16 +14,22 @@ import (
 )
 
 type TradeService struct {
-	tradeOrderRepository *tradeRepository.TradeOrderRepository
-	tradeMatchRepository *tradeRepository.TradeMatchRepository
-	tradeKlineRepository *tradeRepository.TradeKlineRepository
+	tradeOrderRepository       *tradeRepository.TradeOrderRepository
+	tradeMatchRepository       *tradeRepository.TradeMatchRepository
+	tradeKlineRepository       *tradeRepository.TradeKlineRepository
+	tradeDetailRepository      *tradeRepository.TradeDetailRepository
+	tradeUserSummaryRepository *tradeRepository.TradeUserSummaryRepository
+	tradeUserPnlRepository     *tradeRepository.TradeUserPnlRepository
 }
 
 func NewTradeService() *TradeService {
 	return &TradeService{
-		tradeOrderRepository: db.GetRepository[tradeRepository.TradeOrderRepository](),
-		tradeMatchRepository: db.GetRepository[tradeRepository.TradeMatchRepository](),
-		tradeKlineRepository: db.GetRepository[tradeRepository.TradeKlineRepository](),
+		tradeOrderRepository:       db.GetRepository[tradeRepository.TradeOrderRepository](),
+		tradeMatchRepository:       db.GetRepository[tradeRepository.TradeMatchRepository](),
+		tradeKlineRepository:       db.GetRepository[tradeRepository.TradeKlineRepository](),
+		tradeDetailRepository:      db.GetRepository[tradeRepository.TradeDetailRepository](),
+		tradeUserSummaryRepository: db.GetRepository[tradeRepository.TradeUserSummaryRepository](),
+		tradeUserPnlRepository:     db.GetRepository[tradeRepository.TradeUserPnlRepository](),
 	}
 }
 
@@ -34,7 +40,16 @@ func (s *TradeService) EnsureTable() error {
 	if err := s.tradeMatchRepository.EnsureTable(); err != nil {
 		return err
 	}
-	return s.tradeKlineRepository.EnsureTable()
+	if err := s.tradeKlineRepository.EnsureTable(); err != nil {
+		return err
+	}
+	if err := s.tradeDetailRepository.EnsureTable(); err != nil {
+		return err
+	}
+	if err := s.tradeUserSummaryRepository.EnsureTable(); err != nil {
+		return err
+	}
+	return s.tradeUserPnlRepository.EnsureTable()
 }
 
 func (s *TradeService) ListOrders(query tradeDTO.TradeOrderQueryDTO) (*baseDTO.PageDTO[tradeDTO.TradeOrderDTO], error) {
@@ -62,6 +77,10 @@ func (s *TradeService) ListOrders(query tradeDTO.TradeOrderQueryDTO) (*baseDTO.P
 				UpdatedTime: row.UpdatedTime,
 				UpdatedBy:   row.UpdatedBy,
 			},
+			PlatformID:     row.PlatformID,
+			PlatformCode:   row.PlatformCode,
+			TradeCategory:  row.TradeCategory,
+			TradeType:      row.TradeType,
 			OrderNo:        row.OrderNo,
 			UserID:         row.UserID,
 			Symbol:         row.Symbol,
@@ -133,6 +152,10 @@ func (s *TradeService) PlaceOrder(req *tradeDTO.CreateTradeOrderDTO) (*tradeDTO.
 	total := req.Price * req.Amount
 
 	created, err := s.tradeOrderRepository.Create(&tradeRepository.TradeOrder{
+		PlatformID:    req.PlatformID,
+		PlatformCode:  strings.ToLower(strings.TrimSpace(req.PlatformCode)),
+		TradeCategory: normalizeTradeCategory(req.TradeCategory),
+		TradeType:     normalizeTradeType(req.TradeType),
 		OrderNo:       generateOrderNo(),
 		UserID:        req.UserID,
 		Symbol:        symbol,
@@ -229,6 +252,8 @@ func (s *TradeService) RecordMatch(req *tradeDTO.CreateTradeMatchDTO) (*tradeDTO
 		matchedTime = time.Now()
 	}
 	created, err := s.tradeMatchRepository.Create(&tradeRepository.TradeMatch{
+		PlatformID:   req.PlatformID,
+		PlatformCode: strings.ToLower(strings.TrimSpace(req.PlatformCode)),
 		TradeNo:      generateTradeNo(),
 		Symbol:       strings.ToUpper(strings.TrimSpace(req.Symbol)),
 		TakerOrderNo: strings.TrimSpace(req.TakerOrderNo),
@@ -366,4 +391,153 @@ func generateOrderNo() string {
 
 func generateTradeNo() string {
 	return fmt.Sprintf("T%d%04d", time.Now().UnixNano()/1e6, rand.Intn(10000))
+}
+
+func normalizeTradeCategory(category string) string {
+	switch strings.ToLower(strings.TrimSpace(category)) {
+	case "spot":
+		return "spot"
+	case "futures":
+		return "futures"
+	case "margin":
+		return "margin"
+	default:
+		return "spot"
+	}
+}
+
+func normalizeOpenDirection(dir string) string {
+	switch strings.ToLower(strings.TrimSpace(dir)) {
+	case "long", "buy":
+		return "long"
+	case "short", "sell":
+		return "short"
+	default:
+		return "long"
+	}
+}
+
+func normalizeLeverage(leverage float64) float64 {
+	if leverage <= 0 {
+		return 1
+	}
+	return leverage
+}
+
+func normalizeTradeType(tradeType string) string {
+	switch strings.ToLower(strings.TrimSpace(tradeType)) {
+	case "simulation", "sim", "demo":
+		return "simulation"
+	case "", "real", "live":
+		return "real"
+	default:
+		return "real"
+	}
+}
+
+// TradeDetail 相关方法
+
+func (s *TradeService) CreateTradeDetail(req *tradeDTO.CreateTradeDetailDTO) (*tradeDTO.TradeDetailDTO, error) {
+	if s.tradeDetailRepository.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	if req == nil {
+		return nil, fmt.Errorf("request is nil")
+	}
+	if req.UserID == 0 {
+		return nil, fmt.Errorf("userId is required")
+	}
+	tradeTime := req.TradeTime
+	if tradeTime.IsZero() {
+		tradeTime = time.Now()
+	}
+	created, err := s.tradeDetailRepository.Create(&tradeRepository.TradeDetail{
+		PlatformID:       req.PlatformID,
+		PlatformCode:     strings.ToLower(strings.TrimSpace(req.PlatformCode)),
+		TradeCategory:    normalizeTradeCategory(req.TradeCategory),
+		TradeType:        normalizeTradeType(req.TradeType),
+		UserID:           req.UserID,
+		OrderNo:          strings.TrimSpace(req.OrderNo),
+		TradeNo:          strings.TrimSpace(req.TradeNo),
+		Symbol:           strings.ToUpper(strings.TrimSpace(req.Symbol)),
+		CoinCode:         strings.ToUpper(strings.TrimSpace(req.CoinCode)),
+		Side:             normalizeOrderSide(req.Side),
+		OpenDirection:    normalizeOpenDirection(req.OpenDirection),
+		AvgOpenPrice:     req.AvgOpenPrice,
+		LiquidationPrice: req.LiquidationPrice,
+		Leverage:         normalizeLeverage(req.Leverage),
+		Margin:           req.Margin,
+		UserBalanceOpen:  req.UserBalanceOpen,
+		Price:            req.Price,
+		Amount:           req.Amount,
+		Total:            req.Total,
+		Fee:              req.Fee,
+		Pnl:              req.Pnl,
+		PnlRate:          req.PnlRate,
+		TradeTime:        tradeTime,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return db.ToDTO[tradeDTO.TradeDetailDTO](created), nil
+}
+
+func (s *TradeService) ListTradeDetails(query tradeDTO.TradeDetailQueryDTO) (*baseDTO.PageDTO[tradeDTO.TradeDetailDTO], error) {
+	if s.tradeDetailRepository.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	pageIndex, pageSize := normalizeTradePage(query.Page, query.PageIndex, query.PageSize)
+	total, err := s.tradeDetailRepository.CountByQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.tradeDetailRepository.ListByQuery(query, pageIndex, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	return baseDTO.BuildPage(int(total), db.ToDTOs[tradeDTO.TradeDetailDTO](rows)), nil
+}
+
+func (s *TradeService) ListDetailsByOrderNo(orderNo string) ([]*tradeDTO.TradeDetailDTO, error) {
+	rows, err := s.tradeDetailRepository.ListByOrderNo(strings.TrimSpace(orderNo))
+	if err != nil {
+		return nil, err
+	}
+	return db.ToDTOs[tradeDTO.TradeDetailDTO](rows), nil
+}
+
+// TradeUserSummary 相关方法
+
+func (s *TradeService) ListUserSummary(query tradeDTO.TradeUserSummaryQueryDTO) (*baseDTO.PageDTO[tradeDTO.TradeUserSummaryDTO], error) {
+	if s.tradeUserSummaryRepository.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	pageIndex, pageSize := normalizeTradePage(query.Page, query.PageIndex, query.PageSize)
+	total, err := s.tradeUserSummaryRepository.CountByQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.tradeUserSummaryRepository.ListByQuery(query, pageIndex, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	return baseDTO.BuildPage(int(total), db.ToDTOs[tradeDTO.TradeUserSummaryDTO](rows)), nil
+}
+
+// TradeUserPnl 相关方法
+
+func (s *TradeService) ListUserPnl(query tradeDTO.TradeUserPnlQueryDTO) (*baseDTO.PageDTO[tradeDTO.TradeUserPnlDTO], error) {
+	if s.tradeUserPnlRepository.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	pageIndex, pageSize := normalizeTradePage(query.Page, query.PageIndex, query.PageSize)
+	total, err := s.tradeUserPnlRepository.CountByQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.tradeUserPnlRepository.ListByQuery(query, pageIndex, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	return baseDTO.BuildPage(int(total), db.ToDTOs[tradeDTO.TradeUserPnlDTO](rows)), nil
 }

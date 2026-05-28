@@ -2,11 +2,14 @@
 
 import {
   AppstoreOutlined,
+  BarChartOutlined,
   BellOutlined,
   CompassOutlined,
+  GlobalOutlined,
   LogoutOutlined,
   SafetyCertificateOutlined,
   TeamOutlined,
+  WalletOutlined,
 } from "@ant-design/icons";
 import { Avatar, Badge, Button, Layout, Menu, Space, Tag, Typography } from "antd";
 import type { MenuProps } from "antd";
@@ -25,11 +28,18 @@ const pageTitleMap: Record<string, string> = {
   "/manager-dashboard": "数据总览",
   "/user": "用户管理",
   "/permission": "角色管理",
+  "/platform": "平台管理",
+  "/coin": "币种管理",
+  "/coin-user": "币用户管理",
+  "/trade-orders": "交易管理",
 };
 
 function getOpenKeys(pathname: string) {
   if (pathname.startsWith("/permission")) {
     return ["/system-group"];
+  }
+  if (pathname.startsWith("/platform") || pathname.startsWith("/coin")) {
+    return ["/exchange-group"];
   }
   return [];
 }
@@ -43,18 +53,28 @@ export function ManagerShell({ children }: ManagerShellProps) {
     () => [
       {
         key: "/manager-dashboard",
-        label: "数据总览",
+        label: "总览",
         icon: <AppstoreOutlined />,
       },
       {
-        key: "/user",
-        label: "用户管理",
-        icon: <TeamOutlined />,
+        key: "/coin-user",
+        label: "币用户",
+        icon: <WalletOutlined />,
       },
       {
-        key: "/permission",
-        label: "角色管理",
-        icon: <SafetyCertificateOutlined />,
+        key: "/trade-orders",
+        label: "交易",
+        icon: <BarChartOutlined />,
+      },
+      {
+        key: "/platform",
+        label: "平台",
+        icon: <GlobalOutlined />,
+      },
+      {
+        key: "/coin",
+        label: "币种",
+        icon: <GlobalOutlined />,
       },
     ],
     [],
@@ -65,6 +85,31 @@ export function ManagerShell({ children }: ManagerShellProps) {
         key: "/manager-dashboard",
         icon: <AppstoreOutlined />,
         label: "数据总览",
+      },
+      {
+        key: "/coin-user",
+        icon: <WalletOutlined />,
+        label: "币用户管理",
+      },
+      {
+        key: "/trade-orders",
+        icon: <BarChartOutlined />,
+        label: "交易管理",
+      },
+      {
+        key: "/exchange-group",
+        icon: <GlobalOutlined />,
+        label: "交易所管理",
+        children: [
+          {
+            key: "/platform",
+            label: "平台管理",
+          },
+          {
+            key: "/coin",
+            label: "币种管理",
+          },
+        ],
       },
       {
         key: "/user",

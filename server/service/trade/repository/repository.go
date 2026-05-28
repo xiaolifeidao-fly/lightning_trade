@@ -65,6 +65,7 @@ func (r *TradeOrderRepository) ListOrdersByQuery(query tradeDTO.TradeOrderQueryD
 	}
 	whereSQL, values := buildTradeOrderWhere(query)
 	sql := `SELECT id, active, created_time, updated_time, created_by, updated_by,
+		platform_id, platform_code, trade_category, trade_type,
 		order_no, user_id, symbol, base_coin_code, quote_coin_code, side, order_type,
 		price, amount, total, filled_amount, filled_total, avg_filled_price, fee_amount,
 		status, submitted_time, finished_time
@@ -79,8 +80,24 @@ func (r *TradeOrderRepository) ListOrdersByQuery(query tradeDTO.TradeOrderQueryD
 
 func buildTradeOrderWhere(query tradeDTO.TradeOrderQueryDTO) (string, []interface{}) {
 	clauses := []string{"WHERE active = 1"}
-	values := make([]interface{}, 0, 10)
+	values := make([]interface{}, 0, 12)
 
+	if query.PlatformID > 0 {
+		clauses = append(clauses, "platform_id = ?")
+		values = append(values, query.PlatformID)
+	}
+	if value := strings.TrimSpace(query.PlatformCode); value != "" {
+		clauses = append(clauses, "platform_code = ?")
+		values = append(values, strings.ToLower(value))
+	}
+	if value := strings.TrimSpace(query.TradeCategory); value != "" {
+		clauses = append(clauses, "trade_category = ?")
+		values = append(values, value)
+	}
+	if value := strings.TrimSpace(query.TradeType); value != "" {
+		clauses = append(clauses, "trade_type = ?")
+		values = append(values, value)
+	}
 	if query.UserID > 0 {
 		clauses = append(clauses, "user_id = ?")
 		values = append(values, query.UserID)
@@ -185,4 +202,271 @@ func (r *TradeKlineRepository) ListBySymbolInterval(symbol, interval string, lim
 		return nil, err
 	}
 	return rows, nil
+}
+
+type TradeDetailRepository struct {
+	db.Repository[*TradeDetail]
+}
+
+func (r *TradeDetailRepository) EnsureTable() error {
+	if r.Db == nil {
+		return fmt.Errorf("database is not initialized")
+	}
+	return r.Db.AutoMigrate(&TradeDetail{})
+}
+
+func (r *TradeDetailRepository) ListByOrderNo(orderNo string) ([]*TradeDetail, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	var rows []*TradeDetail
+	if err := r.Db.Where("order_no = ? AND active = 1", orderNo).Order("id DESC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (r *TradeDetailRepository) CountByQuery(query tradeDTO.TradeDetailQueryDTO) (int64, error) {
+	if r.Db == nil {
+		return 0, fmt.Errorf("database is not initialized")
+	}
+	whereSQL, values := buildTradeDetailWhere(query)
+	sql := "SELECT id FROM trade_detail " + whereSQL
+	return r.CountBySQL(sql, values...)
+}
+
+func (r *TradeDetailRepository) ListByQuery(query tradeDTO.TradeDetailQueryDTO, pageIndex, pageSize int) ([]*TradeDetail, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	dbq := r.Db.Model(&TradeDetail{}).Where("active = 1")
+	if query.PlatformID > 0 {
+		dbq = dbq.Where("platform_id = ?", query.PlatformID)
+	}
+	if v := strings.TrimSpace(query.PlatformCode); v != "" {
+		dbq = dbq.Where("platform_code = ?", strings.ToLower(v))
+	}
+	if v := strings.TrimSpace(query.TradeCategory); v != "" {
+		dbq = dbq.Where("trade_category = ?", v)
+	}
+	if v := strings.TrimSpace(query.TradeType); v != "" {
+		dbq = dbq.Where("trade_type = ?", v)
+	}
+	if query.UserID > 0 {
+		dbq = dbq.Where("user_id = ?", query.UserID)
+	}
+	if v := strings.TrimSpace(query.OrderNo); v != "" {
+		dbq = dbq.Where("order_no = ?", v)
+	}
+	if v := strings.TrimSpace(query.Symbol); v != "" {
+		dbq = dbq.Where("symbol = ?", strings.ToUpper(v))
+	}
+	if v := strings.TrimSpace(query.CoinCode); v != "" {
+		dbq = dbq.Where("coin_code = ?", strings.ToUpper(v))
+	}
+	if query.StartTime > 0 {
+		dbq = dbq.Where("trade_time >= ?", time.Unix(query.StartTime, 0))
+	}
+	if query.EndTime > 0 {
+		dbq = dbq.Where("trade_time <= ?", time.Unix(query.EndTime, 0))
+	}
+	var rows []*TradeDetail
+	if err := dbq.Order("id DESC").Offset((pageIndex - 1) * pageSize).Limit(pageSize).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func buildTradeDetailWhere(query tradeDTO.TradeDetailQueryDTO) (string, []interface{}) {
+	clauses := []string{"WHERE active = 1"}
+	values := make([]interface{}, 0, 10)
+	if query.PlatformID > 0 {
+		clauses = append(clauses, "platform_id = ?")
+		values = append(values, query.PlatformID)
+	}
+	if v := strings.TrimSpace(query.PlatformCode); v != "" {
+		clauses = append(clauses, "platform_code = ?")
+		values = append(values, strings.ToLower(v))
+	}
+	if v := strings.TrimSpace(query.TradeCategory); v != "" {
+		clauses = append(clauses, "trade_category = ?")
+		values = append(values, v)
+	}
+	if v := strings.TrimSpace(query.TradeType); v != "" {
+		clauses = append(clauses, "trade_type = ?")
+		values = append(values, v)
+	}
+	if query.UserID > 0 {
+		clauses = append(clauses, "user_id = ?")
+		values = append(values, query.UserID)
+	}
+	if v := strings.TrimSpace(query.OrderNo); v != "" {
+		clauses = append(clauses, "order_no = ?")
+		values = append(values, v)
+	}
+	if v := strings.TrimSpace(query.Symbol); v != "" {
+		clauses = append(clauses, "symbol = ?")
+		values = append(values, strings.ToUpper(v))
+	}
+	if v := strings.TrimSpace(query.CoinCode); v != "" {
+		clauses = append(clauses, "coin_code = ?")
+		values = append(values, strings.ToUpper(v))
+	}
+	if query.StartTime > 0 {
+		clauses = append(clauses, "trade_time >= ?")
+		values = append(values, time.Unix(query.StartTime, 0))
+	}
+	if query.EndTime > 0 {
+		clauses = append(clauses, "trade_time <= ?")
+		values = append(values, time.Unix(query.EndTime, 0))
+	}
+	return strings.Join(clauses, " AND "), values
+}
+
+type TradeUserSummaryRepository struct {
+	db.Repository[*TradeUserSummary]
+}
+
+func (r *TradeUserSummaryRepository) EnsureTable() error {
+	if r.Db == nil {
+		return fmt.Errorf("database is not initialized")
+	}
+	return r.Db.AutoMigrate(&TradeUserSummary{})
+}
+
+func (r *TradeUserSummaryRepository) ListByQuery(query tradeDTO.TradeUserSummaryQueryDTO, pageIndex, pageSize int) ([]*TradeUserSummary, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	dbq := r.Db.Model(&TradeUserSummary{}).Where("active = 1")
+	if query.UserID > 0 {
+		dbq = dbq.Where("user_id = ?", query.UserID)
+	}
+	if query.PlatformID > 0 {
+		dbq = dbq.Where("platform_id = ?", query.PlatformID)
+	}
+	if v := strings.TrimSpace(query.PlatformCode); v != "" {
+		dbq = dbq.Where("platform_code = ?", strings.ToLower(v))
+	}
+	if v := strings.TrimSpace(query.CoinCode); v != "" {
+		dbq = dbq.Where("coin_code = ?", strings.ToUpper(v))
+	}
+	if v := strings.TrimSpace(query.TradeCategory); v != "" {
+		dbq = dbq.Where("trade_category = ?", v)
+	}
+	if v := strings.TrimSpace(query.StartDate); v != "" {
+		dbq = dbq.Where("trade_date >= ?", v)
+	}
+	if v := strings.TrimSpace(query.EndDate); v != "" {
+		dbq = dbq.Where("trade_date <= ?", v)
+	}
+	var rows []*TradeUserSummary
+	if err := dbq.Order("trade_date DESC, id DESC").Offset((pageIndex - 1) * pageSize).Limit(pageSize).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (r *TradeUserSummaryRepository) CountByQuery(query tradeDTO.TradeUserSummaryQueryDTO) (int64, error) {
+	if r.Db == nil {
+		return 0, fmt.Errorf("database is not initialized")
+	}
+	dbq := r.Db.Model(&TradeUserSummary{}).Where("active = 1")
+	if query.UserID > 0 {
+		dbq = dbq.Where("user_id = ?", query.UserID)
+	}
+	if query.PlatformID > 0 {
+		dbq = dbq.Where("platform_id = ?", query.PlatformID)
+	}
+	if v := strings.TrimSpace(query.CoinCode); v != "" {
+		dbq = dbq.Where("coin_code = ?", strings.ToUpper(v))
+	}
+	if v := strings.TrimSpace(query.TradeCategory); v != "" {
+		dbq = dbq.Where("trade_category = ?", v)
+	}
+	if v := strings.TrimSpace(query.StartDate); v != "" {
+		dbq = dbq.Where("trade_date >= ?", v)
+	}
+	if v := strings.TrimSpace(query.EndDate); v != "" {
+		dbq = dbq.Where("trade_date <= ?", v)
+	}
+	var total int64
+	if err := dbq.Count(&total).Error; err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+type TradeUserPnlRepository struct {
+	db.Repository[*TradeUserPnl]
+}
+
+func (r *TradeUserPnlRepository) EnsureTable() error {
+	if r.Db == nil {
+		return fmt.Errorf("database is not initialized")
+	}
+	return r.Db.AutoMigrate(&TradeUserPnl{})
+}
+
+func (r *TradeUserPnlRepository) ListByQuery(query tradeDTO.TradeUserPnlQueryDTO, pageIndex, pageSize int) ([]*TradeUserPnl, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	dbq := r.Db.Model(&TradeUserPnl{}).Where("active = 1")
+	if query.UserID > 0 {
+		dbq = dbq.Where("user_id = ?", query.UserID)
+	}
+	if query.PlatformID > 0 {
+		dbq = dbq.Where("platform_id = ?", query.PlatformID)
+	}
+	if v := strings.TrimSpace(query.PlatformCode); v != "" {
+		dbq = dbq.Where("platform_code = ?", strings.ToLower(v))
+	}
+	if v := strings.TrimSpace(query.CoinCode); v != "" {
+		dbq = dbq.Where("coin_code = ?", strings.ToUpper(v))
+	}
+	if v := strings.TrimSpace(query.TradeCategory); v != "" {
+		dbq = dbq.Where("trade_category = ?", v)
+	}
+	if v := strings.TrimSpace(query.StartDate); v != "" {
+		dbq = dbq.Where("trade_date >= ?", v)
+	}
+	if v := strings.TrimSpace(query.EndDate); v != "" {
+		dbq = dbq.Where("trade_date <= ?", v)
+	}
+	var rows []*TradeUserPnl
+	if err := dbq.Order("trade_date DESC, id DESC").Offset((pageIndex - 1) * pageSize).Limit(pageSize).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (r *TradeUserPnlRepository) CountByQuery(query tradeDTO.TradeUserPnlQueryDTO) (int64, error) {
+	if r.Db == nil {
+		return 0, fmt.Errorf("database is not initialized")
+	}
+	dbq := r.Db.Model(&TradeUserPnl{}).Where("active = 1")
+	if query.UserID > 0 {
+		dbq = dbq.Where("user_id = ?", query.UserID)
+	}
+	if query.PlatformID > 0 {
+		dbq = dbq.Where("platform_id = ?", query.PlatformID)
+	}
+	if v := strings.TrimSpace(query.CoinCode); v != "" {
+		dbq = dbq.Where("coin_code = ?", strings.ToUpper(v))
+	}
+	if v := strings.TrimSpace(query.TradeCategory); v != "" {
+		dbq = dbq.Where("trade_category = ?", v)
+	}
+	if v := strings.TrimSpace(query.StartDate); v != "" {
+		dbq = dbq.Where("trade_date >= ?", v)
+	}
+	if v := strings.TrimSpace(query.EndDate); v != "" {
+		dbq = dbq.Where("trade_date <= ?", v)
+	}
+	var total int64
+	if err := dbq.Count(&total).Error; err != nil {
+		return 0, err
+	}
+	return total, nil
 }

@@ -71,6 +71,7 @@ func (r *CoinUserRepository) ListCoinUsersByQuery(query coinUserDTO.CoinUserQuer
 	}
 	whereSQL, values := buildCoinUserWhere(query)
 	sql := `SELECT id, active, created_time, updated_time, created_by, updated_by,
+		platform_id, platform_code,
 		username, nickname, email, phone, country, kyc_level, kyc_status, status,
 		invite_code, inviter_id, last_login_ip, last_login_time, two_fa_enabled, remark
 		FROM coin_user ` + whereSQL + ` ORDER BY id DESC LIMIT ? OFFSET ?`
@@ -84,8 +85,16 @@ func (r *CoinUserRepository) ListCoinUsersByQuery(query coinUserDTO.CoinUserQuer
 
 func buildCoinUserWhere(query coinUserDTO.CoinUserQueryDTO) (string, []interface{}) {
 	clauses := []string{"WHERE active = 1"}
-	values := make([]interface{}, 0, 12)
+	values := make([]interface{}, 0, 14)
 
+	if query.PlatformID > 0 {
+		clauses = append(clauses, "platform_id = ?")
+		values = append(values, query.PlatformID)
+	}
+	if value := strings.TrimSpace(query.PlatformCode); value != "" {
+		clauses = append(clauses, "platform_code = ?")
+		values = append(values, strings.ToLower(value))
+	}
 	if value := strings.TrimSpace(query.Search); value != "" {
 		like := "%" + value + "%"
 		clauses = append(clauses, "(username LIKE ? OR nickname LIKE ? OR email LIKE ? OR phone LIKE ? OR invite_code LIKE ?)")
@@ -151,6 +160,83 @@ func (r *CoinUserAssetRepository) ListByUserID(userID uint64) ([]*CoinUserAsset,
 	}
 	var rows []*CoinUserAsset
 	if err := r.Db.Where("user_id = ? AND active = 1", userID).Order("id DESC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+type CoinUserPositionRepository struct {
+	db.Repository[*CoinUserPosition]
+}
+
+func (r *CoinUserPositionRepository) EnsureTable() error {
+	if r.Db == nil {
+		return fmt.Errorf("database is not initialized")
+	}
+	return r.Db.AutoMigrate(&CoinUserPosition{})
+}
+
+func (r *CoinUserPositionRepository) FindByUserAndSymbol(userID uint64, symbol string) (*CoinUserPosition, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	var entity CoinUserPosition
+	if err := r.Db.Where("user_id = ? AND symbol = ? AND active = 1", userID, symbol).First(&entity).Error; err != nil {
+		return nil, err
+	}
+	return &entity, nil
+}
+
+func (r *CoinUserPositionRepository) ListByUserID(userID uint64) ([]*CoinUserPosition, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	var rows []*CoinUserPosition
+	if err := r.Db.Where("user_id = ? AND active = 1", userID).Order("id DESC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (r *CoinUserPositionRepository) ListOpenByUserID(userID uint64) ([]*CoinUserPosition, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	var rows []*CoinUserPosition
+	if err := r.Db.Where("user_id = ? AND status = 'open' AND active = 1", userID).Order("id DESC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+type CoinUserPositionAnalysisRepository struct {
+	db.Repository[*CoinUserPositionAnalysis]
+}
+
+func (r *CoinUserPositionAnalysisRepository) EnsureTable() error {
+	if r.Db == nil {
+		return fmt.Errorf("database is not initialized")
+	}
+	return r.Db.AutoMigrate(&CoinUserPositionAnalysis{})
+}
+
+func (r *CoinUserPositionAnalysisRepository) ListByUserID(userID uint64) ([]*CoinUserPositionAnalysis, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	var rows []*CoinUserPositionAnalysis
+	if err := r.Db.Where("user_id = ? AND active = 1", userID).Order("id DESC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (r *CoinUserPositionAnalysisRepository) ListByPositionID(positionID uint64) ([]*CoinUserPositionAnalysis, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	var rows []*CoinUserPositionAnalysis
+	if err := r.Db.Where("position_id = ? AND active = 1", positionID).Order("id DESC").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil

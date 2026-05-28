@@ -7,6 +7,10 @@ import (
 
 type TradeOrder struct {
 	db.BaseEntity
+	PlatformID      uint64    `gorm:"column:platform_id;type:bigint unsigned;default:0;index:idx_platform_id" orm:"column(platform_id);null" description:"所属平台ID"`
+	PlatformCode    string    `gorm:"column:platform_code;type:varchar(32);index:idx_platform_code" orm:"column(platform_code);size(32);null" description:"所属平台代码"`
+	TradeCategory   string    `gorm:"column:trade_category;type:varchar(32);index:idx_trade_category" orm:"column(trade_category);size(32);null" description:"交易类别 spot/futures/margin"`
+	TradeType       string    `gorm:"column:trade_type;type:varchar(16);index:idx_trade_type" orm:"column(trade_type);size(16);null" description:"交易类型 simulation/real"`
 	OrderNo         string    `gorm:"column:order_no;type:varchar(64);uniqueIndex:idx_order_no" orm:"column(order_no);size(64);null" description:"订单号"`
 	UserID          uint64    `gorm:"column:user_id;type:bigint unsigned;index:idx_user_id" orm:"column(user_id);null" description:"用户ID"`
 	Symbol          string    `gorm:"column:symbol;type:varchar(32);index:idx_symbol" orm:"column(symbol);size(32);null" description:"交易对 BTC-USDT"`
@@ -38,6 +42,8 @@ func (o *TradeOrder) TableName() string {
 
 type TradeMatch struct {
 	db.BaseEntity
+	PlatformID      uint64    `gorm:"column:platform_id;type:bigint unsigned;default:0;index:idx_platform_id" orm:"column(platform_id);null" description:"所属平台ID"`
+	PlatformCode    string    `gorm:"column:platform_code;type:varchar(32);index:idx_platform_code" orm:"column(platform_code);size(32);null" description:"所属平台代码"`
 	TradeNo         string    `gorm:"column:trade_no;type:varchar(64);uniqueIndex:idx_trade_no" orm:"column(trade_no);size(64);null" description:"成交单号"`
 	Symbol          string    `gorm:"column:symbol;type:varchar(32);index:idx_symbol" orm:"column(symbol);size(32);null" description:"交易对"`
 	TakerOrderNo    string    `gorm:"column:taker_order_no;type:varchar(64);index:idx_taker_order_no" orm:"column(taker_order_no);size(64);null" description:"吃单订单号"`
@@ -78,6 +84,10 @@ func (k *TradeKline) TableName() string {
 
 type TradeOrderListRow struct {
 	db.BaseEntity
+	PlatformID     uint64    `gorm:"column:platform_id"`
+	PlatformCode   string    `gorm:"column:platform_code"`
+	TradeCategory  string    `gorm:"column:trade_category"`
+	TradeType      string    `gorm:"column:trade_type"`
 	OrderNo        string    `gorm:"column:order_no"`
 	UserID         uint64    `gorm:"column:user_id"`
 	Symbol         string    `gorm:"column:symbol"`
@@ -95,4 +105,82 @@ type TradeOrderListRow struct {
 	Status         string    `gorm:"column:status"`
 	SubmittedTime  time.Time `gorm:"column:submitted_time"`
 	FinishedTime   time.Time `gorm:"column:finished_time"`
+}
+
+// TradeDetail 交易明细盈亏表，每笔成交对应一条记录
+type TradeDetail struct {
+	db.BaseEntity
+	PlatformID       uint64    `gorm:"column:platform_id;type:bigint unsigned;default:0;index:idx_platform_id" orm:"column(platform_id);null" description:"平台ID"`
+	PlatformCode     string    `gorm:"column:platform_code;type:varchar(32);index:idx_platform_code" orm:"column(platform_code);size(32);null" description:"平台代码"`
+	TradeCategory    string    `gorm:"column:trade_category;type:varchar(32);index:idx_trade_category" orm:"column(trade_category);size(32);null" description:"交易类别 spot/futures/margin"`
+	TradeType        string    `gorm:"column:trade_type;type:varchar(16);index:idx_trade_type" orm:"column(trade_type);size(16);null" description:"交易类型 simulation/real"`
+	UserID           uint64    `gorm:"column:user_id;type:bigint unsigned;index:idx_user_id" orm:"column(user_id);null" description:"用户ID"`
+	OrderNo          string    `gorm:"column:order_no;type:varchar(64);index:idx_order_no" orm:"column(order_no);size(64);null" description:"关联订单号"`
+	TradeNo          string    `gorm:"column:trade_no;type:varchar(64);uniqueIndex:idx_trade_no" orm:"column(trade_no);size(64);null" description:"成交单号"`
+	Symbol           string    `gorm:"column:symbol;type:varchar(32);index:idx_symbol" orm:"column(symbol);size(32);null" description:"交易对"`
+	CoinCode         string    `gorm:"column:coin_code;type:varchar(32);index:idx_coin_code" orm:"column(coin_code);size(32);null" description:"基础币种"`
+	Side             string    `gorm:"column:side;type:varchar(8)" orm:"column(side);size(8);null" description:"成交方向 buy/sell"`
+	OpenDirection    string    `gorm:"column:open_direction;type:varchar(8);index:idx_open_direction" orm:"column(open_direction);size(8);null" description:"开仓方向 long/short"`
+	AvgOpenPrice     float64   `gorm:"column:avg_open_price;type:decimal(36,18);default:0" orm:"column(avg_open_price);null" description:"开仓平均价格"`
+	LiquidationPrice float64   `gorm:"column:liquidation_price;type:decimal(36,18);default:0" orm:"column(liquidation_price);null" description:"爆仓价格"`
+	Leverage         float64   `gorm:"column:leverage;type:decimal(10,2);default:1" orm:"column(leverage);null" description:"开仓倍数(杠杆)"`
+	Margin           float64   `gorm:"column:margin;type:decimal(36,18);default:0" orm:"column(margin);null" description:"保证金"`
+	UserBalanceOpen  float64   `gorm:"column:user_balance_open;type:decimal(36,18);default:0" orm:"column(user_balance_open);null" description:"开仓时用户余额"`
+	Price            float64   `gorm:"column:price;type:decimal(36,18);default:0" orm:"column(price);null" description:"成交价"`
+	Amount           float64   `gorm:"column:amount;type:decimal(36,18);default:0" orm:"column(amount);null" description:"成交数量"`
+	Total            float64   `gorm:"column:total;type:decimal(36,18);default:0" orm:"column(total);null" description:"成交金额"`
+	Fee              float64   `gorm:"column:fee;type:decimal(36,18);default:0" orm:"column(fee);null" description:"手续费"`
+	Pnl              float64   `gorm:"column:pnl;type:decimal(36,18);default:0" orm:"column(pnl);null" description:"盈亏金额"`
+	PnlRate          float64   `gorm:"column:pnl_rate;type:decimal(18,8);default:0" orm:"column(pnl_rate);null" description:"盈亏比率"`
+	TradeTime        time.Time `gorm:"column:trade_time;type:datetime;index:idx_trade_time" orm:"column(trade_time);null" description:"成交时间"`
+}
+
+func (d *TradeDetail) TableName() string {
+	return "trade_detail"
+}
+
+// TradeUserSummary 用户交易汇总表（按天聚合）
+type TradeUserSummary struct {
+	db.BaseEntity
+	UserID        uint64    `gorm:"column:user_id;type:bigint unsigned;uniqueIndex:idx_summary_dim,priority:1;index:idx_user_id" orm:"column(user_id);null" description:"用户ID"`
+	PlatformID    uint64    `gorm:"column:platform_id;type:bigint unsigned;uniqueIndex:idx_summary_dim,priority:2" orm:"column(platform_id);null" description:"平台ID"`
+	PlatformCode  string    `gorm:"column:platform_code;type:varchar(32)" orm:"column(platform_code);size(32);null" description:"平台代码"`
+	CoinCode      string    `gorm:"column:coin_code;type:varchar(32);uniqueIndex:idx_summary_dim,priority:3" orm:"column(coin_code);size(32);null" description:"币种代码"`
+	TradeCategory string    `gorm:"column:trade_category;type:varchar(32);uniqueIndex:idx_summary_dim,priority:4" orm:"column(trade_category);size(32);null" description:"交易类别"`
+	TradeDate     string    `gorm:"column:trade_date;type:varchar(10);uniqueIndex:idx_summary_dim,priority:5;index:idx_trade_date" orm:"column(trade_date);size(10);null" description:"交易日期 yyyy-MM-dd"`
+	TotalOrders   int64     `gorm:"column:total_orders;type:bigint;default:0" orm:"column(total_orders);null" description:"总订单数"`
+	BuyOrders     int64     `gorm:"column:buy_orders;type:bigint;default:0" orm:"column(buy_orders);null" description:"买入订单数"`
+	SellOrders    int64     `gorm:"column:sell_orders;type:bigint;default:0" orm:"column(sell_orders);null" description:"卖出订单数"`
+	BuyAmount     float64   `gorm:"column:buy_amount;type:decimal(36,18);default:0" orm:"column(buy_amount);null" description:"买入数量"`
+	SellAmount    float64   `gorm:"column:sell_amount;type:decimal(36,18);default:0" orm:"column(sell_amount);null" description:"卖出数量"`
+	BuyTotal      float64   `gorm:"column:buy_total;type:decimal(36,18);default:0" orm:"column(buy_total);null" description:"买入金额"`
+	SellTotal     float64   `gorm:"column:sell_total;type:decimal(36,18);default:0" orm:"column(sell_total);null" description:"卖出金额"`
+	TotalFee      float64   `gorm:"column:total_fee;type:decimal(36,18);default:0" orm:"column(total_fee);null" description:"总手续费"`
+	TotalVolume   float64   `gorm:"column:total_volume;type:decimal(36,18);default:0" orm:"column(total_volume);null" description:"总成交额"`
+}
+
+func (s *TradeUserSummary) TableName() string {
+	return "trade_user_summary"
+}
+
+// TradeUserPnl 用户交易盈亏表（按天聚合）
+type TradeUserPnl struct {
+	db.BaseEntity
+	UserID          uint64    `gorm:"column:user_id;type:bigint unsigned;uniqueIndex:idx_pnl_dim,priority:1;index:idx_user_id" orm:"column(user_id);null" description:"用户ID"`
+	PlatformID      uint64    `gorm:"column:platform_id;type:bigint unsigned;uniqueIndex:idx_pnl_dim,priority:2" orm:"column(platform_id);null" description:"平台ID"`
+	PlatformCode    string    `gorm:"column:platform_code;type:varchar(32)" orm:"column(platform_code);size(32);null" description:"平台代码"`
+	CoinCode        string    `gorm:"column:coin_code;type:varchar(32);uniqueIndex:idx_pnl_dim,priority:3" orm:"column(coin_code);size(32);null" description:"币种代码"`
+	TradeCategory   string    `gorm:"column:trade_category;type:varchar(32);uniqueIndex:idx_pnl_dim,priority:4" orm:"column(trade_category);size(32);null" description:"交易类别"`
+	TradeDate       string    `gorm:"column:trade_date;type:varchar(10);uniqueIndex:idx_pnl_dim,priority:5;index:idx_trade_date" orm:"column(trade_date);size(10);null" description:"交易日期 yyyy-MM-dd"`
+	RealizedPnl     float64   `gorm:"column:realized_pnl;type:decimal(36,18);default:0" orm:"column(realized_pnl);null" description:"已实现盈亏"`
+	UnrealizedPnl   float64   `gorm:"column:unrealized_pnl;type:decimal(36,18);default:0" orm:"column(unrealized_pnl);null" description:"未实现盈亏"`
+	TotalPnl        float64   `gorm:"column:total_pnl;type:decimal(36,18);default:0" orm:"column(total_pnl);null" description:"总盈亏"`
+	PnlRate         float64   `gorm:"column:pnl_rate;type:decimal(18,8);default:0" orm:"column(pnl_rate);null" description:"盈亏比率"`
+	PositionAmount  float64   `gorm:"column:position_amount;type:decimal(36,18);default:0" orm:"column(position_amount);null" description:"持仓数量"`
+	PositionCost    float64   `gorm:"column:position_cost;type:decimal(36,18);default:0" orm:"column(position_cost);null" description:"持仓成本"`
+	PositionValue   float64   `gorm:"column:position_value;type:decimal(36,18);default:0" orm:"column(position_value);null" description:"持仓市值"`
+}
+
+func (p *TradeUserPnl) TableName() string {
+	return "trade_user_pnl"
 }

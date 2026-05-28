@@ -7,10 +7,14 @@ import (
 
 type CoinUserDTO struct {
 	baseDTO.BaseDTO
+	PlatformID    uint64    `json:"platformId"`
+	PlatformCode  string    `json:"platformCode"`
+	Account       string    `json:"account"`
 	Username      string    `json:"username"`
 	Nickname      string    `json:"nickname"`
 	Email         string    `json:"email"`
 	Phone         string    `json:"phone"`
+	Balance       float64   `json:"balance"`
 	Country       string    `json:"country"`
 	KycLevel      uint8     `json:"kycLevel"`
 	KycStatus     string    `json:"kycStatus"`
@@ -24,19 +28,29 @@ type CoinUserDTO struct {
 }
 
 type CreateCoinUserDTO struct {
-	Username   string `json:"username"`
-	Nickname   string `json:"nickname"`
-	Email      string `json:"email"`
-	Phone      string `json:"phone"`
-	Password   string `json:"password"`
-	Country    string `json:"country"`
-	InviteCode string `json:"inviteCode"`
-	InviterID  uint64 `json:"inviterId"`
-	Remark     string `json:"remark"`
+	PlatformID   uint64  `json:"platformId"`
+	PlatformCode string  `json:"platformCode"`
+	Account      string  `json:"account"`
+	Username     string  `json:"username"`
+	Nickname     string  `json:"nickname"`
+	Email        string  `json:"email"`
+	Phone        string  `json:"phone"`
+	Password     string  `json:"password"`
+	SecretKey    string  `json:"secretKey"`
+	Balance      float64 `json:"balance"`
+	Country      string  `json:"country"`
+	InviteCode   string  `json:"inviteCode"`
+	InviterID    uint64  `json:"inviterId"`
+	Remark       string  `json:"remark"`
 }
 
 type UpdateCoinUserDTO struct {
-	Nickname     *string `json:"nickname,omitempty"`
+	PlatformID   *uint64  `json:"platformId,omitempty"`
+	PlatformCode *string  `json:"platformCode,omitempty"`
+	Account      *string  `json:"account,omitempty"`
+	SecretKey    *string  `json:"secretKey,omitempty"`
+	Balance      *float64 `json:"balance,omitempty"`
+	Nickname     *string  `json:"nickname,omitempty"`
 	Email        *string `json:"email,omitempty"`
 	Phone        *string `json:"phone,omitempty"`
 	Country      *string `json:"country,omitempty"`
@@ -48,17 +62,19 @@ type UpdateCoinUserDTO struct {
 }
 
 type CoinUserQueryDTO struct {
-	Page      int    `form:"page"`
-	PageIndex int    `form:"pageIndex"`
-	PageSize  int    `form:"pageSize"`
-	Search    string `form:"search"`
-	Username  string `form:"username"`
-	Email     string `form:"email"`
-	Phone     string `form:"phone"`
-	Country   string `form:"country"`
-	KycStatus string `form:"kycStatus"`
-	Status    string `form:"status"`
-	InviterID uint64 `form:"inviterId"`
+	Page         int    `form:"page"`
+	PageIndex    int    `form:"pageIndex"`
+	PageSize     int    `form:"pageSize"`
+	PlatformID   uint64 `form:"platformId"`
+	PlatformCode string `form:"platformCode"`
+	Search       string `form:"search"`
+	Username     string `form:"username"`
+	Email        string `form:"email"`
+	Phone        string `form:"phone"`
+	Country      string `form:"country"`
+	KycStatus    string `form:"kycStatus"`
+	Status       string `form:"status"`
+	InviterID    uint64 `form:"inviterId"`
 }
 
 type CoinUserAssetDTO struct {
@@ -120,6 +136,92 @@ type CoinUserLoginRecordQueryDTO struct {
 	PageSize  int    `form:"pageSize"`
 	UserID    uint64 `form:"userId"`
 	IP        string `form:"ip"`
+}
+
+type CoinUserPositionDTO struct {
+	baseDTO.BaseDTO
+	UserID        uint64  `json:"userId"`
+	Symbol        string  `json:"symbol"`
+	BaseCoinCode  string  `json:"baseCoinCode"`
+	QuoteCoinCode string  `json:"quoteCoinCode"`
+	Amount        float64 `json:"amount"`
+	AvgCostPrice  float64 `json:"avgCostPrice"`
+	TotalCost     float64 `json:"totalCost"`
+	Status        string  `json:"status"`
+}
+
+type CreateCoinUserPositionDTO struct {
+	UserID        uint64  `json:"userId"`
+	Symbol        string  `json:"symbol"`
+	BaseCoinCode  string  `json:"baseCoinCode"`
+	QuoteCoinCode string  `json:"quoteCoinCode"`
+	Amount        float64 `json:"amount"`
+	AvgCostPrice  float64 `json:"avgCostPrice"`
+	TotalCost     float64 `json:"totalCost"`
+}
+
+type UpdateCoinUserPositionDTO struct {
+	Amount       *float64 `json:"amount,omitempty"`
+	AvgCostPrice *float64 `json:"avgCostPrice,omitempty"`
+	TotalCost    *float64 `json:"totalCost,omitempty"`
+	Status       *string  `json:"status,omitempty"`
+}
+
+type CoinUserPositionQueryDTO struct {
+	Page      int    `form:"page"`
+	PageIndex int    `form:"pageIndex"`
+	PageSize  int    `form:"pageSize"`
+	UserID    uint64 `form:"userId"`
+	Symbol    string `form:"symbol"`
+	Status    string `form:"status"`
+}
+
+type CoinUserPositionAnalysisDTO struct {
+	baseDTO.BaseDTO
+	UserID           uint64  `json:"userId"`
+	PositionID       uint64  `json:"positionId"`
+	Symbol           string  `json:"symbol"`
+	Side             string  `json:"side"`
+	AvgPrice         float64 `json:"avgPrice"`
+	LiquidationPrice float64 `json:"liquidationPrice"`
+	Leverage         float64 `json:"leverage"`
+	Contracts        float64 `json:"contracts"`
+	Margin           float64 `json:"margin"`
+	BalanceAtOpen    float64 `json:"balanceAtOpen"`
+	AiAdvice         string  `json:"aiAdvice"`
+}
+
+type CreateCoinUserPositionAnalysisDTO struct {
+	UserID           uint64  `json:"userId"`
+	PositionID       uint64  `json:"positionId"`
+	Symbol           string  `json:"symbol"`
+	Side             string  `json:"side"`
+	AvgPrice         float64 `json:"avgPrice"`
+	LiquidationPrice float64 `json:"liquidationPrice"`
+	Leverage         float64 `json:"leverage"`
+	Contracts        float64 `json:"contracts"`
+	Margin           float64 `json:"margin"`
+	BalanceAtOpen    float64 `json:"balanceAtOpen"`
+	AiAdvice         string  `json:"aiAdvice"`
+}
+
+type UpdateCoinUserPositionAnalysisDTO struct {
+	AvgPrice         *float64 `json:"avgPrice,omitempty"`
+	LiquidationPrice *float64 `json:"liquidationPrice,omitempty"`
+	Leverage         *float64 `json:"leverage,omitempty"`
+	Contracts        *float64 `json:"contracts,omitempty"`
+	Margin           *float64 `json:"margin,omitempty"`
+	BalanceAtOpen    *float64 `json:"balanceAtOpen,omitempty"`
+	AiAdvice         *string  `json:"aiAdvice,omitempty"`
+}
+
+type CoinUserPositionAnalysisQueryDTO struct {
+	Page       int    `form:"page"`
+	PageIndex  int    `form:"pageIndex"`
+	PageSize   int    `form:"pageSize"`
+	UserID     uint64 `form:"userId"`
+	PositionID uint64 `form:"positionId"`
+	Symbol     string `form:"symbol"`
 }
 
 type CoinUserStatsDTO struct {
