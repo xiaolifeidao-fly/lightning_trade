@@ -2,6 +2,7 @@ package coin_user
 
 import (
 	commonRouter "common/middleware/routers"
+	webAuth "manager-api/auth"
 	"net/http"
 	coinUserService "service/coin_user"
 	coinUserDTO "service/coin_user/dto"
@@ -46,6 +47,9 @@ func (h *CoinUserHandler) RegisterHandler(engine *gin.RouterGroup) {
 	engine.GET("/coin-users/:id/position-analysis", h.listPositionAnalysis)
 	engine.POST("/coin-users/position-analysis", h.createPositionAnalysis)
 	engine.PUT("/coin-users/position-analysis/:id", h.updatePositionAnalysis)
+
+	webAuth.PublicPOST(engine, "/external/coin-users/positions", h.upsertUserPosition)
+	webAuth.PublicPOST(engine, "/external/coin-users/position-analysis", h.createPositionAnalysis)
 }
 
 func (h *CoinUserHandler) listCoinUsers(context *gin.Context) {

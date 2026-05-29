@@ -35,7 +35,7 @@ const pageTitleMap: Record<string, string> = {
 };
 
 function getOpenKeys(pathname: string) {
-  if (pathname.startsWith("/permission")) {
+  if (pathname.startsWith("/user") || pathname.startsWith("/permission")) {
     return ["/system-group"];
   }
   if (pathname.startsWith("/platform") || pathname.startsWith("/coin")) {
@@ -112,15 +112,15 @@ export function ManagerShell({ children }: ManagerShellProps) {
         ],
       },
       {
-        key: "/user",
-        icon: <TeamOutlined />,
-        label: "用户管理",
-      },
-      {
         key: "/system-group",
         icon: <SafetyCertificateOutlined />,
         label: "系统设置",
         children: [
+          {
+            key: "/user",
+            icon: <TeamOutlined />,
+            label: "用户管理",
+          },
           {
             key: "/permission",
             label: "角色管理",

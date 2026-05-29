@@ -345,6 +345,9 @@ func (s *CoinUserService) UpsertUserPosition(req *coinUserDTO.CreateCoinUserPosi
 	}
 	existed, err := s.coinUserPositionRepository.FindByUserAndSymbol(req.UserID, req.Symbol)
 	if err == nil && existed != nil && existed.Id > 0 {
+		existed.Symbol = strings.TrimSpace(req.Symbol)
+		existed.BaseCoinCode = strings.TrimSpace(req.BaseCoinCode)
+		existed.QuoteCoinCode = strings.TrimSpace(req.QuoteCoinCode)
 		existed.Amount = req.Amount
 		existed.AvgCostPrice = req.AvgCostPrice
 		existed.TotalCost = req.TotalCost
