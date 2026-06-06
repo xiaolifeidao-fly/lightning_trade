@@ -1,0 +1,28 @@
+{
+  "accounts": {
+	    "1265666131@qq.com": {
+	      "accountName": "1265666131@qq.com",
+	      "url": "http://localhost:8899",
+	      "uid": "",
+	      "loginType": "password",
+	      "loginHeadless": true,
+	      "username": "",
+	      "password": "",
+	      "googleAuthKey": "",
+	      "apiKey": "",
+	      "secretKey": "",
+	      "passphrase": "",
+      "resourceId": "",
+      "cookie": "NEXT_LOCALE=zh; theme=dark; captcha_v4_user=5a4eeb3fb858466e8781f328f620e18d; sensorsdata2015jssdkcross=%7B%22distinct_id%22%3A%229542187%22%2C%22first_id%22%3A%2219e68ef7e2e15c2-08254b3841bcff8-17525631-1296000-19e68ef7e2f36b5%22%2C%22props%22%3A%7B%22%24latest_traffic_source_type%22%3A%22%E7%9B%B4%E6%8E%A5%E6%B5%81%E9%87%8F%22%2C%22%24latest_search_keyword%22%3A%22%E6%9C%AA%E5%8F%96%E5%88%B0%E5%80%BC_%E7%9B%B4%E6%8E%A5%E6%89%93%E5%BC%80%22%2C%22%24latest_referrer%22%3A%22%22%7D%2C%22identities%22%3A%22eyIkaWRlbnRpdHlfY29va2llX2lkIjoiMTllNjhlZjdlMmUxNWMyLTA4MjU0YjM4NDFiY2ZmOC0xNzUyNTYzMS0xMjk2MDAwLTE5ZTY4ZWY3ZTJmMzZiNSIsIiRpZGVudGl0eV9sb2dpbl9pZCI6Ijk1NDIxODciLCJpZGVudGl0eV9oNV9pZCI6InBjLTNjNTI0MTM1N2VmNTI5YzI4YjM0OThkMmQxZjQyNWFhIn0%3D%22%2C%22history_login_id%22%3A%7B%22name%22%3A%22%24identity_login_id%22%2C%22value%22%3A%229542187%22%7D%2C%22%24device_id%22%3A%2219e68ef7e2e15c2-08254b3841bcff8-17525631-1296000-19e68ef7e2f36b5%22%7D",
+      "token": "9L6QIQJKCCvnNunLRnXOVXi9mymKDBVF1zHCgukd7G2bnM8P18Ev8RB+kg0ioWP54w8X8pdSQ1caGZHBPMXJUg==",
+      "otoken": "9L6QIQJKCCvnNunLRnXOVXi9mymKDBVF1zHCgukd7G2bnM8P18Ev8RB+kg0ioWP54w8X8pdSQ1caGZHBPMXJUg==",
+      "sentryRelease": "ms26.05.11",
+      "sentryPublicKey": "e78770cebca9c111077845832cd3affb",
+      "baggage": "sentry-environment=production,sentry-release=ms26.05.11,sentry-public_key=e78770cebca9c111077845832cd3affb,sentry-trace_id=eb692e33d1f64c8190692cab969b7dcd,sentry-sampled=false,sentry-sample_rand=0.47512831596794614,sentry-sample_rate=0",
+      "loginURL": "https://www.deepcoin.com/turbo/zh/login?status=login\u0026timeStamp=1780281577507\u0026target=%2Fswap%2FBTCUSDT",
+      "finalURL": "https://www.deepcoin.com/swap/zh/BTCUSDT",
+      "initialBalance": 1000,
+      "updatedAt": "2026-06-01T10:40:05+08:00"
+    }
+  }
+}

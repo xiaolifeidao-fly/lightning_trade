@@ -31,3 +31,7 @@ package
 old_source_code
 old_client_code
 */**/application.properties
+
+client/pl_instance/configs
+client/pl_instance/dist
+client/pl_instance/node_modules
