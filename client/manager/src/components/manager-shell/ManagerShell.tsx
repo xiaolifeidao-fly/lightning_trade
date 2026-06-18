@@ -31,7 +31,9 @@ const pageTitleMap: Record<string, string> = {
   "/platform": "平台管理",
   "/coin": "币种管理",
   "/coin-user": "币用户管理",
-  "/trade-orders": "交易管理",
+  "/trade-orders": "真实交易",
+  "/trade-simulation-analysis": "模拟盘分析",
+  "/trade-strategy-backtest": "策略回测",
 };
 
 function getOpenKeys(pathname: string) {
@@ -40,6 +42,13 @@ function getOpenKeys(pathname: string) {
   }
   if (pathname.startsWith("/platform") || pathname.startsWith("/coin")) {
     return ["/exchange-group"];
+  }
+  if (
+    pathname.startsWith("/trade-orders") ||
+    pathname.startsWith("/trade-simulation-analysis") ||
+    pathname.startsWith("/trade-strategy-backtest")
+  ) {
+    return ["/trade-group"];
   }
   return [];
 }
@@ -63,7 +72,7 @@ export function ManagerShell({ children }: ManagerShellProps) {
       },
       {
         key: "/trade-orders",
-        label: "交易",
+        label: "真实交易",
         icon: <BarChartOutlined />,
       },
       {
@@ -92,9 +101,23 @@ export function ManagerShell({ children }: ManagerShellProps) {
         label: "币用户管理",
       },
       {
-        key: "/trade-orders",
+        key: "/trade-group",
         icon: <BarChartOutlined />,
         label: "交易管理",
+        children: [
+          {
+            key: "/trade-orders",
+            label: "真实交易",
+          },
+          {
+            key: "/trade-simulation-analysis",
+            label: "模拟盘分析",
+          },
+          {
+            key: "/trade-strategy-backtest",
+            label: "策略回测",
+          },
+        ],
       },
       {
         key: "/exchange-group",

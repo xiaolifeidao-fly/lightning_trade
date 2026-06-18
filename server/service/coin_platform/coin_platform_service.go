@@ -198,12 +198,33 @@ func (s *CoinPlatformService) DeletePlatform(id uint) error {
 	return err
 }
 
-func (s *CoinPlatformService) ListPlatformCoins(platformID uint64) ([]*coinPlatformDTO.CoinPlatformCoinDTO, error) {
-	rows, err := s.coinPlatformCoinRepository.ListByPlatformID(platformID)
-	if err != nil {
+func (s *CoinPlatformService) ListPlatformCoins(query coinPlatformDTO.CoinPlatformCoinQueryDTO) (*baseDTO.PageDTO[coinPlatformDTO.CoinPlatformCoinDTO], error) {
+	if s.coinPlatformCoinRepository.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	pageIndex, pageSize := normalizePlatformPage(query.Page, query.PageIndex, query.PageSize)
+	dbQuery := s.coinPlatformCoinRepository.Db.Model(&coinPlatformRepository.CoinPlatformCoin{}).Where("active = ?", 1)
+	if query.PlatformID > 0 {
+		dbQuery = dbQuery.Where("platform_id = ?", query.PlatformID)
+	}
+	if query.CoinID > 0 {
+		dbQuery = dbQuery.Where("coin_id = ?", query.CoinID)
+	}
+	if value := strings.TrimSpace(query.CoinCode); value != "" {
+		dbQuery = dbQuery.Where("coin_code LIKE ?", "%"+strings.ToUpper(value)+"%")
+	}
+	if value := strings.TrimSpace(query.ChainName); value != "" {
+		dbQuery = dbQuery.Where("chain_name = ?", value)
+	}
+	var total int64
+	if err := dbQuery.Count(&total).Error; err != nil {
 		return nil, err
 	}
-	return db.ToDTOs[coinPlatformDTO.CoinPlatformCoinDTO](rows), nil
+	var rows []*coinPlatformRepository.CoinPlatformCoin
+	if err := dbQuery.Order("id DESC").Offset((pageIndex - 1) * pageSize).Limit(pageSize).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return baseDTO.BuildPage(int(total), db.ToDTOs[coinPlatformDTO.CoinPlatformCoinDTO](rows)), nil
 }
 
 func (s *CoinPlatformService) ListPlatformsByCoinCode(coinCode string) ([]*coinPlatformDTO.CoinPlatformCoinDTO, error) {
@@ -317,12 +338,30 @@ func (s *CoinPlatformService) DeletePlatformCoin(id uint) error {
 	return err
 }
 
-func (s *CoinPlatformService) ListPlatformAccounts(platformID uint64) ([]*coinPlatformDTO.CoinPlatformAccountDTO, error) {
-	rows, err := s.coinPlatformAccountRepository.ListByPlatformID(platformID)
-	if err != nil {
+func (s *CoinPlatformService) ListPlatformAccounts(query coinPlatformDTO.CoinPlatformAccountQueryDTO) (*baseDTO.PageDTO[coinPlatformDTO.CoinPlatformAccountDTO], error) {
+	if s.coinPlatformAccountRepository.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	pageIndex, pageSize := normalizePlatformPage(query.Page, query.PageIndex, query.PageSize)
+	dbQuery := s.coinPlatformAccountRepository.Db.Model(&coinPlatformRepository.CoinPlatformAccount{}).Where("active = ?", 1)
+	if query.PlatformID > 0 {
+		dbQuery = dbQuery.Where("platform_id = ?", query.PlatformID)
+	}
+	if value := strings.TrimSpace(query.AccountName); value != "" {
+		dbQuery = dbQuery.Where("account_name LIKE ?", "%"+value+"%")
+	}
+	if value := strings.TrimSpace(query.Status); value != "" {
+		dbQuery = dbQuery.Where("status = ?", value)
+	}
+	var total int64
+	if err := dbQuery.Count(&total).Error; err != nil {
 		return nil, err
 	}
-	return db.ToDTOs[coinPlatformDTO.CoinPlatformAccountDTO](rows), nil
+	var rows []*coinPlatformRepository.CoinPlatformAccount
+	if err := dbQuery.Order("id DESC").Offset((pageIndex - 1) * pageSize).Limit(pageSize).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return baseDTO.BuildPage(int(total), db.ToDTOs[coinPlatformDTO.CoinPlatformAccountDTO](rows)), nil
 }
 
 func (s *CoinPlatformService) CreatePlatformAccount(req *coinPlatformDTO.CreateCoinPlatformAccountDTO) (*coinPlatformDTO.CoinPlatformAccountDTO, error) {

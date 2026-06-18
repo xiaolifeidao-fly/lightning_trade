@@ -1,7 +1,6 @@
 package initialization
 
 import (
-	"fmt"
 	"log"
 
 	"argus_single/pkg/monitor"
@@ -16,17 +15,6 @@ func Init() {
 	vipper.Init()
 	log.Printf("Config initialized successfully")
 
-	// 初始化路由
-	log.Printf("Initializing Router...")
-	// routers.Init()
-	log.Printf("Router initialized successfully")
-
-	// 初始化价格监控器
-	log.Printf("Initializing Price Monitor...")
-	symbolConfigs := loadSymbolConfigs()
-	monitor.InitMonitor(symbolConfigs)
-	log.Printf("Price Monitor initialized successfully")
-
 	// 初始化交易管理器（必须在账户监控器启动前完成）
 	log.Printf("Initializing Trade Manager...")
 	trade.InitFromConfig()
@@ -37,10 +25,10 @@ func Init() {
 	trade.EnsureSessionsReady()
 	log.Printf("Session check completed")
 
-	// 启动价格监控
-	log.Printf("Starting Price Monitor...")
-	go monitor.StartMonitor()
-	log.Printf("Price Monitor started successfully")
+	// 启动 BTC 行情数据服务（AI 检测点依赖）
+	log.Printf("Starting BTC Market Data Feed...")
+	go monitor.StartBTCMarketDataFeed()
+	log.Printf("BTC Market Data Feed started successfully")
 
 	// 初始化账户监控器
 	log.Printf("Initializing Account Monitor...")
@@ -61,35 +49,4 @@ func Init() {
 	log.Printf("Starting Telegram Bot...")
 	go monitor.StartTelegramBot()
 	log.Printf("Telegram Bot started successfully")
-}
-
-// loadSymbolConfigs 从配置文件读取监控币种配置
-func loadSymbolConfigs() map[string]monitor.SymbolConfig {
-	configs := make(map[string]monitor.SymbolConfig)
-	// 枚举已知的币种 key，vipper 不支持动态枚举子key，所以逐个读取
-	symbols := []string{"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"}
-	for _, symbol := range symbols {
-		deepInst := vipper.GetString(fmt.Sprintf("monitor.symbols.%s.deep_inst", symbol))
-		threshold := vipper.GetFloat64(fmt.Sprintf("monitor.symbols.%s.threshold", symbol))
-		if deepInst != "" && threshold > 0 {
-			tradeInst := vipper.GetString(fmt.Sprintf("monitor.symbols.%s.trade_inst", symbol))
-			if tradeInst == "" {
-				tradeInst = symbol // 默认使用 symbol key，如 BTCUSDT
-			}
-			configs[symbol] = monitor.SymbolConfig{
-				DeepInst:  deepInst,
-				TradeInst: tradeInst,
-				Threshold: threshold,
-			}
-		}
-	}
-	if len(configs) == 0 {
-		log.Printf("警告: 未从配置文件读取到任何监控币种，使用默认配置 BTCUSDT")
-		configs["BTCUSDT"] = monitor.SymbolConfig{
-			DeepInst:  "BTC-USDT-SWAP",
-			TradeInst: "BTCUSDT",
-			Threshold: 0.0012,
-		}
-	}
-	return configs
 }

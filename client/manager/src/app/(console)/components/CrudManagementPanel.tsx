@@ -12,11 +12,14 @@ import {
 import {
   Button,
   Cascader,
+  Drawer,
+  Empty,
   Form,
   Input,
   InputNumber,
-  Modal,
   Popconfirm,
+  Progress,
+  Segmented,
   Select,
   Space,
   Table,
@@ -92,6 +95,8 @@ interface CrudActionContext {
 
 interface CrudManagementPanelProps<R extends CrudRecord, P extends object> {
   title: string;
+  eyebrow?: string;
+  description?: string;
   createText: string;
   searchPlaceholder: string;
   searchParam: string;
@@ -103,6 +108,8 @@ interface CrudManagementPanelProps<R extends CrudRecord, P extends object> {
   filters?: CrudField<R>[];
   rowActions?: (record: R, context: CrudActionContext) => ReactNode;
   actionWidth?: number;
+  primaryMetricLabel?: string;
+  insight?: ReactNode;
 }
 
 const defaultPageSize = 10;
@@ -184,6 +191,8 @@ function statusTag(value: unknown, label?: string) {
 
 export function CrudManagementPanel<R extends CrudRecord, P extends object>({
   title,
+  eyebrow,
+  description,
   createText,
   searchPlaceholder,
   searchParam,
@@ -195,6 +204,8 @@ export function CrudManagementPanel<R extends CrudRecord, P extends object>({
   filters = [],
   rowActions,
   actionWidth = 132,
+  primaryMetricLabel,
+  insight,
 }: CrudManagementPanelProps<R, P>) {
   const [form] = Form.useForm();
   const [filterForm] = Form.useForm();
@@ -235,15 +246,25 @@ export function CrudManagementPanel<R extends CrudRecord, P extends object>({
 
   const stats = useMemo(
     () => [
-      { label: `${title}总数`, value: total },
-      { label: "当前页数量", value: records.length },
+      { label: primaryMetricLabel ?? `${title}总数`, value: total },
+      { label: "当前视图", value: records.length },
       {
         label: "最近更新",
         value: records[0]?.updatedTime ? String(records[0].updatedTime).slice(0, 10) : "-",
       },
     ],
-    [records, title, total],
+    [primaryMetricLabel, records, title, total],
   );
+
+  const statusSegments = useMemo(() => {
+    if (!statusField || !statusOptions) {
+      return [];
+    }
+    return [
+      { label: "全部", value: "__all" },
+      ...statusOptions.map((item) => ({ label: item.label, value: String(item.value) })),
+    ];
+  }, [statusField, statusOptions]);
 
   const tableColumns: ColumnsType<R> = [
     {
@@ -387,22 +408,62 @@ export function CrudManagementPanel<R extends CrudRecord, P extends object>({
 
   return (
     <div className="manager-page-stack">
+      <section className="manager-workbench-hero">
+        <div>
+          <div className="manager-brand-kicker">{eyebrow ?? "OPERATIONS"}</div>
+          <div className="manager-workbench-title">{title}</div>
+          {description ? <div className="manager-workbench-desc">{description}</div> : null}
+        </div>
+        <div className="manager-workbench-actions">
+          <Button icon={<ReloadOutlined />} onClick={() => void loadRecords()}>
+            刷新
+          </Button>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => {
+              setEditingRecord(null);
+              form.resetFields();
+              setModalOpen(true);
+            }}
+            className="manager-soft-button"
+          >
+            {createText}
+          </Button>
+        </div>
+      </section>
+
       <section
         className="manager-stats-grid"
         style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}
       >
-        {stats.map((item) => (
-          <div key={item.label} className="manager-data-card">
+        {stats.map((item, index) => (
+          <div key={item.label} className="manager-metric-chip manager-metric-chip-rich">
             <div className="manager-section-label">{item.label}</div>
-            <div className="manager-display-title" style={{ fontSize: 32, marginTop: 12 }}>
+            <div className="manager-display-title" style={{ fontSize: 30, marginTop: 10 }}>
               {item.value}
             </div>
+            {index === 0 ? <Progress percent={Math.min(100, Math.round((records.length / Math.max(total, 1)) * 100))} showInfo={false} size="small" /> : null}
           </div>
         ))}
+        {insight ? <div className="manager-metric-chip manager-insight-panel">{insight}</div> : null}
       </section>
 
       <section className="manager-data-card">
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "space-between" }}>
+        {statusSegments.length > 0 ? (
+          <Segmented
+            className="manager-status-segments"
+            value={statusValue === undefined ? "__all" : String(statusValue)}
+            options={statusSegments}
+            onChange={(value) => {
+              const next = value === "__all" ? undefined : value;
+              setStatusValue(next as string | undefined);
+              void loadRecords({ ...filterQuery(), [statusField as string]: next as string | undefined });
+            }}
+          />
+        ) : null}
+
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "space-between", marginTop: statusSegments.length > 0 ? 16 : 0 }}>
           <Space wrap size={12}>
             <Input
               className="manager-filter-input"
@@ -413,16 +474,6 @@ export function CrudManagementPanel<R extends CrudRecord, P extends object>({
               onPressEnter={() => void loadRecords(filterQuery())}
               style={{ width: 260, maxWidth: "100%" }}
             />
-            {statusField && statusOptions ? (
-              <Select
-                allowClear
-                placeholder="状态"
-                value={statusValue}
-                onChange={setStatusValue}
-                options={statusOptions}
-                style={{ width: 180 }}
-              />
-            ) : null}
             {filters.length > 0 ? (
               <Form form={filterForm} component={false}>
                 <Space wrap size={12}>
@@ -446,22 +497,11 @@ export function CrudManagementPanel<R extends CrudRecord, P extends object>({
             <Tag style={{ color: "var(--manager-primary)", background: "var(--manager-gold-soft)", border: "1px solid rgba(240,185,11,0.28)" }}>
               共 {total} 条
             </Tag>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={() => {
-                setEditingRecord(null);
-                form.resetFields();
-                setModalOpen(true);
-              }}
-              style={{
-                color: "#0B0E11",
-                border: "none",
-                background: "linear-gradient(135deg, #FCD535 0%, #F0B90B 100%)",
-                fontWeight: 700,
-                boxShadow: "0 10px 22px rgba(240, 185, 11, 0.28)",
-              }}
-            >
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => {
+              setEditingRecord(null);
+              form.resetFields();
+              setModalOpen(true);
+            }} className="manager-soft-button">
               {createText}
             </Button>
           </Space>
@@ -482,23 +522,35 @@ export function CrudManagementPanel<R extends CrudRecord, P extends object>({
             showSizeChanger: false,
             onChange: (page) => void loadRecords({ ...filterQuery(), pageIndex: page }),
           }}
+          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无匹配记录" /> }}
         />
       </section>
 
-      <Modal
+      <Drawer
         title={editingRecord ? `编辑${title}` : createText}
         open={modalOpen}
-        okText="保存"
-        cancelText="取消"
-        confirmLoading={submitting}
-        onCancel={() => {
+        onClose={() => {
           setModalOpen(false);
           setEditingRecord(null);
           form.resetFields();
         }}
-        onOk={() => void form.validateFields().then(handleSubmit)}
         destroyOnClose
-        width={720}
+        width={560}
+        extra={
+          <Space>
+            <Button onClick={() => {
+              setModalOpen(false);
+              setEditingRecord(null);
+              form.resetFields();
+            }}>
+              取消
+            </Button>
+            <Button type="primary" loading={submitting} className="manager-soft-button" onClick={() => void form.validateFields().then(handleSubmit)}>
+              保存
+            </Button>
+          </Space>
+        }
+        className="manager-form-skin"
       >
         <Form form={form} layout="vertical" preserve={false} style={{ marginTop: 16 }}>
           {fields
@@ -545,7 +597,7 @@ export function CrudManagementPanel<R extends CrudRecord, P extends object>({
               </Form.Item>
             ))}
         </Form>
-      </Modal>
+      </Drawer>
     </div>
   );
 }

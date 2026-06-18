@@ -2,7 +2,7 @@
 set -eu
 
 APP_NAME="manager-api"
-PORT="8291"
+PORT="8491"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PID_FILE="$SCRIPT_DIR/$APP_NAME.pid"
 LOG_DIR="${LOG_DIR:-$SCRIPT_DIR/logs}"

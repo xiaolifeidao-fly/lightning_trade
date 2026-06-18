@@ -102,6 +102,15 @@ export interface PlatformCoinPayload {
   confirmations?: number;
 }
 
+export interface PlatformCoinListQuery {
+  pageIndex?: number;
+  pageSize?: number;
+  platformId?: number;
+  coinId?: number;
+  coinCode?: string;
+  chainName?: string;
+}
+
 export interface PlatformAccountPayload {
   platformId?: number;
   platformCode?: string;
@@ -115,6 +124,14 @@ export interface PlatformAccountPayload {
   status?: string;
   expireTime?: string;
   remark?: string;
+}
+
+export interface PlatformAccountListQuery {
+  pageIndex?: number;
+  pageSize?: number;
+  platformId?: number;
+  accountName?: string;
+  status?: string;
 }
 
 export async function fetchPlatforms(query: PlatformListQuery) {
@@ -143,11 +160,15 @@ export async function deletePlatform(id: number) {
   return unwrapApiResponse(response.data);
 }
 
-export async function fetchPlatformCoins(platformId?: number) {
-  const response = await instance.get<ApiResponse<PlatformCoinRecord[]>>("/coin-platform-coins", {
-    params: { platformId },
+export async function fetchPlatformCoins(query: PlatformCoinListQuery = {}) {
+  return getPage(PlatformCoinRecord, "/coin-platform-coins", {
+    pageIndex: query.pageIndex,
+    pageSize: query.pageSize,
+    platformId: query.platformId,
+    coinId: query.coinId,
+    coinCode: query.coinCode,
+    chainName: query.chainName,
   });
-  return unwrapApiResponse(response.data);
 }
 
 export async function upsertPlatformCoin(payload: PlatformCoinPayload) {
@@ -165,11 +186,14 @@ export async function deletePlatformCoin(id: number) {
   return unwrapApiResponse(response.data);
 }
 
-export async function fetchPlatformAccounts(platformId?: number) {
-  const response = await instance.get<ApiResponse<PlatformAccountRecord[]>>("/coin-platform-accounts", {
-    params: { platformId },
+export async function fetchPlatformAccounts(query: PlatformAccountListQuery = {}) {
+  return getPage(PlatformAccountRecord, "/coin-platform-accounts", {
+    pageIndex: query.pageIndex,
+    pageSize: query.pageSize,
+    platformId: query.platformId,
+    accountName: query.accountName,
+    status: query.status,
   });
-  return unwrapApiResponse(response.data);
 }
 
 export async function createPlatformAccount(payload: PlatformAccountPayload) {

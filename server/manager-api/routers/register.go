@@ -7,7 +7,9 @@ import (
 	"manager-api/pkg/coin_platform"
 	"manager-api/pkg/coin_user"
 	"manager-api/pkg/login"
+	"manager-api/pkg/news"
 	"manager-api/pkg/permission"
+	"manager-api/pkg/pressure"
 	"manager-api/pkg/trade"
 	"manager-api/pkg/user"
 
@@ -30,5 +32,7 @@ func registerHandler() []routers.Handler {
 		build("trade", func() routers.Handler { return trade.NewTradeHandler() }),
 		build("coin_platform", func() routers.Handler { return coin_platform.NewCoinPlatformHandler() }),
 		build("coin", func() routers.Handler { return coin.NewCoinHandler() }),
+		build("news", func() routers.Handler { return news.NewNewsHandler() }),
+		build("pressure", func() routers.Handler { return pressure.NewPressureHandler() }),
 	}
 }

@@ -36,6 +36,7 @@ type AccountConfig struct {
 	InitialBalance  float64 `json:"initialBalance"`  // 初始余额
 	OrderSize       int     `json:"orderSize"`       // 每次开仓张数（账户级，未配置时回退到 TradeConfig.OrderSize）
 	TradeDirection  string  `json:"tradeDirection"`  // 交易方向: forward=正向(默认), reverse=反向
+	Platform        string  `json:"platform"`        // 交易所平台: deepcoin(默认), binance
 }
 
 type TradeConfig struct {
@@ -86,6 +87,7 @@ func LoadConfigFromProperties() (*TradingSystemConfig, error) {
 			InitialBalance:  vipper.GetFloat64(fmt.Sprintf("%s.InitialBalance", prefix)),
 			OrderSize:       vipper.GetInt(fmt.Sprintf("%s.order_size", prefix)),
 			TradeDirection:  vipper.GetString(fmt.Sprintf("%s.trade_direction", prefix)),
+			Platform:        vipper.GetString(fmt.Sprintf("%s.platform", prefix)),
 		}
 
 		if sessionEntry, ok := sessionStore.Get(account); ok {
@@ -120,6 +122,9 @@ func LoadConfigFromProperties() (*TradingSystemConfig, error) {
 		} else if account.TradeDirection != TradeDirectionForward && account.TradeDirection != TradeDirectionReverse {
 			logrus.Warnf("账户%d trade_direction 非法(%s)，回退为 %s", i, account.TradeDirection, TradeDirectionForward)
 			account.TradeDirection = TradeDirectionForward
+		}
+		if account.Platform == "" {
+			account.Platform = PlatformDeepcoin
 		}
 
 		config.Accounts = append(config.Accounts, account)

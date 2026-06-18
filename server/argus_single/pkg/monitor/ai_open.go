@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"common/middleware/vipper"
@@ -216,62 +215,9 @@ func (d *Tu2doOpenDecider) Decide(snapshot PositionSnapshot) (*AIOpenDecision, e
 		}
 	}
 
-	specs := defaultAIOpenAgentSpecs()
-	agentResults := make([]aiCloseAgentResult, len(specs))
-	errs := make([]error, len(specs))
-	var wg sync.WaitGroup
-	for i, spec := range specs {
-		i, spec := i, spec
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			prompt := BuildAIOpenAgentPrompt(spec, baseContext)
-			content, err := requestAIChatJSON(d.client, d.apiURL, d.apiKey, d.model, d.temperature, d.maxTokens, spec.System, prompt, spec.Name)
-			if err != nil {
-				errs[i] = err
-				return
-			}
-			result, err := parseAICloseAgentResult(spec.Name, content)
-			if err != nil {
-				errs[i] = err
-				return
-			}
-			agentResults[i] = result
-		}()
-	}
-	wg.Wait()
-
-	// 单个专家请求/解析失败时降级为中性 caution，不让整轮决策中止；仅当全部失败才报错。
-	failed := 0
-	for i, err := range errs {
-		if err == nil {
-			continue
-		}
-		failed++
-		logrus.Warnf("AI加仓决策: 专家[%s]本轮无有效输出，按中性处理, err=%v", specs[i].Name, err)
-		agentResults[i] = aiCloseAgentResult{
-			Agent:        specs[i].Name,
-			Decision:     "caution",
-			Veto:         false,
-			RiskLevel:    "medium",
-			ContinueSide: "neutral",
-			Reason:       "该专家本轮无有效输出，按中性处理（不否决，交由本地硬风控兜底）",
-		}
-	}
-	if failed == len(specs) {
-		return nil, fmt.Errorf("ai open: 全部 %d 个专家均无有效输出，放弃本轮决策", len(specs))
-	}
-
-	judgePrompt, err := BuildAIOpenJudgePrompt(snapshot, agentResults)
-	if err != nil {
-		return nil, err
-	}
-	judgePrompt += sizeConstraint
-	if len(history) > 0 {
-		judgePrompt += "\n\n最近AI加仓历史（用于冷却与扛单识别）:\n" + buildAIOpenHistoryPrompt(history)
-	}
+	prompt := BuildAIOpenDirectPrompt(baseContext)
 	content, err := requestAIChatJSON(d.client, d.apiURL, d.apiKey, d.model, d.temperature, d.maxTokens,
-		"你是 BTC 杠杆「激进开仓」委员会的最终裁判。你只根据专家 JSON 和原始上下文做最终裁决，只输出 JSON，不输出 Markdown。", judgePrompt, "judge")
+		"你是 BTC 杠杆「激进开仓」决策员。你会一次性完成情绪、趋势、关键价位、风险预算、入场时机和交易纪律分析，并只输出 JSON，不输出 Markdown。", prompt, "direct")
 	if err != nil {
 		return nil, err
 	}
@@ -748,6 +694,16 @@ func BuildAIOpenJudgePrompt(snapshot PositionSnapshot, agentResults []aiCloseAge
 	return RenderAIPrompt(defaultAIOpenJudgeTemplate, vars), nil
 }
 
+func BuildAIOpenDirectPrompt(baseContext string) string {
+	vars := map[string]any{
+		"base_context": baseContext,
+		"sizing_guide": aiOpenSizingGuide,
+		"rule":         defaultAIOpenRules(),
+		"response":     defaultAIOpenResponseRequirement(),
+	}
+	return RenderAIPrompt(defaultAIOpenDirectTemplate, vars)
+}
+
 const defaultAIOpenJudgeTemplate = `
 你是 BTC 杠杆「激进开仓」委员会的最终裁判。
 
@@ -761,6 +717,34 @@ const defaultAIOpenJudgeTemplate = `
 
 6 个专家机器人输出：
 {agent_results}
+
+裁决规则：
+{rule}
+
+输出要求：
+{response}
+`
+
+const defaultAIOpenDirectTemplate = `
+你是 BTC 杠杆「激进开仓」决策员。
+
+你只发送一次请求并直接给最终裁决，不再拆分专家与裁判。请在一次分析中同时完成以下工作：
+1) 逆向情绪：判断 fear/greed/extreme_fear/extreme_greed，识别是否存在别人恐惧我贪婪、别人贪婪我恐惧的机会。
+2) 顺势趋势：判断 1D/4H/1H 趋势是否一致，是否适合顺势回调/反抽进场。
+3) 关键价位：结合布林带、EMA、近 20/60 根 K 线高低点、ATR，判断支撑/阻力与盈亏比。
+4) 风险预算：结合可用余额、总余额、杠杆、当前仓位、爆仓价，估算操作后爆仓距离和保证金占用。
+5) 入场时机：区分可立即入场、等待确认、禁止追单；逆向要确认止跌/见顶，顺势要避免追末端。
+6) 交易纪律：拦截接飞刀、扛单加仓、过度交易、报复性加仓和黑天鹅高波动。
+
+核心交易哲学：别人恐惧我贪婪，别人贪婪我恐惧。市场越极端，逆向机会越好，但单边崩盘/逼空且无反转确认时禁止接飞刀。
+账户为 net 模式最多一个净仓位：空仓时评估是否开新仓，有持仓时允许同向加仓或反向减仓/对冲。
+全仓模式下爆仓距离取决于「仓位/余额」比例而非仅杠杆，仓位相对余额越小越安全。
+合约面值：BTC 合约 1 张 = 0.001 BTC。
+
+{sizing_guide}
+
+共享输入：
+{base_context}
 
 裁决规则：
 {rule}
@@ -1294,6 +1278,7 @@ func requestAIChatJSON(client *http.Client, apiURL, apiKey, model string, temper
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("x-codex-agent", "1")
 
 	resp, err := client.Do(httpReq)
 	if err != nil {

@@ -21,7 +21,7 @@ const (
 	userTokenPrefix     = "KAKROLOT_USER_TOKEN_PRE_"
 	userRolePrefix      = "KAKROLOT_USER_ROLE_PRE_KEY_"
 	userIPLoginPrefix   = "Kakrolot_user_ip_login_"
-	tokenExpireSeconds  = 2 * 60 * 60
+	tokenExpireSeconds  = 7 * 24 * 60 * 60
 	resourceExpireHours = 24 * 60 * 60
 )
 

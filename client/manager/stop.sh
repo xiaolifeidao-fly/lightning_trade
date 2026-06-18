@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 端口号
-PORT=9801
+PORT=9701
 
 # 查找监听指定端口的进程ID (PID)
 PID=$(lsof -ti :$PORT)

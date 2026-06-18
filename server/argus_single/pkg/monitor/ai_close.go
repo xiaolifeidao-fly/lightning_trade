@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"common/middleware/vipper"
@@ -242,60 +241,8 @@ func (d *Tu2doCloseDecider) Decide(snapshot PositionSnapshot) (*AICloseDecision,
 		baseContext += "\n\n最近AI平仓历史（用于识别扛单/反复摇摆）:\n" + buildAICloseHistoryPrompt(history)
 	}
 
-	specs := defaultAICloseAgentSpecs()
-	agentResults := make([]aiCloseAgentResult, len(specs))
-	errs := make([]error, len(specs))
-	var wg sync.WaitGroup
-	for i, spec := range specs {
-		i, spec := i, spec
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			prompt := BuildAICloseAgentPrompt(spec, baseContext)
-			content, err := d.requestAIJSON(spec.System, prompt, spec.Name)
-			if err != nil {
-				errs[i] = err
-				return
-			}
-			result, err := parseAICloseAgentResult(spec.Name, content)
-			if err != nil {
-				errs[i] = err
-				return
-			}
-			agentResults[i] = result
-		}()
-	}
-	wg.Wait()
-
-	// 单个专家请求/解析失败时降级为中性 caution，不让整轮平仓决策中止；仅当全部失败才报错。
-	failed := 0
-	for i, err := range errs {
-		if err == nil {
-			continue
-		}
-		failed++
-		logrus.Warnf("AI平仓决策: 专家[%s]本轮无有效输出，按中性处理, err=%v", specs[i].Name, err)
-		agentResults[i] = aiCloseAgentResult{
-			Agent:        specs[i].Name,
-			Decision:     "caution",
-			Veto:         false,
-			RiskLevel:    "medium",
-			ContinueSide: "neutral",
-			Reason:       "该专家本轮无有效输出，按中性处理（不否决）",
-		}
-	}
-	if failed == len(specs) {
-		return nil, fmt.Errorf("ai close: 全部 %d 个专家均无有效输出，放弃本轮决策", len(specs))
-	}
-
-	judgePrompt, err := BuildAICloseJudgePrompt(d.promptTpl, snapshot, agentResults)
-	if err != nil {
-		return nil, err
-	}
-	if len(history) > 0 {
-		judgePrompt += "\n\n最近AI平仓历史（用于识别扛单/反复摇摆）:\n" + buildAICloseHistoryPrompt(history)
-	}
-	content, err := d.requestAIJSON("你是 BTC 杠杆交易风控裁判。你只根据专家 JSON 和原始上下文做最终裁决，只输出 JSON，不输出 Markdown。", judgePrompt, "judge")
+	prompt := BuildAICloseDirectPrompt(d.promptTpl, snapshot, baseContext)
+	content, err := d.requestAIJSON("你是 BTC 杠杆交易风控裁判。你会一次性完成市场、风险、纪律和执行计划分析，并只输出 JSON，不输出 Markdown。", prompt, "direct")
 	if err != nil {
 		return nil, err
 	}
@@ -305,16 +252,7 @@ func (d *Tu2doCloseDecider) Decide(snapshot PositionSnapshot) (*AICloseDecision,
 	}
 	decision.Provider = defaultString(decision.Provider, defaultAICloseProvider)
 	decision.Model = d.model
-
-	raw := map[string]any{
-		"agents": agentResults,
-		"judge":  json.RawMessage(extractJSONObject(content)),
-	}
-	if rawBytes, err := json.Marshal(raw); err == nil {
-		decision.RawResponse = string(rawBytes)
-	} else {
-		decision.RawResponse = content
-	}
+	decision.RawResponse = content
 
 	if strings.TrimSpace(d.storePath) != "" {
 		if err := saveAICloseLastDecision(d.storePath, snapshot, decision, time.Now()); err != nil {
@@ -355,6 +293,7 @@ func (d *Tu2doCloseDecider) requestAIJSON(systemPrompt, userPrompt, stage string
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+d.apiKey)
+	httpReq.Header.Set("x-codex-agent", "1")
 
 	resp, err := d.client.Do(httpReq)
 	if err != nil {
@@ -546,6 +485,31 @@ BTC 当前市场与技术指标：
 {response}
 `
 
+const defaultAICloseDirectPromptTemplate = `
+你是一个谨慎、偏风控的 BTC 合约交易辅助决策员。
+
+你的任务不是替用户承诺盈利，而是在一次分析中完成以下判断：
+1) 市场环境：趋势、震荡、高波动、关键支撑阻力、量能和动能是否支持当前仓位。
+2) 机会质量：当前持仓方向是否仍有优势，是否已经错过最佳退出/加仓/持有窗口。
+3) 风险预算：强平距离、杠杆、账户余额、未实现盈亏、ATR 放大风险是否允许继续持仓。
+4) 执行计划：继续持有、减仓、平仓或等待时，必须给出清晰止损/止盈与下次巡检间隔。
+5) 交易纪律：识别扛单、盈利回撤不保护、过度交易、信号冲突和报复性操作。
+
+{data_semantics}
+
+角色要求：
+{role}
+
+风控规则：
+{rule}
+
+共享输入：
+{base_context}
+
+输出要求：
+{response}
+`
+
 func BuildAIClosePrompt(template string, snapshot PositionSnapshot) (string, error) {
 	if strings.TrimSpace(template) == "" {
 		template = defaultAIClosePromptTemplate
@@ -556,6 +520,14 @@ func BuildAIClosePrompt(template string, snapshot PositionSnapshot) (string, err
 	}
 	vars := defaultAIClosePromptVars(snapshot, baseContext, "")
 	return RenderAIPrompt(template, vars), nil
+}
+
+func BuildAICloseDirectPrompt(template string, snapshot PositionSnapshot, baseContext string) string {
+	if strings.TrimSpace(template) == "" || strings.Contains(template, "{agent_results}") {
+		template = defaultAICloseDirectPromptTemplate
+	}
+	vars := defaultAIClosePromptVars(snapshot, baseContext, "")
+	return RenderAIPrompt(template, vars)
 }
 
 // defaultAICloseDataSemantics 全仓125x模式下的数据口径说明，平仓/加仓的专家与裁判共用。

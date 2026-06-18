@@ -30,6 +30,13 @@ const enableOptions = [
   { label: "禁用", value: 0 },
 ];
 
+const assetInsight = (
+  <>
+    <strong>资产目录</strong>
+    <span>币种、链网络、充提交易能力和精度统一维护，降低平台接入和策略下单时的字段漂移。</span>
+  </>
+);
+
 function statusTag(value: unknown) {
   const v = String(value ?? "").toLowerCase();
   const color = v === "online" ? "green" : v === "offline" ? "red" : "orange";
@@ -62,14 +69,28 @@ const coinFields: CrudField<CoinRecord>[] = [
 ];
 
 const coinColumns: CrudTableColumn<CoinRecord>[] = [
-  { name: "code", label: "代码", width: 100, copyable: true },
-  { name: "name", label: "名称", width: 120 },
-  { name: "chainName", label: "主链", width: 100 },
+  {
+    name: "code",
+    label: "资产",
+    width: 170,
+    render: (value, record) => (
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        <span style={{ fontWeight: 800 }}>{String(value).toUpperCase()}</span>
+        <span style={{ color: "var(--manager-text-faint)", fontSize: 12 }}>{record.fullName || record.name || "-"}</span>
+      </div>
+    ),
+  },
+  { name: "chainName", label: "网络", width: 100 },
   { name: "status", label: "状态", width: 90, render: (v) => statusTag(v) },
   { name: "tradeEnable", label: "交易", width: 80, render: (v) => enableTag(v) },
   { name: "depositEnable", label: "充值", width: 80, render: (v) => enableTag(v) },
   { name: "withdrawEnable", label: "提现", width: 80, render: (v) => enableTag(v) },
-  { name: "decimals", label: "精度", width: 80 },
+  {
+    name: "decimals",
+    label: "精度",
+    width: 150,
+    render: (_, record) => `${record.decimals}/${record.pricePrecision}/${record.amountPrecision}`,
+  },
   { name: "sortOrder", label: "排序", width: 80 },
   { name: "updatedTime", label: "更新时间", width: 160 },
 ];
@@ -90,9 +111,17 @@ const pairFields: CrudField<CoinPairRecord>[] = [
 ];
 
 const pairColumns: CrudTableColumn<CoinPairRecord>[] = [
-  { name: "symbol", label: "交易对", width: 130, copyable: true },
-  { name: "baseCoinCode", label: "基础币", width: 100 },
-  { name: "quoteCoinCode", label: "计价币", width: 100 },
+  {
+    name: "symbol",
+    label: "市场",
+    width: 170,
+    render: (value, record) => (
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        <span style={{ fontWeight: 800 }}>{String(value).toUpperCase()}</span>
+        <span style={{ color: "var(--manager-text-faint)", fontSize: 12 }}>{record.baseCoinCode}/{record.quoteCoinCode}</span>
+      </div>
+    ),
+  },
   { name: "status", label: "状态", width: 90, render: (v) => statusTag(v) },
   {
     name: "takerFeeRate",
@@ -115,20 +144,28 @@ const pairColumns: CrudTableColumn<CoinPairRecord>[] = [
 const CoinSubPanel = () => (
   <CrudManagementPanel<CoinRecord, CoinPayload>
     title="币种"
+    eyebrow="ASSET CATALOG"
+    description="维护币种主档、链网络、精度和充提交易能力。运营侧可以快速切换状态，策略侧可以依赖一致的资产目录。"
     createText="新增币种"
-    searchPlaceholder="搜索币种代码或名称"
+    searchPlaceholder="搜索币种代码"
     searchParam="code"
     fields={coinFields}
     columns={coinColumns}
     statusField="status"
     statusOptions={statusOptions}
     actionWidth={100}
+    primaryMetricLabel="币种数量"
+    insight={assetInsight}
+    filters={[
+      { name: "chainName", label: "网络", placeholder: "BTC / ERC20 / TRC20" },
+    ]}
     api={{
       list: (query) =>
         fetchCoins({
           pageIndex: query.pageIndex,
           pageSize: query.pageSize,
           code: query.code as string | undefined,
+          chainName: query.chainName as string | undefined,
           status: query.status as string | undefined,
         }),
       create: (payload) => createCoin(payload as CoinPayload),
@@ -141,6 +178,8 @@ const CoinSubPanel = () => (
 const PairSubPanel = () => (
   <CrudManagementPanel<CoinPairRecord, CoinPairPayload>
     title="交易对"
+    eyebrow="MARKET CATALOG"
+    description="维护基础币、计价币、下单范围、精度和 maker/taker 费率，作为交易与风控策略共享的市场配置。"
     createText="新增交易对"
     searchPlaceholder="搜索交易对符号"
     searchParam="symbol"
@@ -149,12 +188,20 @@ const PairSubPanel = () => (
     statusField="status"
     statusOptions={statusOptions}
     actionWidth={100}
+    primaryMetricLabel="市场数量"
+    insight={<><strong>市场配置</strong><span>交易对上线前请确认价格精度、数量精度、最小成交额和双边费率已经完成校验。</span></>}
+    filters={[
+      { name: "baseCoinCode", label: "基础币", placeholder: "BTC" },
+      { name: "quoteCoinCode", label: "计价币", placeholder: "USDT" },
+    ]}
     api={{
       list: (query) =>
         fetchCoinPairs({
           pageIndex: query.pageIndex,
           pageSize: query.pageSize,
           symbol: query.symbol as string | undefined,
+          baseCoinCode: query.baseCoinCode as string | undefined,
+          quoteCoinCode: query.quoteCoinCode as string | undefined,
           status: query.status as string | undefined,
         }),
       create: (payload) => createCoinPair(payload as CoinPairPayload),

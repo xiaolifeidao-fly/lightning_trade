@@ -7,48 +7,11 @@ import (
 )
 
 var (
-	globalMonitor        *PriceMonitor
-	monitorOnce          sync.Once
 	globalAccountMonitor *AccountMonitor
 	accountMonitorOnce   sync.Once
 	globalTelegramBot    *TelegramBot
 	telegramBotOnce      sync.Once
 )
-
-// InitMonitor 初始化全局监控器
-func InitMonitor(symbolConfigs map[string]SymbolConfig) {
-	monitorOnce.Do(func() {
-		globalMonitor = NewPriceMonitor(symbolConfigs)
-		logrus.Info("价格监控器已初始化")
-	})
-}
-
-// StartMonitor 启动全局监控器
-func StartMonitor() {
-	if globalMonitor == nil {
-		logrus.Error("监控器未初始化，请先调用 InitMonitor")
-		return
-	}
-
-	StartBTCMarketDataFeed()
-
-	// 设置交易集成
-	SetupTradeIntegration(globalMonitor)
-
-	globalMonitor.Start()
-}
-
-// StopMonitor 停止全局监控器
-func StopMonitor() {
-	if globalMonitor != nil {
-		globalMonitor.Stop()
-	}
-}
-
-// GetMonitor 获取全局监控器实例
-func GetMonitor() *PriceMonitor {
-	return globalMonitor
-}
 
 // InitAccountMonitor 初始化全局账户监控器
 func InitAccountMonitor() {

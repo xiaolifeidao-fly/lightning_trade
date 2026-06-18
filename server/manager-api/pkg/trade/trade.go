@@ -36,6 +36,8 @@ func (h *TradeHandler) RegisterHandler(engine *gin.RouterGroup) {
 	engine.POST("/trade-matches", h.recordMatch)
 
 	engine.GET("/trade-klines", h.listKlines)
+	engine.GET("/trade-simulation-analysis", h.getSimulationAnalysis)
+	engine.GET("/trade-strategy-backtest", h.getStrategyBacktest)
 
 	engine.GET("/trade-details", h.listTradeDetails)
 	engine.GET("/trade-details/by-order/:orderNo", h.listDetailsByOrderNo)
@@ -144,6 +146,26 @@ func (h *TradeHandler) listKlines(context *gin.Context) {
 		return
 	}
 	result, err := h.tradeService.ListKlines(query)
+	commonRouter.ToJson(context, result, err)
+}
+
+func (h *TradeHandler) getSimulationAnalysis(context *gin.Context) {
+	var query tradeDTO.TradeSimulationAnalysisQueryDTO
+	if err := context.ShouldBindQuery(&query); err != nil {
+		commonRouter.ToError(context, "参数错误")
+		return
+	}
+	result, err := h.tradeService.GetSimulationAnalysis(context.Request.Context(), query)
+	commonRouter.ToJson(context, result, err)
+}
+
+func (h *TradeHandler) getStrategyBacktest(context *gin.Context) {
+	var query tradeDTO.TradeStrategyBacktestQueryDTO
+	if err := context.ShouldBindQuery(&query); err != nil {
+		commonRouter.ToError(context, "参数错误")
+		return
+	}
+	result, err := h.tradeService.GetStrategyBacktest(context.Request.Context(), query)
 	commonRouter.ToJson(context, result, err)
 }
 

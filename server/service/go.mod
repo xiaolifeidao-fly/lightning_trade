@@ -1,8 +1,11 @@
 module service
 
-go 1.21
+go 1.25.0
 
-require common v0.0.0 // 版本可以是你实际的版本
+require (
+	argus_single v0.0.0
+	common v0.0.0 // 版本可以是你实际的版本
+)
 
 require (
 	github.com/go-redis/redis v6.15.9+incompatible
@@ -27,14 +30,17 @@ require (
 	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.2 // indirect
 	github.com/qiniu/go-sdk/v7 v7.25.4 // indirect
+	github.com/shopspring/decimal v1.4.0 // indirect
+	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/spf13/afero v1.9.2 // indirect
 	github.com/spf13/cast v1.5.0 // indirect
 	github.com/spf13/jwalterweatherman v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/spf13/viper v1.12.0 // indirect
 	github.com/subosito/gotenv v1.3.0 // indirect
+	github.com/tetratelabs/wazero v1.12.0 // indirect
 	golang.org/x/sync v0.10.0 // indirect
-	golang.org/x/sys v0.28.0 // indirect
+	golang.org/x/sys v0.44.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
 	golang.org/x/time v0.0.0-20191024005414-555d28b269f0 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
@@ -45,3 +51,5 @@ require (
 )
 
 replace common => ../common
+
+replace argus_single => ../argus_single

@@ -204,6 +204,19 @@ func (r *TradeKlineRepository) ListBySymbolInterval(symbol, interval string, lim
 	return rows, nil
 }
 
+func (r *TradeKlineRepository) ListBySymbolIntervalTimeRange(symbol, interval string, startTime, endTime time.Time) ([]*TradeKline, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	var rows []*TradeKline
+	if err := r.Db.Where("active = 1 AND symbol = ? AND `interval` = ? AND open_time >= ? AND open_time <= ?",
+		strings.ToUpper(symbol), interval, startTime, endTime).
+		Order("open_time ASC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
 type TradeDetailRepository struct {
 	db.Repository[*TradeDetail]
 }
@@ -321,6 +334,130 @@ func buildTradeDetailWhere(query tradeDTO.TradeDetailQueryDTO) (string, []interf
 		values = append(values, time.Unix(query.EndTime, 0))
 	}
 	return strings.Join(clauses, " AND "), values
+}
+
+type TradeAIPredictionRepository struct {
+	db.Repository[*TradeAIPrediction]
+}
+
+func (r *TradeAIPredictionRepository) EnsureTable() error {
+	if r.Db == nil {
+		return fmt.Errorf("database is not initialized")
+	}
+	return r.Db.AutoMigrate(&TradeAIPrediction{})
+}
+
+// Upsert 按 平台×交易对×周期×K线时间 维度写入或更新一条预测。
+func (r *TradeAIPredictionRepository) Upsert(entity *TradeAIPrediction) error {
+	if r.Db == nil {
+		return fmt.Errorf("database is not initialized")
+	}
+	entity.Symbol = strings.ToUpper(strings.TrimSpace(entity.Symbol))
+	entity.CoinCode = strings.ToUpper(strings.TrimSpace(entity.CoinCode))
+	entity.PlatformCode = strings.ToLower(strings.TrimSpace(entity.PlatformCode))
+	entity.Init()
+
+	var existing TradeAIPrediction
+	err := r.Db.Where("platform_code = ? AND symbol = ? AND `interval` = ? AND predict_time = ?",
+		entity.PlatformCode, entity.Symbol, entity.Interval, entity.PredictTime).First(&existing).Error
+	if err == gorm.ErrRecordNotFound {
+		return r.Db.Create(entity).Error
+	}
+	if err != nil {
+		return err
+	}
+	entity.Id = existing.Id
+	entity.CreatedTime = existing.CreatedTime
+	return r.Db.Save(entity).Error
+}
+
+// ListByCoinInterval 按 平台×币种×周期 取最近 limit 条预测（按 K线时间倒序）。
+func (r *TradeAIPredictionRepository) ListByCoinInterval(platformCode, coinCode, interval string, limit int) ([]*TradeAIPrediction, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	var rows []*TradeAIPrediction
+	if err := r.Db.Where("active = 1 AND platform_code = ? AND coin_code = ? AND `interval` = ?",
+		strings.ToLower(platformCode), strings.ToUpper(coinCode), interval).
+		Order("predict_time DESC").Limit(limit).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (r *TradeAIPredictionRepository) ListByCoinIntervalTimeRange(platformCode, coinCode, interval string, startTime, endTime time.Time) ([]*TradeAIPrediction, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	var rows []*TradeAIPrediction
+	if err := r.Db.Where("active = 1 AND platform_code = ? AND coin_code = ? AND `interval` = ? AND predict_time >= ? AND predict_time <= ?",
+		strings.ToLower(platformCode), strings.ToUpper(coinCode), interval, startTime, endTime).
+		Order("predict_time ASC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// ListUnsettled 取 predict_time 已到期(<=before)但尚未结算回填的预测，按 predict_time 升序，最多 limit 条。
+func (r *TradeAIPredictionRepository) ListUnsettled(before time.Time, limit int) ([]*TradeAIPrediction, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	var rows []*TradeAIPrediction
+	if err := r.Db.Where("active = 1 AND settled = 0 AND predict_time <= ?", before).
+		Order("predict_time ASC").Limit(limit).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// PredictionSettlement 一条预测的结算结果：端点(误差/方向命中) + 区间触达(MFE/MAE/先触达)。
+type PredictionSettlement struct {
+	ActualPrice     float64
+	ErrorPct        float64
+	AbsErrorPct     float64
+	DirectionHit    int8
+	MaxFavorablePct float64
+	MaxAdversePct   float64
+	FirstHit        string
+	ActualHigh      float64
+	ActualLow       float64
+	HighErrorPct    float64
+	LowErrorPct     float64
+	BandContain     int8
+	InvalidationHit int8
+}
+
+// SettlePrediction 回填一条预测的端点误差/方向命中与区间触达指标，并标记为已结算。
+func (r *TradeAIPredictionRepository) SettlePrediction(id int, st PredictionSettlement) error {
+	if r.Db == nil {
+		return fmt.Errorf("database is not initialized")
+	}
+	now := time.Now()
+	return r.Db.Model(&TradeAIPrediction{}).Where("id = ?", id).Updates(map[string]interface{}{
+		"actual_price":      st.ActualPrice,
+		"error_pct":         st.ErrorPct,
+		"abs_error_pct":     st.AbsErrorPct,
+		"direction_hit":     st.DirectionHit,
+		"max_favorable_pct": st.MaxFavorablePct,
+		"max_adverse_pct":   st.MaxAdversePct,
+		"first_hit":         st.FirstHit,
+		"actual_high":       st.ActualHigh,
+		"actual_low":        st.ActualLow,
+		"high_error_pct":    st.HighErrorPct,
+		"low_error_pct":     st.LowErrorPct,
+		"band_contain":      st.BandContain,
+		"invalidation_hit":  st.InvalidationHit,
+		"settled":           1,
+		"settled_time":      now,
+		"updated_time":      now,
+	}).Error
 }
 
 type TradeUserSummaryRepository struct {

@@ -108,9 +108,12 @@ func (h *CoinPlatformHandler) deletePlatform(context *gin.Context) {
 }
 
 func (h *CoinPlatformHandler) listPlatformCoins(context *gin.Context) {
-	platformIDStr := context.Query("platformId")
-	platformID, _ := strconv.ParseUint(platformIDStr, 10, 64)
-	result, err := h.coinPlatformService.ListPlatformCoins(platformID)
+	var query coinPlatformDTO.CoinPlatformCoinQueryDTO
+	if err := context.ShouldBindQuery(&query); err != nil {
+		commonRouter.ToError(context, "参数错误")
+		return
+	}
+	result, err := h.coinPlatformService.ListPlatformCoins(query)
 	commonRouter.ToJson(context, result, err)
 }
 
@@ -156,9 +159,12 @@ func (h *CoinPlatformHandler) deletePlatformCoin(context *gin.Context) {
 }
 
 func (h *CoinPlatformHandler) listPlatformAccounts(context *gin.Context) {
-	platformIDStr := context.Query("platformId")
-	platformID, _ := strconv.ParseUint(platformIDStr, 10, 64)
-	result, err := h.coinPlatformService.ListPlatformAccounts(platformID)
+	var query coinPlatformDTO.CoinPlatformAccountQueryDTO
+	if err := context.ShouldBindQuery(&query); err != nil {
+		commonRouter.ToError(context, "参数错误")
+		return
+	}
+	result, err := h.coinPlatformService.ListPlatformAccounts(query)
 	commonRouter.ToJson(context, result, err)
 }
 

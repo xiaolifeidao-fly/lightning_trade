@@ -1,6 +1,7 @@
 package trade
 
 import (
+	"context"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -55,6 +56,52 @@ func GetAccountStatus() map[string]interface{} {
 		}
 	}
 	return globalManager.GetAccountStatus()
+}
+
+// GetKlinesByPlatform 按平台查询 K 线。示例：platform=binance/deepcoin，symbol=BTCUSDT 或 instId=BTC-USDT-SWAP。
+func GetKlinesByPlatform(ctx context.Context, platform string, req MarketKlineRequest) ([]MarketKline, error) {
+	return QueryKlinesByPlatform(ctx, platform, req)
+}
+
+// GetTickerByPlatform 按平台查询实时价格。
+func GetTickerByPlatform(ctx context.Context, platform string, req MarketTickerRequest) (*MarketTicker, error) {
+	return QueryTickerByPlatform(ctx, platform, req)
+}
+
+// GetRecentTradesByPlatform 按平台查询最近逐笔（聚合）成交。
+func GetRecentTradesByPlatform(ctx context.Context, platform string, req MarketTradeRequest) ([]MarketTrade, error) {
+	return QueryRecentTradesByPlatform(ctx, platform, req)
+}
+
+// GetFundingRateByPlatform 按平台查询合约资金费率快照。
+func GetFundingRateByPlatform(ctx context.Context, platform string, req FundingRateRequest) (*FundingRateSnapshot, error) {
+	return QueryFundingRateByPlatform(ctx, platform, req)
+}
+
+// GetBalancesByPlatform 按平台和账户查询余额。
+func GetBalancesByPlatform(ctx context.Context, platform, accountName string, req BalanceRequest) ([]Balance, error) {
+	if globalManager == nil {
+		return nil, ErrTradeManagerNotInitialized()
+	}
+	return globalManager.GetBalancesByPlatform(ctx, platform, accountName, req)
+}
+
+// PlaceOrderByPlatform 按平台和账户路由统一下单。
+func PlaceOrderByPlatform(ctx context.Context, platform, accountName string, req ExchangeOrderRequest) (*ExchangeOrderResponse, error) {
+	if globalManager == nil {
+		return nil, ErrTradeManagerNotInitialized()
+	}
+	return globalManager.PlaceOrderByPlatform(ctx, platform, accountName, req)
+}
+
+func ErrTradeManagerNotInitialized() error {
+	return errTradeManagerNotInitialized{}
+}
+
+type errTradeManagerNotInitialized struct{}
+
+func (errTradeManagerNotInitialized) Error() string {
+	return "交易管理器未初始化"
 }
 
 // ============================= 配置管理 =============================

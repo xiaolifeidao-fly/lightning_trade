@@ -15,25 +15,27 @@ import (
 )
 
 type TradeManager struct {
-	config         *TradingSystemConfig
-	clients        map[string]*utils.DeepCoinClient
-	webClients     map[string]*DirectWebClient
-	mu             sync.RWMutex
-	lastTrade      time.Time
-	tradeCooldown  time.Duration
-	stopShuffle    chan struct{} // 用于停止shuffle goroutine
-	telegramClient *utils.TelegramClient
-	loginScheduler *LoginScheduler
+	config          *TradingSystemConfig
+	clients         map[string]*utils.DeepCoinClient
+	webClients      map[string]*DirectWebClient
+	exchangeClients map[string]ExchangeClient // 按平台工厂构建，key=账户Name
+	mu              sync.RWMutex
+	lastTrade       time.Time
+	tradeCooldown   time.Duration
+	stopShuffle     chan struct{} // 用于停止shuffle goroutine
+	telegramClient  *utils.TelegramClient
+	loginScheduler  *LoginScheduler
 }
 
 func NewTradeManager(config *TradingSystemConfig) *TradeManager {
 	tm := &TradeManager{
-		config:         config,
-		clients:        make(map[string]*utils.DeepCoinClient),
-		webClients:     make(map[string]*DirectWebClient),
-		tradeCooldown:  5 * time.Second,
-		stopShuffle:    make(chan struct{}),
-		telegramClient: utils.NewTelegramClientWithBotTokenAndChatID(vipper.GetString("telegram.bot_token"), vipper.GetString("telegram.chat_id")),
+		config:          config,
+		clients:         make(map[string]*utils.DeepCoinClient),
+		webClients:      make(map[string]*DirectWebClient),
+		exchangeClients: make(map[string]ExchangeClient),
+		tradeCooldown:   5 * time.Second,
+		stopShuffle:     make(chan struct{}),
+		telegramClient:  utils.NewTelegramClientWithBotTokenAndChatID(vipper.GetString("telegram.bot_token"), vipper.GetString("telegram.chat_id")),
 	}
 
 	// 为每个账户创建客户端
@@ -43,18 +45,22 @@ func NewTradeManager(config *TradingSystemConfig) *TradeManager {
 		tm.clients[acc.Name] = client
 		logrus.Infof("✅ 账户 %s 直连API客户端已创建", acc.Name)
 
+		var webClient *DirectWebClient
 		// 如果有 Web 配置种子，创建直连 Web 客户端。
 		if acc.HasWebCredentialSeed() {
 			userProvider, err := BuildUserProvider(acc)
 			if err != nil {
 				logrus.Warnf("⚠️  账户 %s Web 凭证提供器创建失败: %v", acc.Name, err)
-				continue
+			} else {
+				webClient = NewDirectWebClient(userProvider)
+				tm.webClients[acc.Name] = webClient
+				logrus.Infof("✅ 账户 %s 直连Web客户端已创建(mode=%s)", acc.Name, acc.LoginType)
 			}
-
-			webClient := NewDirectWebClient(userProvider)
-			tm.webClients[acc.Name] = webClient
-			logrus.Infof("✅ 账户 %s 直连Web客户端已创建(mode=%s)", acc.Name, acc.LoginType)
 		}
+
+		// 通过工厂构建统一交易所客户端（platform 字段决定使用哪套 API）
+		tm.exchangeClients[acc.Name] = NewExchangeClient(acc, webClient)
+		logrus.Infof("✅ 账户 %s 交易所客户端已创建(platform=%s)", acc.Name, acc.Platform)
 	}
 
 	// 启动定时打乱账户position_side的goroutine
@@ -919,6 +925,13 @@ func (tm *TradeManager) GetAccountStatus() map[string]interface{} {
 }
 
 // GetClient 获取指定账户的客户端
+// GetExchangeClient 返回账户对应的交易所统一客户端（由工厂模式构建）。
+func (tm *TradeManager) GetExchangeClient(accountName string) ExchangeClient {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+	return tm.exchangeClients[accountName]
+}
+
 func (tm *TradeManager) GetClient(accountName string) *utils.DeepCoinClient {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
@@ -932,39 +945,20 @@ func (tm *TradeManager) GetWebClient(accountName string) *DirectWebClient {
 	return tm.webClients[accountName]
 }
 
-// OpenPositionByAI 按 AI 决策对指定账户市价开/加仓（全仓，杠杆固定 125x）。
+// OpenPositionByAI 按 AI 决策对指定账户市价开/加仓。
 // side: "long"=做多/买入, "short"=做空/卖出。size 为合约张数。tradePrice 仅用于风控埋点。
+// 内部通过 ExchangeClient 工厂分发，支持 deepcoin / binance 等多平台。
 func (tm *TradeManager) OpenPositionByAI(accountName, instId, side string, size int, tradePrice float64) (*utils.WebOrderResponse, error) {
 	if size <= 0 {
 		return nil, fmt.Errorf("开仓张数无效: %d", size)
 	}
 
-	tm.mu.RLock()
-	webClient := tm.webClients[accountName]
-	var uid string
-	for _, acc := range tm.config.Accounts {
-		if acc.Name == accountName {
-			uid = acc.UID
-			break
-		}
-	}
-	tm.mu.RUnlock()
-
-	if webClient == nil {
-		return nil, fmt.Errorf("账户 %s 无Web客户端，无法下单", accountName)
+	ec := tm.GetExchangeClient(accountName)
+	if ec == nil {
+		return nil, fmt.Errorf("账户 %s 未找到交易所客户端", accountName)
 	}
 
-	const lever = 125
-	const isCrossMargin = 1
-
-	switch side {
-	case "long":
-		return webClient.MarketBuyLongWithRisk(instId, size, lever, isCrossMargin, uid, tradePrice)
-	case "short":
-		return webClient.MarketSellShortWithRisk(instId, size, lever, isCrossMargin, uid, tradePrice)
-	default:
-		return nil, fmt.Errorf("未知开仓方向: %s", side)
-	}
+	return ec.OpenPosition(instId, side, size, tradePrice)
 }
 
 // Stop 停止TradeManager

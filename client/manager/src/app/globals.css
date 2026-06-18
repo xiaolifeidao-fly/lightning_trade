@@ -119,6 +119,102 @@ select {
   overflow: hidden;
 }
 
+.manager-workbench-hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 26px;
+  border: 1px solid rgba(240, 185, 11, 0.18);
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, rgba(240, 185, 11, 0.10), rgba(77, 126, 255, 0.07) 42%, transparent 78%),
+    #14171D;
+  box-shadow: var(--manager-shadow-soft);
+}
+
+.manager-workbench-title {
+  margin-top: 10px;
+  color: #FFFFFF;
+  font-size: 30px;
+  line-height: 1.2;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.manager-workbench-desc {
+  max-width: 760px;
+  margin-top: 8px;
+  color: var(--manager-text-soft);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.manager-workbench-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.manager-metric-chip-rich {
+  min-height: 118px;
+}
+
+.manager-metric-chip-rich .ant-progress {
+  margin-top: 18px;
+}
+
+.manager-metric-chip-rich .ant-progress-bg {
+  background: linear-gradient(90deg, var(--manager-primary), var(--manager-accent)) !important;
+}
+
+.manager-insight-panel {
+  display: flex;
+  min-height: 118px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  color: var(--manager-text-soft);
+}
+
+.manager-insight-panel strong {
+  color: var(--manager-text);
+  font-size: 16px;
+}
+
+.manager-status-segments.ant-segmented {
+  padding: 4px;
+  background: #0B0E11;
+  border: 1px solid var(--manager-border);
+}
+
+.manager-status-segments .ant-segmented-item {
+  min-width: 76px;
+  color: var(--manager-text-soft);
+}
+
+.manager-status-segments .ant-segmented-item-selected {
+  color: #0B0E11;
+  background: linear-gradient(135deg, #FCD535 0%, #F0B90B 100%);
+}
+
+.manager-form-skin .ant-drawer-content,
+.manager-form-skin .ant-drawer-header,
+.manager-form-skin .ant-drawer-body {
+  background: #14171D !important;
+  color: var(--manager-text) !important;
+}
+
+.manager-form-skin .ant-drawer-header {
+  border-bottom: 1px solid var(--manager-border) !important;
+}
+
+.manager-form-skin .ant-drawer-title,
+.manager-form-skin .ant-drawer-close {
+  color: var(--manager-text) !important;
+}
+
 .manager-section-label {
   color: var(--manager-text-faint);
   font-size: 12px;

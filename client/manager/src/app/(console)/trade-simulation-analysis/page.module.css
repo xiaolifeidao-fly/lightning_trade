@@ -1,0 +1,659 @@
+.heroPanel {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) auto;
+  gap: 20px;
+  align-items: end;
+  padding: 24px;
+  border: 1px solid rgba(240, 185, 11, 0.18);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(240, 185, 11, 0.12), rgba(77, 126, 255, 0.08) 48%, rgba(14, 203, 129, 0.04)),
+    #14171D;
+  box-shadow: var(--manager-shadow-soft);
+}
+
+.heroCopy h1 {
+  margin: 8px 0 6px;
+  color: #FFFFFF;
+  font-size: 30px;
+  line-height: 1.16;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.heroCopy p {
+  max-width: 680px;
+  margin: 0;
+  color: var(--manager-text-soft);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.toolbar {
+  justify-content: flex-end;
+}
+
+.select {
+  width: 150px;
+}
+
+.intervalSelect {
+  width: 120px;
+}
+
+.fieldGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fieldGroup > span {
+  color: var(--manager-text-faint);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.metricGrid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.metricCard {
+  position: relative;
+  min-height: 104px;
+  padding: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012)),
+    var(--manager-panel);
+}
+
+.metricCard::after {
+  content: "";
+  position: absolute;
+  right: -34px;
+  bottom: -46px;
+  width: 116px;
+  height: 116px;
+  border: 1px solid rgba(240, 185, 11, 0.12);
+  border-radius: 50%;
+}
+
+.metricCard :global(.ant-typography) {
+  color: var(--manager-text-faint);
+  font-size: 12px;
+}
+
+.metricCard strong {
+  display: block;
+  margin-top: 8px;
+  color: var(--manager-text);
+  font-size: 22px;
+  line-height: 1.05;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.metricCard span {
+  display: block;
+  margin-top: 8px;
+  color: var(--manager-text-soft);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.metricIcon {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid rgba(240, 185, 11, 0.22);
+  border-radius: 8px;
+  color: var(--manager-primary);
+  background: rgba(240, 185, 11, 0.09);
+}
+
+.newsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.newsHeader h3 {
+  margin: 6px 0 0;
+  color: #FFFFFF;
+  font-size: 18px;
+  line-height: 1.25;
+  font-weight: 760;
+  letter-spacing: 0;
+}
+
+.newsList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.newsItem {
+  display: flex;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01)),
+    var(--manager-panel);
+}
+
+.newsItemMain {
+  flex: 1;
+  min-width: 0;
+}
+
+.newsItemTop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.newsTime {
+  color: var(--manager-text-faint);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.newsSummary {
+  margin: 0;
+  color: var(--manager-text-soft);
+  font-size: 13px;
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.newsEvents {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.newsEmpty {
+  display: grid;
+  min-height: 120px;
+  place-items: center;
+  color: var(--manager-text-soft);
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* 消息面 / 压力面快讯并排两列，窄屏自动堆叠 */
+.flashGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+
+@media (max-width: 1100px) {
+  .flashGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.pressureKeys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+/* 压力面价位双栏：左阻力、右支撑 */
+.pressureCols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 10px;
+}
+
+@media (max-width: 560px) {
+  .pressureCols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.levelGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.levelGroupTitle {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.levelToneShort {
+  color: #ff6b6b;
+}
+
+.levelToneLong {
+  color: #2ec27e;
+}
+
+.levelEmpty {
+  font-size: 12px;
+  color: var(--manager-text-faint);
+}
+
+.levelRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.levelPrice {
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffffff;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+
+.levelStrengthBar {
+  position: relative;
+  flex: 0 0 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.levelStrengthFillShort,
+.levelStrengthFillLong {
+  position: absolute;
+  inset: 0 auto 0 0;
+  height: 100%;
+  border-radius: 2px;
+}
+
+.levelStrengthFillShort {
+  background: #ff6b6b;
+}
+
+.levelStrengthFillLong {
+  background: #2ec27e;
+}
+
+.levelReason {
+  font-size: 12px;
+  color: var(--manager-text-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.chartShell {
+  min-width: 0;
+  position: relative;
+}
+
+.chartHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.chartHeader h2 {
+  margin: 8px 0 0;
+  color: #FFFFFF;
+  font-size: 20px;
+  line-height: 1.25;
+  font-weight: 760;
+  letter-spacing: 0;
+}
+
+.chartLegend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px 16px;
+  color: var(--manager-text-soft);
+  font-size: 12px;
+}
+
+.chartLegend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.chartLegend i {
+  width: 22px;
+  height: 3px;
+  border-radius: 999px;
+}
+
+.legendReal {
+  background: #F0B90B;
+}
+
+.legendAi {
+  background: repeating-linear-gradient(90deg, #4D7EFF 0 8px, transparent 8px 13px);
+}
+
+.legendDeviation {
+  background: rgba(77, 126, 255, 0.24);
+}
+
+.legendHint {
+  color: rgba(234, 236, 239, 0.45);
+  font-size: 12px;
+}
+
+.chart {
+  display: block;
+  width: 100%;
+  min-height: 420px;
+  cursor: crosshair;
+  overflow: visible;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  background: #0B0E11;
+}
+
+.tooltip {
+  width: 100%;
+  min-height: 100%;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  color: var(--manager-text);
+  background: rgba(20, 23, 29, 0.95);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.36);
+  backdrop-filter: blur(10px);
+}
+
+.tooltip strong {
+  display: block;
+  margin-bottom: 8px;
+  color: #FFFFFF;
+  font-size: 13px;
+}
+
+.tooltip div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 5px;
+  font-size: 12px;
+}
+
+.tooltip span {
+  color: var(--manager-text-faint);
+}
+
+.tooltip b {
+  color: var(--manager-text);
+}
+
+.tooltip em {
+  display: block;
+  margin-top: 9px;
+  color: var(--manager-text-soft);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.tooltipReasonGroup + .tooltipReasonGroup {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.tooltipReason {
+  margin: 8px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--manager-text-faint);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: normal;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+}
+
+.tooltipHint {
+  display: block;
+  margin-top: 8px;
+  color: var(--manager-yellow, #f0b90b);
+  font-size: 11px;
+}
+
+/* 点击预测点后固定展示的详情卡片 */
+.pinnedCard {
+  position: absolute;
+  top: 58px;
+  right: 12px;
+  width: 320px;
+  max-height: calc(100% - 72px);
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 12px;
+  background: rgba(20, 23, 29, 0.97);
+  box-shadow: 0 22px 56px rgba(0, 0, 0, 0.46);
+  backdrop-filter: blur(12px);
+  z-index: 5;
+}
+
+.pinnedHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pinnedHeader h4 {
+  margin: 4px 0 0;
+  color: #ffffff;
+  font-size: 15px;
+}
+
+.pinnedClose {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--manager-text-soft);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.pinnedClose:hover {
+  border-color: var(--manager-red, #f6465d);
+  color: var(--manager-red, #f6465d);
+}
+
+.pinnedGrid {
+  margin-top: 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.pinnedGrid div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.pinnedGrid span {
+  color: var(--manager-text-faint);
+}
+
+.pinnedGrid b {
+  color: var(--manager-text);
+}
+
+.pinnedReasonBlock {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.pinnedReasonLabel {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--manager-text-faint);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.pinnedReasonClamp {
+  margin: 0;
+  color: var(--manager-text-soft);
+  font-size: 12.5px;
+  line-height: 1.65;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.pinnedReasonFull {
+  margin: 0;
+  color: var(--manager-text-soft);
+  font-size: 12.5px;
+  line-height: 1.65;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+
+.pinnedReasonToggle {
+  align-self: flex-start;
+  margin-top: 8px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--manager-yellow, #f0b90b);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.positive {
+  color: var(--manager-green) !important;
+}
+
+.negative {
+  color: var(--manager-danger) !important;
+}
+
+.emptyChart {
+  display: grid;
+  min-height: 390px;
+  place-items: center;
+  gap: 12px;
+  color: var(--manager-text-soft);
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.emptyChart :global(.anticon) {
+  color: var(--manager-primary);
+  font-size: 28px;
+}
+
+.tableTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.tableTitle h3 {
+  margin: 6px 0 0;
+  color: #FFFFFF;
+  font-size: 18px;
+  line-height: 1.25;
+  font-weight: 760;
+  letter-spacing: 0;
+}
+
+@media (max-width: 1120px) {
+  .heroPanel {
+    grid-template-columns: 1fr;
+  }
+
+  .toolbar {
+    justify-content: flex-start;
+  }
+
+  .metricGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .heroPanel {
+    padding: 18px;
+  }
+
+  .heroCopy h1 {
+    font-size: 24px;
+  }
+
+  .select,
+  .intervalSelect {
+    width: 100%;
+  }
+
+  .metricGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .chartHeader {
+    display: block;
+  }
+
+  .chartLegend {
+    justify-content: flex-start;
+    margin-top: 12px;
+  }
+
+  .chart {
+    min-height: 340px;
+  }
+}
