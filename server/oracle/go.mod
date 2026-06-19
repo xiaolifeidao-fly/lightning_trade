@@ -5,7 +5,9 @@ go 1.25.0
 require (
 	argus_single v0.0.0
 	common v0.0.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/sirupsen/logrus v1.9.3
+	gorm.io/gorm v1.23.8
 	service v0.0.0
 )
 
@@ -34,7 +36,6 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gorm.io/driver/mysql v1.3.6 // indirect
-	gorm.io/gorm v1.23.8 // indirect
 )
 
 replace common => ../common

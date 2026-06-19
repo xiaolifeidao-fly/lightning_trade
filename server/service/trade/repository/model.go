@@ -90,7 +90,9 @@ type TradeAIPrediction struct {
 	CoinCode     string    `gorm:"column:coin_code;type:varchar(32);index:idx_coin_code" orm:"column(coin_code);size(32);null" description:"基础币种 BTC"`
 	Interval     string    `gorm:"column:interval;type:varchar(8);uniqueIndex:idx_ai_pred_dim,priority:3" orm:"column(interval);size(8);null" description:"主周期 1m/5m/15m/1h/4h/1d"`
 	PredictTime  time.Time `gorm:"column:predict_time;type:datetime;uniqueIndex:idx_ai_pred_dim,priority:4;index:idx_predict_time" orm:"column(predict_time);null" description:"预测对应的K线时间"`
-	RefPrice     float64   `gorm:"column:ref_price;type:decimal(36,18);default:0" orm:"column(ref_price);null" description:"预测时真实参考价(收盘价)"`
+	RefPrice     float64   `gorm:"column:ref_price;type:decimal(36,18);default:0" orm:"column(ref_price);null" description:"AI参考开盘价：发起预测时 AI 参考的收盘价(预测基准)"`
+	OpenPrice    float64   `gorm:"column:open_price;type:decimal(36,18);default:0" orm:"column(open_price);null" description:"实际开盘价：AI分析完成后即时采集的真实盘价"`
+	CostMs       int64     `gorm:"column:cost_ms;type:bigint;default:0" orm:"column(cost_ms);null" description:"AI分析耗时(毫秒)：从发起到检测完成"`
 	PredictPrice float64   `gorm:"column:predict_price;type:decimal(36,18);default:0" orm:"column(predict_price);null" description:"AI预测价"`
 	PredictHigh  float64   `gorm:"column:predict_high;type:decimal(36,18);default:0" orm:"column(predict_high);null" description:"预测期间最高价"`
 	PredictLow   float64   `gorm:"column:predict_low;type:decimal(36,18);default:0" orm:"column(predict_low);null" description:"预测期间最低价"`
@@ -231,3 +233,72 @@ type TradeUserPnl struct {
 func (p *TradeUserPnl) TableName() string {
 	return "trade_user_pnl"
 }
+
+// TradeStrategy 策略配置表：定义 AI 信号触发开仓的条件与持仓参数。
+// 一个 symbol×interval 可配置多条策略，每条独立开仓，受 max_open_positions 约束。
+type TradeStrategy struct {
+	db.BaseEntity
+	PlatformCode string `gorm:"column:platform_code;type:varchar(32);not null;index:idx_strategy_dim,priority:1" description:"平台代码"`
+	CoinCode     string `gorm:"column:coin_code;type:varchar(32);not null;index:idx_strategy_dim,priority:2" description:"基础币种 BTC"`
+	Symbol       string `gorm:"column:symbol;type:varchar(32);not null;index:idx_strategy_dim,priority:3" description:"交易对 BTCUSDT"`
+	Interval     string `gorm:"column:interval;type:varchar(8);not null;index:idx_strategy_dim,priority:4" description:"触发预测周期 1m/15m/1h/4h"`
+	Enabled      int8   `gorm:"column:enabled;type:tinyint;default:1;index:idx_enabled" description:"是否启用 1是 0否"`
+	// 开仓条件
+	MinConfidence    float64 `gorm:"column:min_confidence;type:decimal(6,4);default:0.6000" description:"最低置信度 0~1"`
+	MinMovePct       float64 `gorm:"column:min_move_pct;type:decimal(10,4);default:0.5000" description:"最低预测幅度百分比，如 0.5 表示 0.5%"`
+	TrendFilter      string  `gorm:"column:trend_filter;type:varchar(8);default:'both'" description:"方向过滤 long/short/both"`
+	MaxOpenPositions int     `gorm:"column:max_open_positions;type:int;default:1" description:"同一策略最多同时持仓数"`
+	// 持仓参数
+	HoldDuration    int `gorm:"column:hold_duration;type:int;default:14400" description:"持仓时长(秒)，即交易周期，默认 4h=14400"`
+	MaxHoldDuration int `gorm:"column:max_hold_duration;type:int;default:86400" description:"最长持仓硬上限(秒)，防极端行情挂单，默认 24h=86400"`
+	// 止盈止损：0 = 使用 AI 给的建议价，非 0 = 使用此百分比覆盖
+	TakeProfitPct float64 `gorm:"column:take_profit_pct;type:decimal(10,4);default:0.0000" description:"止盈幅度百分比，0=跟 AI 建议"`
+	StopLossPct   float64 `gorm:"column:stop_loss_pct;type:decimal(10,4);default:0.0000" description:"止损幅度百分比，0=跟 AI 建议"`
+	// 仓位参数
+	Leverage     float64 `gorm:"column:leverage;type:decimal(6,2);default:10.00" description:"杠杆倍数"`
+	Contracts    int     `gorm:"column:contracts;type:int;default:1" description:"开仓张数，1张=0.001BTC"`
+	MakerFeeRate float64 `gorm:"column:maker_fee_rate;type:decimal(10,6);default:0.000200" description:"Maker 手续费率"`
+	TakerFeeRate float64 `gorm:"column:taker_fee_rate;type:decimal(10,6);default:0.000500" description:"Taker 手续费率"`
+	Remark       string  `gorm:"column:remark;type:varchar(255)" description:"备注"`
+}
+
+func (s *TradeStrategy) TableName() string { return "trade_strategy" }
+
+// TradeStrategyPosition 持仓生命周期表：记录从开仓到平仓的完整过程。
+// 状态机：open → closed（close_reason: tp/sl/timeout/manual）。
+type TradeStrategyPosition struct {
+	db.BaseEntity
+	StrategyID   int64  `gorm:"column:strategy_id;type:bigint;not null;index:idx_strategy_id" description:"关联策略ID"`
+	PredictionID int64  `gorm:"column:prediction_id;type:bigint;not null;index:idx_prediction_id" description:"触发信号的 AI 预测ID"`
+	PlatformCode string `gorm:"column:platform_code;type:varchar(32);not null" description:"平台代码"`
+	CoinCode     string `gorm:"column:coin_code;type:varchar(32);not null" description:"基础币种"`
+	Symbol       string `gorm:"column:symbol;type:varchar(32);not null;index:idx_pos_symbol" description:"交易对 BTCUSDT"`
+	Interval     string `gorm:"column:interval;type:varchar(8);not null" description:"触发预测周期"`
+	Direction    string `gorm:"column:direction;type:varchar(8);not null" description:"开仓方向 long/short"`
+	// 开仓信息
+	OpenPrice       float64 `gorm:"column:open_price;type:decimal(36,18);default:0" description:"开仓价（预测完成后的即时行情价）"`
+	TakeProfitPrice float64 `gorm:"column:take_profit_price;type:decimal(36,18);default:0" description:"止盈价（绝对价位）"`
+	StopLossPrice   float64 `gorm:"column:stop_loss_price;type:decimal(36,18);default:0" description:"止损价（绝对价位）"`
+	Contracts       int     `gorm:"column:contracts;type:int;default:1" description:"张数"`
+	Leverage        float64 `gorm:"column:leverage;type:decimal(6,2);default:1.00" description:"杠杆"`
+	OpenedAt        time.Time  `gorm:"column:opened_at;type:datetime;not null;index:idx_opened_at" description:"开仓时间(UTC)"`
+	HoldUntil       time.Time  `gorm:"column:hold_until;type:datetime;not null;index:idx_hold_until_status" description:"持仓截止时间(UTC)=opened_at+hold_duration"`
+	// 状态机
+	Status      string     `gorm:"column:status;type:varchar(16);not null;default:'open';index:idx_hold_until_status" description:"状态 open/closed"`
+	ClosePrice  float64    `gorm:"column:close_price;type:decimal(36,18);default:0" description:"平仓价"`
+	CloseReason string     `gorm:"column:close_reason;type:varchar(16)" description:"平仓原因 tp/sl/timeout/manual"`
+	ClosedAt    *time.Time `gorm:"column:closed_at;type:datetime" description:"平仓时间(UTC)"`
+	// 结算字段（平仓后回填）
+	Pnl    float64 `gorm:"column:pnl;type:decimal(36,18);default:0" description:"盈亏金额 USDT（名义）"`
+	PnlRate float64 `gorm:"column:pnl_rate;type:decimal(18,8);default:0" description:"盈亏率%（含杠杆）"`
+	Fee    float64 `gorm:"column:fee;type:decimal(36,18);default:0" description:"往返手续费 USDT"`
+	NetPnl float64 `gorm:"column:net_pnl;type:decimal(36,18);default:0" description:"净盈亏 = pnl - fee"`
+	// 辅助字段（冗余，方便查询/分析）
+	Confidence       float64 `gorm:"column:confidence;type:decimal(6,4);default:0" description:"开仓时 AI 置信度"`
+	PredictedMovePct float64 `gorm:"column:predicted_move_pct;type:decimal(10,4);default:0" description:"触发开仓的 AI 预测幅度%"`
+	// 实时追踪（监测循环持续更新）
+	MaxPriceDuringHold float64 `gorm:"column:max_price_during_hold;type:decimal(36,18);default:0" description:"持仓期间最高价"`
+	MinPriceDuringHold float64 `gorm:"column:min_price_during_hold;type:decimal(36,18);default:0" description:"持仓期间最低价"`
+}
+
+func (p *TradeStrategyPosition) TableName() string { return "trade_strategy_position" }

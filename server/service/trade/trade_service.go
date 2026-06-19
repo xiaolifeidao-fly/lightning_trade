@@ -20,24 +20,28 @@ import (
 )
 
 type TradeService struct {
-	tradeOrderRepository        *tradeRepository.TradeOrderRepository
-	tradeMatchRepository        *tradeRepository.TradeMatchRepository
-	tradeKlineRepository        *tradeRepository.TradeKlineRepository
-	tradeDetailRepository       *tradeRepository.TradeDetailRepository
-	tradeUserSummaryRepository  *tradeRepository.TradeUserSummaryRepository
-	tradeUserPnlRepository      *tradeRepository.TradeUserPnlRepository
-	tradeAIPredictionRepository *tradeRepository.TradeAIPredictionRepository
+	tradeOrderRepository            *tradeRepository.TradeOrderRepository
+	tradeMatchRepository            *tradeRepository.TradeMatchRepository
+	tradeKlineRepository            *tradeRepository.TradeKlineRepository
+	tradeDetailRepository           *tradeRepository.TradeDetailRepository
+	tradeUserSummaryRepository      *tradeRepository.TradeUserSummaryRepository
+	tradeUserPnlRepository          *tradeRepository.TradeUserPnlRepository
+	tradeAIPredictionRepository     *tradeRepository.TradeAIPredictionRepository
+	tradeStrategyRepository         *tradeRepository.TradeStrategyRepository
+	tradeStrategyPositionRepository *tradeRepository.TradeStrategyPositionRepository
 }
 
 func NewTradeService() *TradeService {
 	return &TradeService{
-		tradeOrderRepository:        db.GetRepository[tradeRepository.TradeOrderRepository](),
-		tradeMatchRepository:        db.GetRepository[tradeRepository.TradeMatchRepository](),
-		tradeKlineRepository:        db.GetRepository[tradeRepository.TradeKlineRepository](),
-		tradeDetailRepository:       db.GetRepository[tradeRepository.TradeDetailRepository](),
-		tradeUserSummaryRepository:  db.GetRepository[tradeRepository.TradeUserSummaryRepository](),
-		tradeUserPnlRepository:      db.GetRepository[tradeRepository.TradeUserPnlRepository](),
-		tradeAIPredictionRepository: db.GetRepository[tradeRepository.TradeAIPredictionRepository](),
+		tradeOrderRepository:            db.GetRepository[tradeRepository.TradeOrderRepository](),
+		tradeMatchRepository:            db.GetRepository[tradeRepository.TradeMatchRepository](),
+		tradeKlineRepository:            db.GetRepository[tradeRepository.TradeKlineRepository](),
+		tradeDetailRepository:           db.GetRepository[tradeRepository.TradeDetailRepository](),
+		tradeUserSummaryRepository:      db.GetRepository[tradeRepository.TradeUserSummaryRepository](),
+		tradeUserPnlRepository:          db.GetRepository[tradeRepository.TradeUserPnlRepository](),
+		tradeAIPredictionRepository:     db.GetRepository[tradeRepository.TradeAIPredictionRepository](),
+		tradeStrategyRepository:         db.GetRepository[tradeRepository.TradeStrategyRepository](),
+		tradeStrategyPositionRepository: db.GetRepository[tradeRepository.TradeStrategyPositionRepository](),
 	}
 }
 
@@ -60,7 +64,13 @@ func (s *TradeService) EnsureTable() error {
 	if err := s.tradeUserPnlRepository.EnsureTable(); err != nil {
 		return err
 	}
-	return s.tradeAIPredictionRepository.EnsureTable()
+	if err := s.tradeAIPredictionRepository.EnsureTable(); err != nil {
+		return err
+	}
+	if err := s.tradeStrategyRepository.EnsureTable(); err != nil {
+		return err
+	}
+	return s.tradeStrategyPositionRepository.EnsureTable()
 }
 
 // SaveAIPrediction 落库一条 AI 模拟盘预测（oracle 调用入口，按维度幂等 upsert）。
@@ -95,6 +105,8 @@ func (s *TradeService) SaveAIPrediction(dto tradeDTO.TradeAIPredictionSaveDTO) e
 		Interval:     interval,
 		PredictTime:  time.Unix(dto.PredictTime, 0),
 		RefPrice:     dto.RefPrice,
+		OpenPrice:    dto.OpenPrice,
+		CostMs:       dto.CostMs,
 		PredictPrice: dto.PredictPrice,
 		PredictHigh:  dto.PredictHigh,
 		PredictLow:   dto.PredictLow,
@@ -110,6 +122,59 @@ func (s *TradeService) SaveAIPrediction(dto tradeDTO.TradeAIPredictionSaveDTO) e
 		Provider:     strings.TrimSpace(dto.Provider),
 	}
 	return s.tradeAIPredictionRepository.Upsert(entity)
+}
+
+// SaveAIPredictionWithID 落库预测并返回记录 ID，供策略检测门关联 prediction_id。
+func (s *TradeService) SaveAIPredictionWithID(dto tradeDTO.TradeAIPredictionSaveDTO) (int64, error) {
+	if s.tradeAIPredictionRepository.Db == nil {
+		return 0, fmt.Errorf("database is not initialized")
+	}
+	platformCode := strings.ToLower(strings.TrimSpace(dto.PlatformCode))
+	if platformCode == "" {
+		platformCode = argusTrade.PlatformBinance
+	}
+	symbol := strings.ToUpper(strings.TrimSpace(dto.Symbol))
+	if symbol == "" {
+		return 0, fmt.Errorf("symbol 不能为空")
+	}
+	coinCode := strings.ToUpper(strings.TrimSpace(dto.CoinCode))
+	if coinCode == "" {
+		coinCode = strings.TrimSuffix(symbol, "USDT")
+	}
+	interval := strings.TrimSpace(dto.Interval)
+	if interval == "" {
+		return 0, fmt.Errorf("interval 不能为空")
+	}
+	if dto.PredictTime <= 0 {
+		return 0, fmt.Errorf("predictTime 不能为空")
+	}
+	entity := &tradeRepository.TradeAIPrediction{
+		PlatformCode: platformCode,
+		Symbol:       symbol,
+		CoinCode:     coinCode,
+		Interval:     interval,
+		PredictTime:  time.Unix(dto.PredictTime, 0),
+		RefPrice:     dto.RefPrice,
+		OpenPrice:    dto.OpenPrice,
+		CostMs:       dto.CostMs,
+		PredictPrice: dto.PredictPrice,
+		PredictHigh:  dto.PredictHigh,
+		PredictLow:   dto.PredictLow,
+		Invalidation: dto.Invalidation,
+		Trend:        strings.TrimSpace(dto.Trend),
+		Signal:       strings.TrimSpace(dto.Signal),
+		Confidence:   dto.Confidence,
+		StopLoss:     dto.StopLoss,
+		TakeProfit:   dto.TakeProfit,
+		Reason:       dto.Reason,
+		RawResponse:  dto.RawResponse,
+		Model:        strings.TrimSpace(dto.Model),
+		Provider:     strings.TrimSpace(dto.Provider),
+	}
+	if err := s.tradeAIPredictionRepository.Upsert(entity); err != nil {
+		return 0, err
+	}
+	return int64(entity.Id), nil
 }
 
 // SettleDuePredictions 把已到期(predict_time<=now)但尚未结算的预测回填两类指标：
@@ -911,7 +976,11 @@ func buildSimulationSeries(
 		if aiPrice == 0 {
 			continue
 		}
+		// 已结算的预测用落库时冻结的真实收盘价(actual_price)，避免每次刷新按最新 1m K线重算导致利润浮动。
 		closePrice := realKline.ClosePrice
+		if pred.Settled == 1 && pred.ActualPrice > 0 {
+			closePrice = pred.ActualPrice
+		}
 		diff := aiPrice - closePrice
 		diffRate := 0.0
 		if closePrice != 0 {
@@ -928,6 +997,11 @@ func buildSimulationSeries(
 			diffCount++
 		}
 		touched, winLow, winHigh := touchedInWindow(float64(pred.CreatedTime.Unix()), float64(realKline.Timestamp), aiPrice)
+		// 已结算：用落库冻结的区间真实最高/最低价(actual_high/actual_low)，避免刷新按最新K线重算导致区间/触达/利润浮动。
+		if pred.Settled == 1 && pred.ActualHigh > 0 && pred.ActualLow > 0 {
+			winLow, winHigh = pred.ActualLow, pred.ActualHigh
+			touched = aiPrice >= winLow && aiPrice <= winHigh
+		}
 		if touched {
 			touchCount++
 		}
@@ -973,6 +1047,8 @@ func buildSimulationSeries(
 			CreatedTime: createdTime,
 			Trend:       strings.TrimSpace(pred.Trend),
 			RefPrice:    roundPrice(pred.RefPrice),
+			OpenPrice:   roundPrice(pred.OpenPrice),
+			CostMs:      pred.CostMs,
 			RealPrice:   roundPrice(closePrice),
 			AIPrice:     roundPrice(aiPrice),
 			Diff:        roundPrice(diff),
@@ -1612,4 +1688,73 @@ func (s *TradeService) GetStrategyBacktest(ctx context.Context, query tradeDTO.T
 	}
 	result.Best = best
 	return result, nil
+}
+
+// ── 策略 & 持仓方法 ──────────────────────────────────────────────────────────
+
+// GetActiveStrategies 返回指定 platform×symbol×interval 下所有启用的策略。
+func (s *TradeService) GetActiveStrategies(platformCode, symbol, interval string) ([]*tradeRepository.TradeStrategy, error) {
+	return s.tradeStrategyRepository.FindActiveBySymbolInterval(platformCode, symbol, interval)
+}
+
+// CountOpenPositions 返回指定策略当前未平仓数，供 max_open_positions 检查。
+func (s *TradeService) CountOpenPositions(strategyID int64) (int64, error) {
+	return s.tradeStrategyRepository.CountOpenPositions(strategyID)
+}
+
+// OpenPosition 写入一条 status=open 的持仓记录。
+func (s *TradeService) OpenPosition(pos *tradeRepository.TradeStrategyPosition) error {
+	return s.tradeStrategyPositionRepository.CreatePosition(pos)
+}
+
+// GetOpenPositions 返回所有未平仓持仓，供监测循环使用。
+func (s *TradeService) GetOpenPositions() ([]*tradeRepository.TradeStrategyPosition, error) {
+	return s.tradeStrategyPositionRepository.FindOpenPositions()
+}
+
+// ClosePosition 事务平仓，计算盈亏并写入结算字段。
+// 若持仓已不是 open 状态（重复触发），返回 gorm.ErrRecordNotFound，调用方可安全忽略。
+func (s *TradeService) ClosePosition(
+	pos *tradeRepository.TradeStrategyPosition,
+	closePrice float64,
+	closeReason string,
+	closedAt time.Time,
+	makerFeeRate, takerFeeRate float64,
+) error {
+	contractSize := 0.001 // 1 张 = 0.001 BTC
+	qty := float64(pos.Contracts) * contractSize
+
+	// 盈亏方向
+	var rawPnl float64
+	switch pos.Direction {
+	case "long":
+		rawPnl = (closePrice - pos.OpenPrice) * qty
+	case "short":
+		rawPnl = (pos.OpenPrice - closePrice) * qty
+	default:
+		rawPnl = 0
+	}
+
+	// 手续费：开仓 Taker，平仓止盈用 Maker，其余用 Taker
+	closeFeeRate := takerFeeRate
+	if closeReason == "tp" {
+		closeFeeRate = makerFeeRate
+	}
+	fee := pos.OpenPrice*qty*takerFeeRate + closePrice*qty*closeFeeRate
+
+	netPnl := rawPnl - fee
+	pnlRate := 0.0
+	if pos.OpenPrice > 0 {
+		pnlRate = (rawPnl / (pos.OpenPrice * qty / pos.Leverage)) * 100
+	}
+
+	return s.tradeStrategyPositionRepository.ClosePositionTx(
+		pos.Id, closePrice, closeReason, closedAt,
+		rawPnl, pnlRate, fee, netPnl,
+	)
+}
+
+// UpdatePositionMinMax 更新持仓期间的最高/最低价追踪。
+func (s *TradeService) UpdatePositionMinMax(pos *tradeRepository.TradeStrategyPosition, currentPrice float64) error {
+	return s.tradeStrategyPositionRepository.UpdateMinMaxPrice(pos.Id, currentPrice, pos)
 }
