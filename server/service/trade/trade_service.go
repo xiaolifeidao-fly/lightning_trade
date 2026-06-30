@@ -4,11 +4,15 @@ import (
 	baseDTO "common/base/dto"
 	"common/middleware/db"
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"math/rand"
+	"net/http"
+	pressureRepository "service/pressure/repository"
 	tradeDTO "service/trade/dto"
 	tradeRepository "service/trade/repository"
+	"service/trade/strategy"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,6 +33,10 @@ type TradeService struct {
 	tradeAIPredictionRepository     *tradeRepository.TradeAIPredictionRepository
 	tradeStrategyRepository         *tradeRepository.TradeStrategyRepository
 	tradeStrategyPositionRepository *tradeRepository.TradeStrategyPositionRepository
+	tradeBacktestRunRepository      *tradeRepository.TradeBacktestRunRepository
+	tradeBacktestTradeRepository    *tradeRepository.TradeBacktestTradeRepository
+	tradeBacktestMetricRepository   *tradeRepository.TradeBacktestMetricRepository
+	pressureAnalysisRepository      *pressureRepository.PressureAnalysisRepository
 }
 
 func NewTradeService() *TradeService {
@@ -42,6 +50,10 @@ func NewTradeService() *TradeService {
 		tradeAIPredictionRepository:     db.GetRepository[tradeRepository.TradeAIPredictionRepository](),
 		tradeStrategyRepository:         db.GetRepository[tradeRepository.TradeStrategyRepository](),
 		tradeStrategyPositionRepository: db.GetRepository[tradeRepository.TradeStrategyPositionRepository](),
+		tradeBacktestRunRepository:      db.GetRepository[tradeRepository.TradeBacktestRunRepository](),
+		tradeBacktestTradeRepository:    db.GetRepository[tradeRepository.TradeBacktestTradeRepository](),
+		tradeBacktestMetricRepository:   db.GetRepository[tradeRepository.TradeBacktestMetricRepository](),
+		pressureAnalysisRepository:      db.GetRepository[pressureRepository.PressureAnalysisRepository](),
 	}
 }
 
@@ -70,7 +82,16 @@ func (s *TradeService) EnsureTable() error {
 	if err := s.tradeStrategyRepository.EnsureTable(); err != nil {
 		return err
 	}
-	return s.tradeStrategyPositionRepository.EnsureTable()
+	if err := s.tradeStrategyPositionRepository.EnsureTable(); err != nil {
+		return err
+	}
+	if err := s.tradeBacktestRunRepository.EnsureTable(); err != nil {
+		return err
+	}
+	if err := s.tradeBacktestTradeRepository.EnsureTable(); err != nil {
+		return err
+	}
+	return s.tradeBacktestMetricRepository.EnsureTable()
 }
 
 // SaveAIPrediction 落库一条 AI 模拟盘预测（oracle 调用入口，按维度幂等 upsert）。
@@ -78,48 +99,9 @@ func (s *TradeService) SaveAIPrediction(dto tradeDTO.TradeAIPredictionSaveDTO) e
 	if s.tradeAIPredictionRepository.Db == nil {
 		return fmt.Errorf("database is not initialized")
 	}
-	platformCode := strings.ToLower(strings.TrimSpace(dto.PlatformCode))
-	if platformCode == "" {
-		platformCode = argusTrade.PlatformBinance
-	}
-	symbol := strings.ToUpper(strings.TrimSpace(dto.Symbol))
-	if symbol == "" {
-		return fmt.Errorf("symbol 不能为空")
-	}
-	coinCode := strings.ToUpper(strings.TrimSpace(dto.CoinCode))
-	if coinCode == "" {
-		coinCode = strings.TrimSuffix(symbol, "USDT")
-	}
-	interval := strings.TrimSpace(dto.Interval)
-	if interval == "" {
-		return fmt.Errorf("interval 不能为空")
-	}
-	if dto.PredictTime <= 0 {
-		return fmt.Errorf("predictTime 不能为空")
-	}
-
-	entity := &tradeRepository.TradeAIPrediction{
-		PlatformCode: platformCode,
-		Symbol:       symbol,
-		CoinCode:     coinCode,
-		Interval:     interval,
-		PredictTime:  time.Unix(dto.PredictTime, 0),
-		RefPrice:     dto.RefPrice,
-		OpenPrice:    dto.OpenPrice,
-		CostMs:       dto.CostMs,
-		PredictPrice: dto.PredictPrice,
-		PredictHigh:  dto.PredictHigh,
-		PredictLow:   dto.PredictLow,
-		Invalidation: dto.Invalidation,
-		Trend:        strings.TrimSpace(dto.Trend),
-		Signal:       strings.TrimSpace(dto.Signal),
-		Confidence:   dto.Confidence,
-		StopLoss:     dto.StopLoss,
-		TakeProfit:   dto.TakeProfit,
-		Reason:       dto.Reason,
-		RawResponse:  dto.RawResponse,
-		Model:        strings.TrimSpace(dto.Model),
-		Provider:     strings.TrimSpace(dto.Provider),
+	entity, err := assembleAIPrediction(dto)
+	if err != nil {
+		return err
 	}
 	return s.tradeAIPredictionRepository.Upsert(entity)
 }
@@ -129,13 +111,25 @@ func (s *TradeService) SaveAIPredictionWithID(dto tradeDTO.TradeAIPredictionSave
 	if s.tradeAIPredictionRepository.Db == nil {
 		return 0, fmt.Errorf("database is not initialized")
 	}
+	entity, err := assembleAIPrediction(dto)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.tradeAIPredictionRepository.Upsert(entity); err != nil {
+		return 0, err
+	}
+	return int64(entity.Id), nil
+}
+
+// assembleAIPrediction 把落库 DTO 校验并组装成预测实体（不落库），供 SaveAIPrediction 系方法复用。
+func assembleAIPrediction(dto tradeDTO.TradeAIPredictionSaveDTO) (*tradeRepository.TradeAIPrediction, error) {
 	platformCode := strings.ToLower(strings.TrimSpace(dto.PlatformCode))
 	if platformCode == "" {
 		platformCode = argusTrade.PlatformBinance
 	}
 	symbol := strings.ToUpper(strings.TrimSpace(dto.Symbol))
 	if symbol == "" {
-		return 0, fmt.Errorf("symbol 不能为空")
+		return nil, fmt.Errorf("symbol 不能为空")
 	}
 	coinCode := strings.ToUpper(strings.TrimSpace(dto.CoinCode))
 	if coinCode == "" {
@@ -143,12 +137,12 @@ func (s *TradeService) SaveAIPredictionWithID(dto tradeDTO.TradeAIPredictionSave
 	}
 	interval := strings.TrimSpace(dto.Interval)
 	if interval == "" {
-		return 0, fmt.Errorf("interval 不能为空")
+		return nil, fmt.Errorf("interval 不能为空")
 	}
 	if dto.PredictTime <= 0 {
-		return 0, fmt.Errorf("predictTime 不能为空")
+		return nil, fmt.Errorf("predictTime 不能为空")
 	}
-	entity := &tradeRepository.TradeAIPrediction{
+	return &tradeRepository.TradeAIPrediction{
 		PlatformCode: platformCode,
 		Symbol:       symbol,
 		CoinCode:     coinCode,
@@ -170,11 +164,31 @@ func (s *TradeService) SaveAIPredictionWithID(dto tradeDTO.TradeAIPredictionSave
 		RawResponse:  dto.RawResponse,
 		Model:        strings.TrimSpace(dto.Model),
 		Provider:     strings.TrimSpace(dto.Provider),
+	}, nil
+}
+
+// SaveAIPredictionAt 落库一条预测并把发起时刻(created_time)指定为 createdTime，用于回填历史预测。
+// 与 SaveAIPrediction 唯一区别是显式锚定发起时刻；BaseEntity.Init 仅在零值时填 now，故此处预设不会被覆盖。
+func (s *TradeService) SaveAIPredictionAt(dto tradeDTO.TradeAIPredictionSaveDTO, createdTime time.Time) error {
+	if s.tradeAIPredictionRepository.Db == nil {
+		return fmt.Errorf("database is not initialized")
 	}
-	if err := s.tradeAIPredictionRepository.Upsert(entity); err != nil {
-		return 0, err
+	entity, err := assembleAIPrediction(dto)
+	if err != nil {
+		return err
 	}
-	return int64(entity.Id), nil
+	entity.CreatedTime = createdTime
+	entity.UpdatedTime = createdTime
+	return s.tradeAIPredictionRepository.Upsert(entity)
+}
+
+// ListPredictionsByCreatedRange 取 平台×币种×周期 在 created_time ∈ [start,end] 的预测（升序）。
+// 回填用：拿源周期(如 1h)的发起时刻作为补跑长周期预测的时间锚点。
+func (s *TradeService) ListPredictionsByCreatedRange(platformCode, coinCode, interval string, start, end time.Time) ([]*tradeRepository.TradeAIPrediction, error) {
+	if s.tradeAIPredictionRepository.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	return s.tradeAIPredictionRepository.ListByCoinIntervalCreatedRange(platformCode, coinCode, interval, start, end)
 }
 
 // SettleDuePredictions 把已到期(predict_time<=now)但尚未结算的预测回填两类指标：
@@ -1041,20 +1055,26 @@ func buildSimulationSeries(
 		if predWidth := pred.PredictHigh - pred.PredictLow; predWidth > 0 && winHigh > 0 && winLow > 0 {
 			bandUtil = (winHigh - winLow) / predWidth
 		}
+		openTimestamp := int64(0)
+		if !pred.CreatedTime.IsZero() {
+			openTimestamp = pred.CreatedTime.Unix()
+		}
 		markers = append(markers, tradeDTO.TradeSimulationDiffPointDTO{
-			Time:        realKline.Time,
-			Timestamp:   realKline.Timestamp,
-			CreatedTime: createdTime,
-			Trend:       strings.TrimSpace(pred.Trend),
-			RefPrice:    roundPrice(pred.RefPrice),
-			OpenPrice:   roundPrice(pred.OpenPrice),
-			CostMs:      pred.CostMs,
-			RealPrice:   roundPrice(closePrice),
-			AIPrice:     roundPrice(aiPrice),
-			Diff:        roundPrice(diff),
-			DiffRate:    math.Round(diffRate*10000) / 100,
-			Matched:     matched,
-			Touched:     touched,
+			Time:            realKline.Time,
+			Timestamp:       realKline.Timestamp,
+			CreatedTime:     createdTime,
+			OpenTimestamp:   openTimestamp,
+			Trend:           strings.TrimSpace(pred.Trend),
+			Confidence:      pred.Confidence,
+			RefPrice:        roundPrice(pred.RefPrice),
+			OpenPrice:       roundPrice(pred.OpenPrice),
+			CostMs:          pred.CostMs,
+			RealPrice:       roundPrice(closePrice),
+			AIPrice:         roundPrice(aiPrice),
+			Diff:            roundPrice(diff),
+			DiffRate:        math.Round(diffRate*10000) / 100,
+			Matched:         matched,
+			Touched:         touched,
 			WindowHigh:      roundPrice(winHigh),
 			WindowLow:       roundPrice(winLow),
 			PredictHigh:     roundPrice(pred.PredictHigh),
@@ -1757,4 +1777,568 @@ func (s *TradeService) ClosePosition(
 // UpdatePositionMinMax 更新持仓期间的最高/最低价追踪。
 func (s *TradeService) UpdatePositionMinMax(pos *tradeRepository.TradeStrategyPosition, currentPrice float64) error {
 	return s.tradeStrategyPositionRepository.UpdateMinMaxPrice(pos.Id, currentPrice, pos)
+}
+
+// ─── Strategy CRUD ────────────────────────────────────────────────────────────
+
+// ListStrategies 分页查询策略列表。
+func (s *TradeService) ListStrategies(dto tradeDTO.TradeStrategyQueryDTO) (*tradeDTO.TradeStrategyListDTO, error) {
+	var enabledPtr *int8
+	if dto.Enabled == "0" {
+		v := int8(0)
+		enabledPtr = &v
+	} else if dto.Enabled == "1" {
+		v := int8(1)
+		enabledPtr = &v
+	}
+	rows, total, err := s.tradeStrategyRepository.FindAll(
+		dto.PlatformCode, dto.CoinCode, dto.Symbol, dto.Interval,
+		enabledPtr, dto.Page, dto.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	list := make([]tradeDTO.TradeStrategyDTO, 0, len(rows))
+	for _, r := range rows {
+		list = append(list, strategyToDTO(r))
+	}
+	return &tradeDTO.TradeStrategyListDTO{Total: total, List: list}, nil
+}
+
+// GetStrategyByID 按 ID 查询策略详情。
+func (s *TradeService) GetStrategyByID(id int64) (*tradeDTO.TradeStrategyDTO, error) {
+	r, err := s.tradeStrategyRepository.FindByID(id)
+	if err != nil {
+		return nil, err
+	}
+	dto := strategyToDTO(r)
+	return &dto, nil
+}
+
+// CreateStrategy 校验并创建策略配置。
+func (s *TradeService) CreateStrategy(dto tradeDTO.CreateTradeStrategyDTO) (*tradeDTO.TradeStrategyDTO, error) {
+	if err := validateStrategyInput(dto.Interval, dto.MinConfidence, dto.MaxOpenPositions, dto.Leverage); err != nil {
+		return nil, err
+	}
+	holdSec, err := parseDurationStr(dto.HoldDuration, 14400)
+	if err != nil {
+		return nil, fmt.Errorf("holdDuration: %w", err)
+	}
+	maxHoldSec, err := parseDurationStr(dto.MaxHoldDuration, 86400)
+	if err != nil {
+		return nil, fmt.Errorf("maxHoldDuration: %w", err)
+	}
+	trendFilter := dto.TrendFilter
+	if trendFilter == "" {
+		trendFilter = "both"
+	}
+	maxOpen := dto.MaxOpenPositions
+	if maxOpen < 1 {
+		maxOpen = 1
+	}
+	contracts := dto.Contracts
+	if contracts < 1 {
+		contracts = 1
+	}
+	leverage := dto.Leverage
+	if leverage <= 0 {
+		leverage = 10
+	}
+	enabled := int8(1)
+	if dto.Enabled != nil {
+		enabled = *dto.Enabled
+	}
+	// 入场策略参数：留空时给与引擎一致的默认(市价/α0.15/γ0.10/30分钟/raw)。
+	entryMode := dto.EntryMode
+	if entryMode == "" {
+		entryMode = "market"
+	}
+	entryAlpha := dto.EntryAlpha
+	if entryAlpha <= 0 {
+		entryAlpha = 0.15
+	}
+	exitGamma := dto.ExitGamma
+	if exitGamma <= 0 {
+		exitGamma = 0.10
+	}
+	entryTTL := dto.EntryTTL
+	if entryTTL <= 0 {
+		entryTTL = 1800
+	}
+	variant := dto.PredictionVariant
+	if variant == "" {
+		variant = "raw"
+	}
+	// 止盈止损来源(三选一)：percent/predict/pressure，留空默认 predict(跟 AI 预测)。
+	tpSource := normalizeExitSource(dto.TakeProfitSource)
+	slSource := normalizeExitSource(dto.StopLossSource)
+	pressureBuf := dto.PressureBufferPct
+	if pressureBuf < 0 {
+		pressureBuf = 0
+	}
+	predictSLBuf := dto.PredictSLBufferPct
+	if predictSLBuf < 0 {
+		predictSLBuf = 0
+	}
+	slFloor := dto.StopLossFloorPct
+	if slFloor < 0 {
+		slFloor = 0
+	}
+	tpFloor := dto.TakeProfitFloorPct
+	if tpFloor < 0 {
+		tpFloor = 0
+	}
+	entity := &tradeRepository.TradeStrategy{
+		PlatformCode:       dto.PlatformCode,
+		CoinCode:           dto.CoinCode,
+		Symbol:             strings.ToUpper(dto.Symbol),
+		Interval:           dto.Interval,
+		Enabled:            enabled,
+		MinConfidence:      dto.MinConfidence,
+		MinMovePct:         dto.MinMovePct,
+		TrendFilter:        trendFilter,
+		MaxOpenPositions:   maxOpen,
+		HoldDuration:       holdSec,
+		MaxHoldDuration:    maxHoldSec,
+		TakeProfitPct:      dto.TakeProfitPct,
+		StopLossPct:        dto.StopLossPct,
+		TakeProfitSource:   tpSource,
+		StopLossSource:     slSource,
+		PredictSLBufferPct: predictSLBuf,
+		PressureBufferPct:  pressureBuf,
+		TakeProfitFloorPct: tpFloor,
+		StopLossFloorPct:   slFloor,
+		Leverage:           leverage,
+		Contracts:          contracts,
+		MakerFeeRate:       dto.MakerFeeRate,
+		TakerFeeRate:       dto.TakerFeeRate,
+		EntryMode:          entryMode,
+		EntryAlpha:         entryAlpha,
+		ExitGamma:          exitGamma,
+		EntryTTL:           entryTTL,
+		EfficiencyRoute:    dto.EfficiencyRoute,
+		PredictionVariant:  variant,
+		Remark:             dto.Remark,
+	}
+	if err := s.tradeStrategyRepository.CreateStrategy(entity); err != nil {
+		return nil, err
+	}
+	result := strategyToDTO(entity)
+	return &result, nil
+}
+
+// UpdateStrategy 按 UpdateTradeStrategyDTO 更新可变字段（仅更新非 nil 字段）。
+func (s *TradeService) UpdateStrategy(id int64, dto tradeDTO.UpdateTradeStrategyDTO) error {
+	updates := map[string]interface{}{}
+	if dto.Enabled != nil {
+		updates["enabled"] = *dto.Enabled
+	}
+	if dto.MinConfidence != nil {
+		if *dto.MinConfidence < 0 || *dto.MinConfidence > 1 {
+			return fmt.Errorf("minConfidence must be between 0 and 1")
+		}
+		updates["min_confidence"] = *dto.MinConfidence
+	}
+	if dto.MinMovePct != nil {
+		updates["min_move_pct"] = *dto.MinMovePct
+	}
+	if dto.TrendFilter != nil {
+		updates["trend_filter"] = *dto.TrendFilter
+	}
+	if dto.MaxOpenPositions != nil {
+		if *dto.MaxOpenPositions < 1 {
+			return fmt.Errorf("maxOpenPositions must be >= 1")
+		}
+		updates["max_open_positions"] = *dto.MaxOpenPositions
+	}
+	if dto.HoldDuration != nil {
+		sec, err := parseDurationStr(*dto.HoldDuration, 0)
+		if err != nil || sec <= 0 {
+			return fmt.Errorf("holdDuration: %w", err)
+		}
+		updates["hold_duration"] = sec
+	}
+	if dto.MaxHoldDuration != nil {
+		sec, err := parseDurationStr(*dto.MaxHoldDuration, 0)
+		if err != nil || sec <= 0 {
+			return fmt.Errorf("maxHoldDuration: %w", err)
+		}
+		updates["max_hold_duration"] = sec
+	}
+	if dto.TakeProfitPct != nil {
+		updates["take_profit_pct"] = *dto.TakeProfitPct
+	}
+	if dto.StopLossPct != nil {
+		updates["stop_loss_pct"] = *dto.StopLossPct
+	}
+	if dto.TakeProfitSource != nil {
+		updates["take_profit_source"] = normalizeExitSource(*dto.TakeProfitSource)
+	}
+	if dto.StopLossSource != nil {
+		updates["stop_loss_source"] = normalizeExitSource(*dto.StopLossSource)
+	}
+	if dto.PredictSLBufferPct != nil {
+		if *dto.PredictSLBufferPct < 0 {
+			return fmt.Errorf("predictSlBufferPct must be >= 0")
+		}
+		updates["predict_sl_buffer_pct"] = *dto.PredictSLBufferPct
+	}
+	if dto.PressureBufferPct != nil {
+		if *dto.PressureBufferPct < 0 {
+			return fmt.Errorf("pressureBufferPct must be >= 0")
+		}
+		updates["pressure_buffer_pct"] = *dto.PressureBufferPct
+	}
+	if dto.StopLossFloorPct != nil {
+		if *dto.StopLossFloorPct < 0 {
+			return fmt.Errorf("stopLossFloorPct must be >= 0")
+		}
+		updates["stop_loss_floor_pct"] = *dto.StopLossFloorPct
+	}
+	if dto.TakeProfitFloorPct != nil {
+		if *dto.TakeProfitFloorPct < 0 {
+			return fmt.Errorf("takeProfitFloorPct must be >= 0")
+		}
+		updates["take_profit_floor_pct"] = *dto.TakeProfitFloorPct
+	}
+	if dto.Leverage != nil {
+		if *dto.Leverage < 1 || *dto.Leverage > 125 {
+			return fmt.Errorf("leverage must be between 1 and 125")
+		}
+		updates["leverage"] = *dto.Leverage
+	}
+	if dto.Contracts != nil {
+		if *dto.Contracts < 1 {
+			return fmt.Errorf("contracts must be >= 1")
+		}
+		updates["contracts"] = *dto.Contracts
+	}
+	if dto.MakerFeeRate != nil {
+		updates["maker_fee_rate"] = *dto.MakerFeeRate
+	}
+	if dto.TakerFeeRate != nil {
+		updates["taker_fee_rate"] = *dto.TakerFeeRate
+	}
+	if dto.EntryMode != nil {
+		updates["entry_mode"] = *dto.EntryMode
+	}
+	if dto.EntryAlpha != nil {
+		updates["entry_alpha"] = *dto.EntryAlpha
+	}
+	if dto.ExitGamma != nil {
+		updates["exit_gamma"] = *dto.ExitGamma
+	}
+	if dto.EntryTTL != nil {
+		if *dto.EntryTTL <= 0 {
+			return fmt.Errorf("entryTtl must be > 0")
+		}
+		updates["entry_ttl"] = *dto.EntryTTL
+	}
+	if dto.EfficiencyRoute != nil {
+		updates["efficiency_route"] = *dto.EfficiencyRoute
+	}
+	if dto.PredictionVariant != nil {
+		updates["prediction_variant"] = *dto.PredictionVariant
+	}
+	if dto.Remark != nil {
+		updates["remark"] = *dto.Remark
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	return s.tradeStrategyRepository.UpdateStrategy(id, updates)
+}
+
+// DeleteStrategy 软删除策略。
+func (s *TradeService) DeleteStrategy(id int64) error {
+	return s.tradeStrategyRepository.SoftDelete(id)
+}
+
+// ─── Position Queries ─────────────────────────────────────────────────────────
+
+// ListPositions 分页查询持仓列表。
+func (s *TradeService) ListPositions(dto tradeDTO.TradeStrategyPositionQueryDTO) (*tradeDTO.TradeStrategyPositionListDTO, error) {
+	var startTime, endTime *time.Time
+	if dto.StartTime > 0 {
+		t := time.Unix(dto.StartTime, 0).UTC()
+		startTime = &t
+	}
+	if dto.EndTime > 0 {
+		t := time.Unix(dto.EndTime, 0).UTC()
+		endTime = &t
+	}
+	rows, total, err := s.tradeStrategyPositionRepository.FindByQuery(
+		dto.StrategyID, dto.Symbol, dto.Status,
+		startTime, endTime,
+		dto.Page, dto.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	list := make([]tradeDTO.TradeStrategyPositionDTO, 0, len(rows))
+	for _, r := range rows {
+		list = append(list, positionToDTO(r))
+	}
+	return &tradeDTO.TradeStrategyPositionListDTO{Total: total, List: list}, nil
+}
+
+// GetPositionByID 按 ID 查询持仓详情。
+func (s *TradeService) GetPositionByID(id int64) (*tradeDTO.TradeStrategyPositionDTO, error) {
+	r, err := s.tradeStrategyPositionRepository.FindByID(id)
+	if err != nil {
+		return nil, err
+	}
+	dto := positionToDTO(r)
+	return &dto, nil
+}
+
+// GetPositionSummary 返回持仓汇总统计。
+func (s *TradeService) GetPositionSummary(dto tradeDTO.TradeStrategyPositionSummaryQueryDTO) (*tradeDTO.TradeStrategyPositionSummaryDTO, error) {
+	var startTime, endTime *time.Time
+	if dto.StartTime > 0 {
+		t := time.Unix(dto.StartTime, 0).UTC()
+		startTime = &t
+	}
+	if dto.EndTime > 0 {
+		t := time.Unix(dto.EndTime, 0).UTC()
+		endTime = &t
+	}
+	res, err := s.tradeStrategyPositionRepository.GetSummary(dto.StrategyID, dto.Symbol, startTime, endTime)
+	if err != nil {
+		return nil, err
+	}
+	cumNetPnl := 0.0
+	if res.CumNetPnl != nil {
+		cumNetPnl = *res.CumNetPnl
+	}
+	avgHold := 0.0
+	if res.AvgHoldSeconds != nil {
+		avgHold = *res.AvgHoldSeconds
+	}
+	maxWin := 0.0
+	if res.MaxWin != nil {
+		maxWin = *res.MaxWin
+	}
+	maxLoss := 0.0
+	if res.MaxLoss != nil {
+		maxLoss = *res.MaxLoss
+	}
+	winRate := 0.0
+	if res.TotalClosed > 0 {
+		winRate = float64(res.WinCount) / float64(res.TotalClosed) * 100
+	}
+	tpRate, slRate, timeoutRate, manualRate := 0.0, 0.0, 0.0, 0.0
+	if res.TotalClosed > 0 {
+		tpRate = float64(res.TpCount) / float64(res.TotalClosed) * 100
+		slRate = float64(res.SlCount) / float64(res.TotalClosed) * 100
+		timeoutRate = float64(res.TimeoutCount) / float64(res.TotalClosed) * 100
+		manualRate = float64(res.ManualCount) / float64(res.TotalClosed) * 100
+	}
+	return &tradeDTO.TradeStrategyPositionSummaryDTO{
+		TotalOpens:       res.TotalOpens,
+		CurrentOpen:      res.CurrentOpen,
+		TotalClosed:      res.TotalClosed,
+		CumulativeNetPnl: cumNetPnl,
+		WinRate:          math.Round(winRate*100) / 100,
+		AvgHoldSeconds:   math.Round(avgHold*100) / 100,
+		MaxWin:           maxWin,
+		MaxLoss:          maxLoss,
+		TpCount:          res.TpCount,
+		SlCount:          res.SlCount,
+		TimeoutCount:     res.TimeoutCount,
+		ManualCount:      res.ManualCount,
+		TpRate:           math.Round(tpRate*100) / 100,
+		SlRate:           math.Round(slRate*100) / 100,
+		TimeoutRate:      math.Round(timeoutRate*100) / 100,
+		ManualRate:       math.Round(manualRate*100) / 100,
+	}, nil
+}
+
+// ManualClosePosition 手动平仓：从 Binance 取即时价，以 close_reason=manual 平仓。
+func (s *TradeService) ManualClosePosition(id int64) error {
+	pos, err := s.tradeStrategyPositionRepository.FindByID(id)
+	if err != nil {
+		return err
+	}
+	if pos.Status != "open" {
+		return fmt.Errorf("position %d is not open", id)
+	}
+	price, err := fetchBinancePrice(pos.Symbol)
+	if err != nil {
+		return fmt.Errorf("fetch price for %s: %w", pos.Symbol, err)
+	}
+	return s.ClosePosition(pos, price, "manual", time.Now().UTC(), pos.Leverage, pos.Leverage)
+}
+
+// GetMarketPrice 从 Binance 永续合约 REST 接口取即时价。
+func (s *TradeService) GetMarketPrice(symbol string) (float64, error) {
+	return fetchBinancePrice(strings.ToUpper(symbol))
+}
+
+// ─── helpers ──────────────────────────────────────────────────────────────────
+
+// normalizeExitSource 归一化止盈止损来源(percent/predict/pressure)：
+// 未知或历史遗留值(如老的 ratio)一律视为 predict(跟 AI 预测)，与引擎默认回退一致。
+func normalizeExitSource(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case strategy.SourcePercent:
+		return strategy.SourcePercent
+	case strategy.SourcePressure:
+		return strategy.SourcePressure
+	default:
+		return strategy.SourcePredict
+	}
+}
+
+func strategyToDTO(r *tradeRepository.TradeStrategy) tradeDTO.TradeStrategyDTO {
+	return tradeDTO.TradeStrategyDTO{
+		ID:                 int64(r.Id),
+		PlatformCode:       r.PlatformCode,
+		CoinCode:           r.CoinCode,
+		Symbol:             r.Symbol,
+		Interval:           r.Interval,
+		Enabled:            r.Enabled,
+		MinConfidence:      r.MinConfidence,
+		MinMovePct:         r.MinMovePct,
+		TrendFilter:        r.TrendFilter,
+		MaxOpenPositions:   r.MaxOpenPositions,
+		HoldDuration:       r.HoldDuration,
+		MaxHoldDuration:    r.MaxHoldDuration,
+		TakeProfitPct:      r.TakeProfitPct,
+		StopLossPct:        r.StopLossPct,
+		TakeProfitSource:   r.TakeProfitSource,
+		StopLossSource:     r.StopLossSource,
+		PredictSLBufferPct: r.PredictSLBufferPct,
+		PressureBufferPct:  r.PressureBufferPct,
+		TakeProfitFloorPct: r.TakeProfitFloorPct,
+		StopLossFloorPct:   r.StopLossFloorPct,
+		Leverage:           r.Leverage,
+		Contracts:          r.Contracts,
+		MakerFeeRate:       r.MakerFeeRate,
+		TakerFeeRate:       r.TakerFeeRate,
+		EntryMode:          r.EntryMode,
+		EntryAlpha:         r.EntryAlpha,
+		ExitGamma:          r.ExitGamma,
+		EntryTTL:           r.EntryTTL,
+		EfficiencyRoute:    r.EfficiencyRoute,
+		PredictionVariant:  r.PredictionVariant,
+		Remark:             r.Remark,
+		CreatedTime:        r.CreatedTime.UTC().Format(time.RFC3339),
+		UpdatedTime:        r.UpdatedTime.UTC().Format(time.RFC3339),
+	}
+}
+
+func positionToDTO(r *tradeRepository.TradeStrategyPosition) tradeDTO.TradeStrategyPositionDTO {
+	closedAt := ""
+	if r.ClosedAt != nil {
+		closedAt = r.ClosedAt.UTC().Format(time.RFC3339)
+	}
+	return tradeDTO.TradeStrategyPositionDTO{
+		ID:                 int64(r.Id),
+		StrategyID:         r.StrategyID,
+		PredictionID:       r.PredictionID,
+		PlatformCode:       r.PlatformCode,
+		CoinCode:           r.CoinCode,
+		Symbol:             r.Symbol,
+		Interval:           r.Interval,
+		Direction:          r.Direction,
+		OpenPrice:          r.OpenPrice,
+		TakeProfitPrice:    r.TakeProfitPrice,
+		StopLossPrice:      r.StopLossPrice,
+		Contracts:          r.Contracts,
+		Leverage:           r.Leverage,
+		OpenedAt:           r.OpenedAt.UTC().Format(time.RFC3339),
+		HoldUntil:          r.HoldUntil.UTC().Format(time.RFC3339),
+		Status:             r.Status,
+		ClosePrice:         r.ClosePrice,
+		CloseReason:        r.CloseReason,
+		ClosedAt:           closedAt,
+		Pnl:                r.Pnl,
+		PnlRate:            r.PnlRate,
+		Fee:                r.Fee,
+		NetPnl:             r.NetPnl,
+		Confidence:         r.Confidence,
+		PredictedMovePct:   r.PredictedMovePct,
+		MaxPriceDuringHold: r.MaxPriceDuringHold,
+		MinPriceDuringHold: r.MinPriceDuringHold,
+		CreatedTime:        r.CreatedTime.UTC().Format(time.RFC3339),
+	}
+}
+
+// parseDurationStr 解析持仓时长字符串："4h"→14400，"15m"→900，"3600"→3600。
+// defaultVal 在 s 为空时返回。
+func parseDurationStr(s string, defaultVal int) (int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return defaultVal, nil
+	}
+	if n, err := strconv.Atoi(s); err == nil {
+		return n, nil
+	}
+	unit := s[len(s)-1]
+	num, err := strconv.Atoi(s[:len(s)-1])
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q", s)
+	}
+	switch unit {
+	case 'd':
+		return num * 86400, nil
+	case 'h':
+		return num * 3600, nil
+	case 'm':
+		return num * 60, nil
+	case 's':
+		return num, nil
+	default:
+		return 0, fmt.Errorf("unknown unit %q in %q", string(unit), s)
+	}
+}
+
+// validateStrategyInput 校验关键字段约束。
+func validateStrategyInput(interval string, minConfidence float64, maxOpenPositions int, leverage float64) error {
+	validIntervals := map[string]bool{
+		"1m": true, "3m": true, "5m": true, "15m": true, "30m": true,
+		"1h": true, "2h": true, "4h": true, "6h": true, "8h": true,
+		"12h": true, "1d": true,
+	}
+	if interval != "" && !validIntervals[interval] {
+		return fmt.Errorf("interval %q is not valid", interval)
+	}
+	if minConfidence < 0 || minConfidence > 1 {
+		return fmt.Errorf("minConfidence must be between 0 and 1")
+	}
+	if maxOpenPositions > 0 && maxOpenPositions < 1 {
+		return fmt.Errorf("maxOpenPositions must be >= 1")
+	}
+	if leverage > 0 && (leverage < 1 || leverage > 125) {
+		return fmt.Errorf("leverage must be between 1 and 125")
+	}
+	return nil
+}
+
+// fetchBinancePrice 从 Binance 永续合约 REST 取即时价（manager-api / 手动平仓使用）。
+func fetchBinancePrice(symbol string) (float64, error) {
+	url := fmt.Sprintf("https://fapi.binance.com/fapi/v1/ticker/price?symbol=%s", strings.ToUpper(symbol))
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Price string `json:"price"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, err
+	}
+	price, err := strconv.ParseFloat(strings.TrimSpace(result.Price), 64)
+	if err != nil || price <= 0 {
+		return 0, fmt.Errorf("invalid price %q", result.Price)
+	}
+	return price, nil
 }

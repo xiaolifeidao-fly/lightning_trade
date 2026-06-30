@@ -73,6 +73,126 @@ func (r *TradeStrategyPositionRepository) ClosePositionTx(
 	})
 }
 
+// FindByID 按主键查询持仓记录。
+func (r *TradeStrategyPositionRepository) FindByID(id int64) (*TradeStrategyPosition, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	var row TradeStrategyPosition
+	err := r.Db.Where("id = ? AND active = 1", id).First(&row).Error
+	return &row, err
+}
+
+// FindByQuery 分页查询持仓列表，支持 strategyID/symbol/status/时间范围过滤，按 opened_at DESC。
+func (r *TradeStrategyPositionRepository) FindByQuery(
+	strategyID int64,
+	symbol, status string,
+	startTime, endTime *time.Time,
+	page, pageSize int,
+) ([]*TradeStrategyPosition, int64, error) {
+	if r.Db == nil {
+		return nil, 0, fmt.Errorf("database is not initialized")
+	}
+	q := r.Db.Model(&TradeStrategyPosition{}).Where("active = 1")
+	if strategyID > 0 {
+		q = q.Where("strategy_id = ?", strategyID)
+	}
+	if symbol != "" {
+		q = q.Where("symbol = ?", symbol)
+	}
+	if status != "" {
+		q = q.Where("status = ?", status)
+	}
+	if startTime != nil {
+		q = q.Where("opened_at >= ?", *startTime)
+	}
+	if endTime != nil {
+		q = q.Where("opened_at <= ?", *endTime)
+	}
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if page <= 0 {
+		page = 1
+	}
+	var rows []*TradeStrategyPosition
+	err := q.Order("opened_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows).Error
+	return rows, total, err
+}
+
+// PositionSummaryResult SQL 聚合扫描目标。
+type PositionSummaryResult struct {
+	TotalOpens      int64    `gorm:"column:total_opens"`
+	CurrentOpen     int64    `gorm:"column:current_open"`
+	TotalClosed     int64    `gorm:"column:total_closed"`
+	CumNetPnl       *float64 `gorm:"column:cum_net_pnl"`
+	WinCount        int64    `gorm:"column:win_count"`
+	AvgHoldSeconds  *float64 `gorm:"column:avg_hold_seconds"`
+	MaxWin          *float64 `gorm:"column:max_win"`
+	MaxLoss         *float64 `gorm:"column:max_loss"`
+	TpCount         int64    `gorm:"column:tp_count"`
+	SlCount         int64    `gorm:"column:sl_count"`
+	TimeoutCount    int64    `gorm:"column:timeout_count"`
+	ManualCount     int64    `gorm:"column:manual_count"`
+}
+
+// GetSummary 用单条聚合 SQL 返回持仓汇总统计。
+func (r *TradeStrategyPositionRepository) GetSummary(
+	strategyID int64,
+	symbol string,
+	startTime, endTime *time.Time,
+) (*PositionSummaryResult, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+
+	where := "active = 1"
+	args := []interface{}{}
+	if strategyID > 0 {
+		where += " AND strategy_id = ?"
+		args = append(args, strategyID)
+	}
+	if symbol != "" {
+		where += " AND symbol = ?"
+		args = append(args, symbol)
+	}
+	if startTime != nil {
+		where += " AND opened_at >= ?"
+		args = append(args, *startTime)
+	}
+	if endTime != nil {
+		where += " AND opened_at <= ?"
+		args = append(args, *endTime)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT
+			COUNT(*) AS total_opens,
+			SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) AS current_open,
+			SUM(CASE WHEN status='closed' THEN 1 ELSE 0 END) AS total_closed,
+			SUM(CASE WHEN status='closed' THEN net_pnl ELSE 0 END) AS cum_net_pnl,
+			SUM(CASE WHEN status='closed' AND net_pnl > 0 THEN 1 ELSE 0 END) AS win_count,
+			AVG(CASE WHEN status='closed' AND closed_at IS NOT NULL THEN TIMESTAMPDIFF(SECOND, opened_at, closed_at) ELSE NULL END) AS avg_hold_seconds,
+			MAX(CASE WHEN status='closed' THEN net_pnl ELSE NULL END) AS max_win,
+			MIN(CASE WHEN status='closed' THEN net_pnl ELSE NULL END) AS max_loss,
+			SUM(CASE WHEN close_reason='tp' THEN 1 ELSE 0 END) AS tp_count,
+			SUM(CASE WHEN close_reason='sl' THEN 1 ELSE 0 END) AS sl_count,
+			SUM(CASE WHEN close_reason='timeout' THEN 1 ELSE 0 END) AS timeout_count,
+			SUM(CASE WHEN close_reason='manual' THEN 1 ELSE 0 END) AS manual_count
+		FROM trade_strategy_position
+		WHERE %s`, where)
+
+	var result PositionSummaryResult
+	if err := r.Db.Raw(query, args...).Scan(&result).Error; err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // UpdateMinMaxPrice 实时更新持仓期间的最高/最低价（非事务，允许覆盖竞争）。
 func (r *TradeStrategyPositionRepository) UpdateMinMaxPrice(id int, currentPrice float64, current *TradeStrategyPosition) error {
 	if r.Db == nil {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type TradeOrderRepository struct {
@@ -217,6 +218,61 @@ func (r *TradeKlineRepository) ListBySymbolIntervalTimeRange(symbol, interval st
 	return rows, nil
 }
 
+// LatestKline 取某 symbol+interval 已入库的最新一根(按 open_time 倒序)；无数据返回 (nil, nil)。
+// 回填前用它定位“距离条件最新的一条”，据此推算还需向交易所拉取多少根。
+func (r *TradeKlineRepository) LatestKline(symbol, interval string) (*TradeKline, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	var rows []TradeKline
+	// 用 Limit(1).Find 而非 First：无数据时返回空切片而不触发 ErrRecordNotFound 的错误日志。
+	err := r.Db.Where("active = 1 AND symbol = ? AND `interval` = ?", strings.ToUpper(symbol), interval).
+		Order("open_time DESC").Limit(1).Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	return &rows[0], nil
+}
+
+// CountBySymbolIntervalRange 统计某 symbol+interval 在 [start,end] 内已入库的根数(供回填结果展示)。
+func (r *TradeKlineRepository) CountBySymbolIntervalRange(symbol, interval string, start, end time.Time) (int64, error) {
+	if r.Db == nil {
+		return 0, fmt.Errorf("database is not initialized")
+	}
+	var n int64
+	err := r.Db.Model(&TradeKline{}).
+		Where("active = 1 AND symbol = ? AND `interval` = ? AND open_time >= ? AND open_time <= ?",
+			strings.ToUpper(symbol), interval, start, end).
+		Count(&n).Error
+	return n, err
+}
+
+// UpsertKlines 幂等批量入库：按唯一键 (symbol, interval, open_time) 去重，
+// 冲突时只刷新行情值(覆盖未收盘那根的最新数据)，不动 created_time。返回影响行数。
+func (r *TradeKlineRepository) UpsertKlines(rows []*TradeKline) (int64, error) {
+	if r.Db == nil {
+		return 0, fmt.Errorf("database is not initialized")
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	for _, row := range rows {
+		row.Symbol = strings.ToUpper(row.Symbol)
+		row.Init()
+	}
+	tx := r.Db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "symbol"}, {Name: "interval"}, {Name: "open_time"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"close_time", "open_price", "high_price", "low_price", "close_price",
+			"volume", "turnover", "trade_count", "updated_time",
+		}),
+	}).CreateInBatches(rows, 200)
+	return tx.RowsAffected, tx.Error
+}
+
 type TradeDetailRepository struct {
 	db.Repository[*TradeDetail]
 }
@@ -399,6 +455,79 @@ func (r *TradeAIPredictionRepository) ListByCoinIntervalTimeRange(platformCode, 
 		return nil, err
 	}
 	return rows, nil
+}
+
+// ListByCoinIntervalCreatedRange 按 平台×币种×周期 取 created_time ∈ [start,end] 的预测，按 created_time 升序。
+// 用于回测「K线详情」按发起时刻(=预测周期开盘)取该周期的预测K线序列。
+func (r *TradeAIPredictionRepository) ListByCoinIntervalCreatedRange(platformCode, coinCode, interval string, start, end time.Time) ([]*TradeAIPrediction, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	var rows []*TradeAIPrediction
+	if err := r.Db.Where("active = 1 AND platform_code = ? AND coin_code = ? AND `interval` = ? AND created_time >= ? AND created_time <= ?",
+		strings.ToLower(platformCode), strings.ToUpper(coinCode), interval, start, end).
+		Order("created_time ASC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// FindNearestBefore 取该 平台×币种×周期 中 created_time ≤ t 的最近一条预测(发起时刻在 t 之前最近的)。
+// 无匹配返回 (nil,nil)；用于复合方向锚定「预测开始之前的那根高周期预测线」。
+func (r *TradeAIPredictionRepository) FindNearestBefore(platformCode, coinCode, interval string, t time.Time) (*TradeAIPrediction, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	var row TradeAIPrediction
+	err := r.Db.Where("active = 1 AND platform_code = ? AND coin_code = ? AND `interval` = ? AND created_time <= ?",
+		strings.ToLower(platformCode), strings.ToUpper(coinCode), interval, t).
+		Order("created_time DESC").First(&row).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
+// FindNearestByCreated 取该 平台×币种×周期 中 created_time 距 t 最近的一条(前后都比，绝对值更小者)。
+// 无匹配返回 (nil,nil)；用于复合方向按「时间上最接近预测周期开盘时刻」锚定高周期预测。
+func (r *TradeAIPredictionRepository) FindNearestByCreated(platformCode, coinCode, interval string, t time.Time) (*TradeAIPrediction, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	pc, cc := strings.ToLower(platformCode), strings.ToUpper(coinCode)
+
+	var before, after TradeAIPrediction
+	hasBefore, hasAfter := true, true
+	if err := r.Db.Where("active = 1 AND platform_code = ? AND coin_code = ? AND `interval` = ? AND created_time <= ?",
+		pc, cc, interval, t).Order("created_time DESC").First(&before).Error; err != nil {
+		if err != gorm.ErrRecordNotFound {
+			return nil, err
+		}
+		hasBefore = false
+	}
+	if err := r.Db.Where("active = 1 AND platform_code = ? AND coin_code = ? AND `interval` = ? AND created_time > ?",
+		pc, cc, interval, t).Order("created_time ASC").First(&after).Error; err != nil {
+		if err != gorm.ErrRecordNotFound {
+			return nil, err
+		}
+		hasAfter = false
+	}
+	switch {
+	case hasBefore && hasAfter:
+		if t.Sub(before.CreatedTime) <= after.CreatedTime.Sub(t) {
+			return &before, nil
+		}
+		return &after, nil
+	case hasBefore:
+		return &before, nil
+	case hasAfter:
+		return &after, nil
+	default:
+		return nil, nil
+	}
 }
 
 // ListUnsettled 取 predict_time 已到期(<=before)但尚未结算回填的预测，按 predict_time 升序，最多 limit 条。

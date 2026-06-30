@@ -34,6 +34,8 @@ const pageTitleMap: Record<string, string> = {
   "/trade-orders": "真实交易",
   "/trade-simulation-analysis": "模拟盘分析",
   "/trade-strategy-backtest": "策略回测",
+  "/trade-strategy": "策略管理",
+  "/trade-backtest-runs": "回测对比",
 };
 
 function getOpenKeys(pathname: string) {
@@ -46,7 +48,9 @@ function getOpenKeys(pathname: string) {
   if (
     pathname.startsWith("/trade-orders") ||
     pathname.startsWith("/trade-simulation-analysis") ||
-    pathname.startsWith("/trade-strategy-backtest")
+    pathname.startsWith("/trade-strategy-backtest") ||
+    pathname.startsWith("/trade-strategy") ||
+    pathname.startsWith("/trade-backtest-runs")
   ) {
     return ["/trade-group"];
   }
@@ -116,6 +120,14 @@ export function ManagerShell({ children }: ManagerShellProps) {
           {
             key: "/trade-strategy-backtest",
             label: "策略回测",
+          },
+          {
+            key: "/trade-strategy",
+            label: "策略管理",
+          },
+          {
+            key: "/trade-backtest-runs",
+            label: "回测对比",
           },
         ],
       },

@@ -13,6 +13,7 @@ import (
 	tradeRepository "service/trade/repository"
 
 	"oracle/pkg/analyzer"
+	"oracle/pkg/calibration"
 	"oracle/pkg/collector"
 	"oracle/pkg/hub"
 	"oracle/pkg/indicator"
@@ -167,14 +168,18 @@ func (s *Scheduler) Stop() {
 	s.hub.Stop()
 }
 
+// runLoop 跑预测：所有主周期(1h/4h/12h/1d)统一走相对节奏——
+// 启动即跑一次，随后每隔 1 小时滚动跑下一次（不与周期边界对齐）。
+// 各周期只是预测目标时长(horizon=1h/4h/12h/1d)不同，跑批节奏都按小时滚动重算，
+// 即每小时都为每个周期产出一份「当前时刻起经过该 horizon」的滚动预测。
 func (s *Scheduler) runLoop(coin, interval string) {
 	defer s.wg.Done()
 
 	every := s.cfg.ScanInterval[interval]
 	if every <= 0 {
-		every = s.cfg.DefaultScan
+		every = time.Hour
 	}
-	logrus.Infof("[oracle] %s/%s 启动，间隔=%s", coin, interval, every)
+	logrus.Infof("[oracle] %s/%s 启动(相对节奏)，间隔=%s", coin, interval, every)
 
 	// 启动即跑一次，随后按节奏。
 	s.runOnce(coin, interval)
@@ -311,8 +316,12 @@ func (s *Scheduler) runOnce(coin, interval string) {
 
 	feats := indicator.Compute(snap)
 
+	// 预测时间间隔(horizon)：消息面/压力面按 horizon 解耦——
+	// 短周期由价格微结构主导，慢速消息面不注入、压力面降级为纯价位参考，避免被慢信号系统性带偏方向。
+	horizon := analyzer.IntervalDuration(interval)
+
 	newsSummary := ""
-	if s.news != nil {
+	if s.news != nil && horizon >= s.cfg.News.InjectMinHorizon {
 		newsSummary = s.news.Summary(coin)
 	}
 
@@ -321,10 +330,12 @@ func (s *Scheduler) runOnce(coin, interval string) {
 	if s.pressure != nil && s.cfg.Pressure.InjectToPrediction {
 		pressureSummary = s.pressure.Summary(coin)
 	}
+	// horizon 足够长才用方向性措辞，短周期仅作纯价位参考。
+	pressureDirectional := horizon >= s.cfg.Pressure.DirectionalMinHorizon
 
 	// 记录 AI 检测耗时：从发起到返回。交易瞬变，这段耗时决定预测落地时盘价已偏移多少。
 	aiStart := time.Now()
-	decision, _, err := s.analyzer.Analyze(ctx, snap, feats, newsSummary, pressureSummary)
+	decision, _, err := s.analyzer.Analyze(ctx, snap, feats, newsSummary, pressureSummary, pressureDirectional)
 	if err != nil {
 		logrus.Warnf("[oracle] %s/%s AI分析失败: %v", coin, interval, err)
 		return
@@ -349,7 +360,8 @@ func (s *Scheduler) runOnce(coin, interval string) {
 
 	// P2：策略检测门——预测落库后，检测是否命中已配置的策略条件，命中则开仓。
 	// 使用 openPrice（预测完成后的即时行情价）作为开仓基准价；openPrice=0 时跳过，避免无效开仓。
-	if openPrice > 0 && savedID > 0 && decision.Signal != "hold" {
+	// oracle.strategy.enabled=false 时只预测落库、不触发任何开仓。
+	if s.cfg.Strategy.Enabled && openPrice > 0 && savedID > 0 && decision.Signal != "hold" {
 		s.strategyGate(coin, interval, savedID, openPrice, decision)
 	}
 }
@@ -490,6 +502,41 @@ func resolveSLTP(strategy *tradeRepository.TradeStrategy, decision *analyzer.Dec
 		sl = decision.StopLoss
 	}
 	return tp, sl
+}
+
+// ─── 校准回环装配点（口子，已落地未启动） ──────────────────────────────────────
+//
+// applyCalibration 是「评估 → 反馈 → 预测」闭环接入预测层的装配点：
+// 取已结算预测 → calibration.Score 打分 → 固化成 Calibrator → 注入 analyzer。
+//
+// 目前刻意「只留口子、不启动」，缺三处即可闭环：
+//  1. calibration.Source 的真实实现（基于 s.service 已结算预测构造 []Sample），现传 nil → Pipeline 恒返 Noop；
+//  2. Start() 不调用本方法，也没有任何 ticker 周期性重算校准；
+//  3. cfg.Calibration.Enabled 默认 false。
+// 待 ① 接好、② 在 settleOnce 之后挂一个低频 ticker 调用本方法、③ 打开开关，即生效。
+func (s *Scheduler) applyCalibration(ctx context.Context, coin, interval string) {
+	if !s.cfg.Calibration.Enabled {
+		return // 默认关闭：预测层保持 Noop 校准，行为不变。
+	}
+
+	// TODO(校准回环): 用 s.service 已结算预测实现 calibration.Source 后替换此 nil。
+	var src calibration.Source
+	rep, calib, err := calibration.Pipeline(ctx, src, calibration.Filter{
+		Coin:     coin,
+		Interval: interval,
+		Limit:    s.cfg.Calibration.Lookback,
+	})
+	if err != nil {
+		logrus.Warnf("[calibration] %s/%s 打分失败: %v", coin, interval, err)
+		return
+	}
+	if rep.Samples < s.cfg.Calibration.MinSamples {
+		return // 样本不足，不反馈，维持 Noop。
+	}
+
+	s.analyzer.UseCalibrator(calib)
+	logrus.Infof("[calibration] %s/%s 反馈生效: 样本=%d 命中率=%.2f 置信偏差=%.2f 区间命中=%.2f 建议缩放=%.2f",
+		coin, interval, rep.Samples, rep.HitRate, rep.ConfBias, rep.ContainRate, rep.SuggestBandScale)
 }
 
 // ─── P3：持仓监测循环 ─────────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ import (
 	"manager-api/pkg/news"
 	"manager-api/pkg/permission"
 	"manager-api/pkg/pressure"
+	"manager-api/pkg/strategy"
 	"manager-api/pkg/trade"
 	"manager-api/pkg/user"
 
@@ -34,5 +35,6 @@ func registerHandler() []routers.Handler {
 		build("coin", func() routers.Handler { return coin.NewCoinHandler() }),
 		build("news", func() routers.Handler { return news.NewNewsHandler() }),
 		build("pressure", func() routers.Handler { return pressure.NewPressureHandler() }),
+		build("strategy", func() routers.Handler { return strategy.NewStrategyHandler() }),
 	}
 }

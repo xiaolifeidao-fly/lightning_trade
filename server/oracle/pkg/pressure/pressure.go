@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"oracle/pkg/collector"
@@ -59,19 +60,33 @@ type Result struct {
 	Summary             string                      `json:"summary"`
 }
 
-// Analyzer 调用 LLM 完成压力面分析并落库。
+// cachedPressure 一次成功分析的缓存条目，供预测侧注入。
+type cachedPressure struct {
+	result     Result
+	interval   string
+	refPrice   float64
+	analyzedAt time.Time
+}
+
+// Analyzer 调用 LLM 完成压力面分析并落库，同时按币种缓存最新结果供预测注入。
 type Analyzer struct {
 	cfg     oraclecfg.AIConfig
+	pcfg    oraclecfg.PressureConfig
 	client  *http.Client
 	service *pressuresvc.PressureService
+
+	mu    sync.RWMutex
+	store map[string]cachedPressure
 }
 
 // New 创建压力面分析器。service 可为 nil（仅分析不落库）。
-func New(cfg oraclecfg.AIConfig, service *pressuresvc.PressureService) *Analyzer {
+func New(cfg oraclecfg.AIConfig, pcfg oraclecfg.PressureConfig, service *pressuresvc.PressureService) *Analyzer {
 	return &Analyzer{
 		cfg:     cfg,
+		pcfg:    pcfg,
 		client:  &http.Client{Timeout: cfg.Timeout},
 		service: service,
+		store:   map[string]cachedPressure{},
 	}
 }
 
@@ -116,6 +131,17 @@ func (a *Analyzer) Analyze(ctx context.Context, snap *collector.Snapshot, f indi
 
 	finalize(&result, f.LastClose)
 
+	// 缓存最新结果供预测侧注入（落库失败也不影响内存缓存与注入）。
+	analyzedAt := time.Now()
+	a.mu.Lock()
+	a.store[strings.ToUpper(snap.CoinCode)] = cachedPressure{
+		result:     result,
+		interval:   snap.Interval,
+		refPrice:   f.LastClose,
+		analyzedAt: analyzedAt,
+	}
+	a.mu.Unlock()
+
 	if a.service != nil {
 		if err := a.service.SavePressure(pressureDTO.PressureAnalysisSaveDTO{
 			PlatformCode:        snap.Platform,
@@ -133,12 +159,64 @@ func (a *Analyzer) Analyze(ctx context.Context, snap *collector.Snapshot, f indi
 			Model:               a.cfg.Model,
 			Provider:            a.cfg.Provider,
 			RawResponse:         raw,
-			AnalyzedTime:        time.Now(),
+			AnalyzedTime:        analyzedAt,
 		}); err != nil {
 			return &result, fmt.Errorf("压力面落库失败: %w", err)
 		}
 	}
 	return &result, nil
+}
+
+// Summary 返回可拼进预测 prompt 的压力面摘要（含压力面的计算时间）；无缓存或已过期返回 ""。
+func (a *Analyzer) Summary(coin string) string {
+	coin = strings.ToUpper(strings.TrimSpace(coin))
+	a.mu.RLock()
+	item, ok := a.store[coin]
+	a.mu.RUnlock()
+	if !ok {
+		return ""
+	}
+
+	age := time.Since(item.analyzedAt)
+	// 过期保护：超过分析间隔的 3 倍仍未更新（分析持续失败），视为不可信，不注入。
+	if a.pcfg.AnalyzeInterval > 0 && age > 3*a.pcfg.AnalyzeInterval {
+		return ""
+	}
+
+	r := item.result
+	var b strings.Builder
+	fmt.Fprintf(&b, "压力面(辅助参考，基于%s周期，于 %s 计算，约%.0f分钟前):\n",
+		item.interval, item.analyzedAt.Format("2006-01-02 15:04:05"), age.Minutes())
+	fmt.Fprintf(&b, "  整体倾向=%s 计算时参考价=%.4f\n", r.Bias, item.refPrice)
+	if r.KeyResistance > 0 {
+		fmt.Fprintf(&b, "  关键阻力(做空压力位)=%.4f\n", r.KeyResistance)
+	}
+	if r.KeySupport > 0 {
+		fmt.Fprintf(&b, "  关键支撑(做多压力位)=%.4f\n", r.KeySupport)
+	}
+	if s := formatLevels(r.ShortPressureLevels); s != "" {
+		fmt.Fprintf(&b, "  上方阻力(做空压力位): %s\n", s)
+	}
+	if s := formatLevels(r.LongPressureLevels); s != "" {
+		fmt.Fprintf(&b, "  下方支撑(做多压力位): %s\n", s)
+	}
+	if strings.TrimSpace(r.Summary) != "" {
+		fmt.Fprintf(&b, "  综述: %s\n", r.Summary)
+	}
+	return b.String()
+}
+
+// formatLevels 取最多前 4 个价位（已按从近到远排序），格式化为「价格(强度)」串，控制注入 token。
+func formatLevels(levels []pressureDTO.PressureLevel) string {
+	const maxLevels = 4
+	parts := make([]string, 0, maxLevels)
+	for i, lv := range levels {
+		if i >= maxLevels {
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%.4f(强度%.2f)", lv.Price, lv.Strength))
+	}
+	return strings.Join(parts, "、")
 }
 
 // finalize 归一化倾向并对价位做方向/排序校验：

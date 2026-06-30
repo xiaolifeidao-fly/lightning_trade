@@ -38,6 +38,25 @@ func (r *PressureAnalysisRepository) FindLatestByCoin(coinCode string) (*Pressur
 	return &entity, nil
 }
 
+// ListByCoinPlatformBefore 取指定平台×币种、analyzed_time ≤ end 的历史压力面分析，按 analyzed_time 升序返回。
+// 供回测「时间对齐」用：每条预测取信号时刻之前最近一次压力面。platform 为空则不按平台过滤。
+func (r *PressureAnalysisRepository) ListByCoinPlatformBefore(platform, coin string, end time.Time) ([]*PressureAnalysis, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	dbq := r.Db.Model(&PressureAnalysis{}).
+		Where("active = 1 AND coin_code = ?", strings.ToUpper(coin)).
+		Where("analyzed_time <= ?", end)
+	if v := strings.TrimSpace(platform); v != "" {
+		dbq = dbq.Where("platform_code = ?", v)
+	}
+	var rows []*PressureAnalysis
+	if err := dbq.Order("analyzed_time ASC, id ASC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
 // CountByQuery / ListByQuery 支持按平台、币种与时间范围分页查询历史压力面分析。
 func (r *PressureAnalysisRepository) CountByQuery(query pressureDTO.PressureAnalysisQueryDTO) (int64, error) {
 	if r.Db == nil {

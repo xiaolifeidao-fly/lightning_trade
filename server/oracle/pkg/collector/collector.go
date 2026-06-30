@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	argusTrade "argus_single/pkg/trade"
@@ -81,4 +82,39 @@ func Collect(ctx context.Context, cfg oraclecfg.Config, coin, interval string) (
 	}
 
 	return snap, nil
+}
+
+// CurrentPrice 取指定币种的最新成交价，用于在 AI 分析完成后即时采集一份实际盘价(实际开盘价)，
+// 与预测起点时 AI 参考的收盘价(ref_price)区分。
+// 优先取 ticker.Price；ticker 不可用(部分平台/接口波动)时回退到最新一根 1m K线收盘价，
+// 保证只要行情可达就能拿到非 0 价格，避免 open_price 落 0。
+func CurrentPrice(ctx context.Context, cfg oraclecfg.Config, coin string) (float64, error) {
+	coin = strings.ToUpper(strings.TrimSpace(coin))
+	symbol := coin + "USDT"
+
+	if ticker, err := argusTrade.GetTickerByPlatform(ctx, cfg.Platform, argusTrade.MarketTickerRequest{
+		Symbol: symbol,
+	}); err == nil && ticker != nil {
+		if price, perr := strconv.ParseFloat(strings.TrimSpace(ticker.Price), 64); perr == nil && price > 0 {
+			return price, nil
+		}
+	}
+
+	// 回退：最新 1m K线收盘价。
+	klines, err := argusTrade.GetKlinesByPlatform(ctx, cfg.Platform, argusTrade.MarketKlineRequest{
+		Symbol:   symbol,
+		Interval: "1m",
+		Limit:    1,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("拉取最新价失败(%s): %w", symbol, err)
+	}
+	if len(klines) == 0 {
+		return 0, fmt.Errorf("最新价为空(%s)", symbol)
+	}
+	price, err := strconv.ParseFloat(strings.TrimSpace(klines[len(klines)-1].ClosePrice), 64)
+	if err != nil || price <= 0 {
+		return 0, fmt.Errorf("解析最新价失败(%s=%q): %w", symbol, klines[len(klines)-1].ClosePrice, err)
+	}
+	return price, nil
 }

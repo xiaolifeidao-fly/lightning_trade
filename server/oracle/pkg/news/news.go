@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -161,6 +162,15 @@ func (c *Collector) Summary(coin string) string {
 	}
 
 	s := item.s
+	// 无信号过滤：方向中性且强度过弱，视为噪声，不注入——避免一块"中性"内容拉低预测置信度/带偏方向。
+	if s.Sentiment == "neutral" && math.Abs(s.Score) < c.cfg.MinInjectScore {
+		return ""
+	}
+	// 新鲜度过滤：未能联网(以训练期既有认知作答)的消息面不可信，等同 N/A，不注入。
+	if isStaleFreshness(s.Freshness) {
+		return ""
+	}
+
 	var b strings.Builder
 	fmt.Fprintf(&b, "消息面(辅助参考，%.0f分钟前联网获取，对应时间≈%s):\n", age.Minutes(), s.AsOf)
 	fmt.Fprintf(&b, "  方向=%s 强度评分=%.2f(-1偏空~1偏多)\n", s.Sentiment, s.Score)
@@ -177,6 +187,21 @@ func (c *Collector) Summary(coin string) string {
 		fmt.Fprintf(&b, "  数据新鲜度: %s\n", s.Freshness)
 	}
 	return b.String()
+}
+
+// isStaleFreshness 判断消息面新鲜度是否表明「未联网/以训练期既有认知作答」，
+// 此类数据等同 N/A，不应注入预测。命中任一负面标记即视为陈旧。
+func isStaleFreshness(freshness string) bool {
+	f := strings.TrimSpace(freshness)
+	if f == "" {
+		return false
+	}
+	for _, kw := range []string{"未能联网", "未联网", "无法联网", "未能获取", "未获取", "既有认知", "训练期", "训练数据"} {
+		if strings.Contains(f, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalize(s *Sentiment) {

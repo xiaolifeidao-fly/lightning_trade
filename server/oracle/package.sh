@@ -25,7 +25,6 @@ GOOS="$TARGET_OS" GOARCH="$TARGET_ARCH" CGO_ENABLED="${CGO_ENABLED:-0}" \
 
 cp start.sh stop.sh "$DIST_DIR/"
 cp -R script "$DIST_DIR/"
-[ -d configs ] && cp -R configs "$DIST_DIR/"
 [ -f README.md ] && cp README.md "$DIST_DIR/"
 
 chmod +x "$DIST_DIR/$APP_NAME" "$DIST_DIR/start.sh" "$DIST_DIR/stop.sh"

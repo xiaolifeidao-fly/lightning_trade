@@ -184,8 +184,12 @@ export class TradeSimulationMarker {
   time = ""; // 预测时间：被预测的那根未来 K 线时间
   timestamp = 0;
   createdTime = ""; // 执行时间：本条预测落库的时间
+  openTimestamp = 0; // 开盘时间(unix秒)：执行预测那一刻，用作「交易周期」窗口起点
   trend = ""; // AI 预测方向 long/short/neutral
-  refPrice = 0; // 执行时参考的真实盘价格(预测基准价)
+  confidence = 0; // AI 置信度：方向正确的主观概率 0~1
+  refPrice = 0; // AI参考开盘价：发起预测时 AI 看盘的收盘价(预测基准价)
+  openPrice = 0; // 实际开盘价：AI分析完成后即时采集的真实盘价
+  costMs = 0; // AI分析耗时(毫秒)：看盘到检测完成的时间差
   realPrice = 0;
   aiPrice = 0;
   diff = 0;
