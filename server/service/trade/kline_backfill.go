@@ -219,6 +219,8 @@ func intervalDuration(interval string) (time.Duration, bool) {
 		return 12 * time.Hour, true
 	case "1d":
 		return 24 * time.Hour, true
+	case "1w":
+		return 7 * 24 * time.Hour, true
 	default:
 		return 0, false
 	}

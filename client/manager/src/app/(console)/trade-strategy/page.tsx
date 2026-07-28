@@ -32,6 +32,14 @@ import {
 const { Text, Title } = Typography;
 
 const INTERVALS = ["5m", "15m", "1h", "4h"].map((v) => ({ label: v, value: v }));
+const TRADING_PERIODS = [
+  { label: "不启用", value: "" },
+  { label: "1小时", value: "1h" },
+  { label: "4小时", value: "4h" },
+  { label: "12小时", value: "12h" },
+  { label: "1日", value: "1d" },
+  { label: "1周", value: "1w" },
+];
 const ENTRY_MODES = [
   { label: "市价 (开盘价)", value: "market" },
   { label: "回踩限价 (pullback)", value: "pullback" },
@@ -110,6 +118,7 @@ export default function TradeStrategyPage() {
       minMovePct: 0.5,
       trendFilter: "both",
       maxOpenPositions: 1,
+      requireCompositeDir: 0,
       entryMode: "market",
       entryAlpha: 0.15,
       exitGamma: 0.6,
@@ -118,12 +127,20 @@ export default function TradeStrategyPage() {
       predictionVariant: "raw",
       holdDuration: 14400,
       maxHoldDuration: 86400,
+      tradingPeriod: "",
       takeProfitPct: 0,
       stopLossPct: 0,
       takeProfitSource: "predict",
       stopLossSource: "pressure",
       predictSlBufferPct: 0,
       pressureBufferPct: 0,
+      trailActivatePct: 0,
+      trailGiveback: 0.3,
+      trailGivebackMin: 0,
+      earlyCutTimePct: 0,
+      earlyCutMinProfitPct: 15,
+      earlyCutMaxAdversePct: 0,
+      earlyCutArmProfitPct: 0,
       leverage: 10,
       contracts: 1,
       makerFeeRate: 0.0002,
@@ -208,6 +225,26 @@ export default function TradeStrategyPage() {
         <Space size={4} wrap>
           {exitSourceTag("止盈", r.takeProfitSource, r)}
           {exitSourceTag("止损", r.stopLossSource, r)}
+          {r.trailActivatePct > 0 ? (
+            <Tag color="gold">
+              移动止盈 {r.trailActivatePct}%↑/回撤{r.trailGiveback}
+              {r.trailGivebackMin > 0 && r.trailGivebackMin < r.trailGiveback ? `→${r.trailGivebackMin}` : ""}
+            </Tag>
+          ) : null}
+          {r.earlyCutTimePct > 0 ? (
+            <Tag color="volcano">
+              疲软离场 前{r.earlyCutTimePct}%时{"<"}
+              {r.earlyCutMinProfitPct}%
+            </Tag>
+          ) : null}
+          {r.earlyCutMaxAdversePct > 0 ? (
+            <Tag color="red">
+              逆行离场 亏{r.earlyCutMaxAdversePct}%
+              {r.earlyCutArmProfitPct > 0 ? `/赚过${r.earlyCutArmProfitPct}%解除` : ""}
+            </Tag>
+          ) : null}
+          {r.tradingPeriod ? <Tag color="purple">交易周期 {r.tradingPeriod}</Tag> : null}
+          {r.requireCompositeDir === 1 ? <Tag color="geekblue">复合方向门槛</Tag> : null}
         </Space>
       ),
     },
@@ -343,6 +380,15 @@ export default function TradeStrategyPage() {
             <Form.Item label="最大持仓数" name="maxOpenPositions">
               <InputNumber style={{ width: 110 }} min={1} />
             </Form.Item>
+            <Form.Item
+              label="复合方向门槛"
+              name="requireCompositeDir"
+              valuePropName="checked"
+              getValueFromEvent={(c) => (c ? 1 : 0)}
+              tooltip="启用后：取信号时刻最近的 4小时/12小时/1日 预测方向，须全部与本笔方向一致才建仓，否则忽略。任一周期方向相反或缺失都不建仓。"
+            >
+              <Switch />
+            </Form.Item>
           </Space>
 
           <Divider orientation="left" style={{ margin: "4px 0 12px" }}>出场与仓位</Divider>
@@ -412,6 +458,85 @@ export default function TradeStrategyPage() {
             </Form.Item>
             <Form.Item label="最长持仓(秒)" name="maxHoldDuration">
               <InputNumber style={{ width: 130 }} min={1} />
+            </Form.Item>
+            <Form.Item
+              label="交易周期"
+              name="tradingPeriod"
+              tooltip="设了则回测额外按交易周期口径再算一套：入场不变，持仓上限拉长到该周期，止盈止损改用该周期的预测区间。空=只按预测周期。回测详情会以此口径为主展示。"
+            >
+              <Select style={{ width: 130 }} options={TRADING_PERIODS} />
+            </Form.Item>
+            <Form.Item
+              label="移动止盈激活%"
+              name="trailActivatePct"
+              tooltip="峰值回撤式移动止盈：浮盈ROI%(含杠杆)达此值才激活，激活后浮盈每创新高抬高峰值、回撤掉一定比例即落袋。0=不启用，退回静态止盈"
+            >
+              <InputNumber style={{ width: 130 }} min={0} step={10} />
+            </Form.Item>
+            {/* 回撤比例仅在启用移动止盈(激活%>0)时显示 */}
+            <Form.Item noStyle shouldUpdate={(p, c) => p.trailActivatePct !== c.trailActivatePct}>
+              {({ getFieldValue }) =>
+                Number(getFieldValue("trailActivatePct")) > 0 ? (
+                  <>
+                    <Form.Item
+                      label="峰值回撤比例"
+                      name="trailGiveback"
+                      tooltip="从峰值ROI回撤此比例即平仓，退出线=峰值×(1-r)。0~1，如0.3=回吐30%峰值浮盈就走"
+                    >
+                      <InputNumber style={{ width: 120 }} min={0} max={1} step={0.05} />
+                    </Form.Item>
+                    <Form.Item
+                      label="周期末回撤比例"
+                      name="trailGivebackMin"
+                      tooltip="时间收敛：随持仓推进，回撤比例从「峰值回撤比例」线性收敛到此值——越临近交易周期末锁得越紧。<=0 或 ≥峰值回撤比例 时不收敛(固定用峰值回撤比例)"
+                    >
+                      <InputNumber style={{ width: 120 }} min={0} max={1} step={0.05} />
+                    </Form.Item>
+                  </>
+                ) : null
+              }
+            </Form.Item>
+            <Form.Item
+              label="早段疲软·前%时间"
+              name="earlyCutTimePct"
+              tooltip="早段疲软离场：持仓推进到交易周期的该百分比时，若期间峰值浮盈仍未达下面的门槛，就按当时价市价平仓离场(不再等止盈/超时)。0=不启用。"
+            >
+              <InputNumber style={{ width: 140 }} min={0} max={100} step={10} addonAfter="%" />
+            </Form.Item>
+            {/* 利润门槛仅在启用早段疲软(前%时间>0)时显示 */}
+            <Form.Item noStyle shouldUpdate={(p, c) => p.earlyCutTimePct !== c.earlyCutTimePct}>
+              {({ getFieldValue }) =>
+                Number(getFieldValue("earlyCutTimePct")) > 0 ? (
+                  <Form.Item
+                    label="疲软利润门槛%"
+                    name="earlyCutMinProfitPct"
+                    tooltip="含杠杆 ROI%。到上面那个时间点时，若前段峰值浮盈仍低于此值即离场。注意是含杠杆口径：100x 下 15% ≈ 价格 0.15%。"
+                  >
+                    <InputNumber style={{ width: 140 }} min={0} step={5} addonAfter="%" />
+                  </Form.Item>
+                ) : null
+              }
+            </Form.Item>
+            <Form.Item
+              label="早段逆行止损%"
+              name="earlyCutMaxAdversePct"
+              tooltip="MAE 软止损，与「早段疲软」互补：疲软盯利润没来(时间闸门)，这条盯逆行来了(逐根检查)。本笔从未走出浮盈、逆行浮亏ROI%(含杠杆)达此值时，先于硬止损市价减损离场——专治方向真做错、发现时已亏不少。含杠杆口径：100x 下 30% ≈ 价格 0.30%。0=不启用。"
+            >
+              <InputNumber style={{ width: 150 }} min={0} step={5} addonAfter="%" />
+            </Form.Item>
+            {/* 解除阈值仅在启用逆行止损(阈值>0)时显示 */}
+            <Form.Item noStyle shouldUpdate={(p, c) => p.earlyCutMaxAdversePct !== c.earlyCutMaxAdversePct}>
+              {({ getFieldValue }) =>
+                Number(getFieldValue("earlyCutMaxAdversePct")) > 0 ? (
+                  <Form.Item
+                    label="逆行止损解除%"
+                    name="earlyCutArmProfitPct"
+                    tooltip="峰值浮盈ROI%(含杠杆)达此值时(这笔「工作过」)永久解除逆行软止损，把出场交回硬止损/移动止盈，保住扛单转正的空间。<=0=不设闸门、始终武装。"
+                  >
+                    <InputNumber style={{ width: 150 }} min={0} step={5} addonAfter="%" />
+                  </Form.Item>
+                ) : null
+              }
             </Form.Item>
             <Form.Item label="杠杆" name="leverage">
               <InputNumber style={{ width: 90 }} min={1} max={125} />

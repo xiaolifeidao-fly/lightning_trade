@@ -7,10 +7,11 @@ const ContractSizeBTC = 0.001
 
 // Settlement 单笔交易的结算结果(USDT 口径)。
 type Settlement struct {
-	Pnl     float64 // 毛盈亏
-	Fee     float64 // 往返手续费
-	NetPnl  float64 // 净盈亏 = Pnl - Fee
-	PnlRate float64 // 盈亏率%(含杠杆)
+	Pnl        float64 // 毛盈亏
+	Fee        float64 // 往返手续费
+	NetPnl     float64 // 净盈亏 = Pnl - Fee
+	PnlRate    float64 // 盈亏率%(含杠杆，未扣费)
+	NetPnlRate float64 // 净盈亏率%(含杠杆，已扣往返手续费) = (价差-单位费)/开仓价×杠杆×100
 }
 
 // Settle 计算一笔终态 Order 的盈亏与手续费。未成交(expired)或未平仓返回零结算。
@@ -39,11 +40,13 @@ func (o *Order) Settle(p Params) Settlement {
 
 	pnl := diff * qty
 	fee := feePerUnit * qty
-	rate := 0.0
+	rate, netRate := 0.0, 0.0
 	if o.OpenPrice > 0 {
 		rate = diff / o.OpenPrice * p.Leverage * 100
+		// 净率扣掉往返单位手续费：与 NetPnl 同源(qty 约去)，diff=0 时也能反映纯手续费亏损。
+		netRate = (diff - feePerUnit) / o.OpenPrice * p.Leverage * 100
 	}
-	return Settlement{Pnl: pnl, Fee: fee, NetPnl: pnl - fee, PnlRate: rate}
+	return Settlement{Pnl: pnl, Fee: fee, NetPnl: pnl - fee, PnlRate: rate, NetPnlRate: netRate}
 }
 
 // MarkToMarket 用标记价(最新价) mark 估算一笔仍在持仓(open)的浮动盈亏。
@@ -70,28 +73,32 @@ func MarkToMarket(dir Direction, entryMode EntryMode, openPrice, mark float64, p
 	pnl := diff * qty
 	fee := feePerUnit * qty
 	rate := diff / openPrice * p.Leverage * 100
-	return Settlement{Pnl: pnl, Fee: fee, NetPnl: pnl - fee, PnlRate: rate}
+	netRate := (diff - feePerUnit) / openPrice * p.Leverage * 100
+	return Settlement{Pnl: pnl, Fee: fee, NetPnl: pnl - fee, PnlRate: rate, NetPnlRate: netRate}
 }
 
 // Metric 一组回测交易的汇总指标(评估层)，是横向对比「哪个策略有效」的依据。
 type Metric struct {
-	TradeCount   int
-	FillCount    int
-	ExpiredCount int
-	FillRate     float64
-	WinCount     int
-	WinRate      float64
-	GrossPnl     float64
-	FeeTotal     float64
-	NetPnl       float64
-	Expectancy   float64
-	ProfitFactor float64
-	MaxDrawdown  float64
-	Sharpe       float64
-	AvgHoldSecs  float64
-	TpCount      int
-	SlCount      int
-	TimeoutCount int
+	TradeCount        int
+	FillCount         int
+	ExpiredCount      int
+	FillRate          float64
+	WinCount          int
+	WinRate           float64
+	GrossPnl          float64
+	FeeTotal          float64
+	NetPnl            float64
+	Expectancy        float64
+	ProfitFactor      float64
+	MaxDrawdown       float64
+	Sharpe            float64
+	AvgHoldSecs       float64
+	TpCount           int
+	SlCount           int
+	TrailCount        int
+	EarlyCutCount     int
+	EarlyAdverseCount int
+	TimeoutCount      int
 }
 
 // Aggregate 把一批终态 Order 聚合成评估指标。
@@ -130,6 +137,12 @@ func Aggregate(orders []*Order, p Params) Metric {
 			m.TpCount++
 		case ReasonSL:
 			m.SlCount++
+		case ReasonTrail:
+			m.TrailCount++
+		case ReasonEarlyCut:
+			m.EarlyCutCount++
+		case ReasonEarlyAdverse:
+			m.EarlyAdverseCount++
 		case ReasonTimeout:
 			m.TimeoutCount++
 		}
