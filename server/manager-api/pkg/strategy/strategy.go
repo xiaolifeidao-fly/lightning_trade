@@ -18,7 +18,7 @@ type StrategyHandler struct {
 
 func NewStrategyHandler() *StrategyHandler {
 	svc := tradeService.NewTradeService()
-	_ = svc.EnsureTable()
+	// TradeHandler initializes the shared trade schema first during router setup.
 	return &StrategyHandler{
 		BaseHandler:  &commonRouter.BaseHandler{},
 		tradeService: svc,

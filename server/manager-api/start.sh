@@ -3,10 +3,23 @@ set -eu
 
 APP_NAME="manager-api"
 PORT="8491"
+STARTUP_TIMEOUT="${STARTUP_TIMEOUT:-90}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PID_FILE="$SCRIPT_DIR/$APP_NAME.pid"
 LOG_DIR="${LOG_DIR:-$SCRIPT_DIR/logs}"
 LOG_FILE="${LOG_FILE:-$LOG_DIR/$APP_NAME.log}"
+
+is_listening() {
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1
+    return $?
+  fi
+  if command -v nc >/dev/null 2>&1; then
+    nc -z 127.0.0.1 "$PORT" >/dev/null 2>&1
+    return $?
+  fi
+  return 1
+}
 
 cd "$SCRIPT_DIR"
 mkdir -p "$LOG_DIR"
@@ -40,11 +53,25 @@ fi
 PID="$!"
 echo "$PID" > "$PID_FILE"
 
-sleep 1
-if kill -0 "$PID" 2>/dev/null; then
-  echo "$APP_NAME started, pid: $PID, port: $PORT, log: $LOG_FILE"
-else
+elapsed=0
+while [ "$elapsed" -lt "$STARTUP_TIMEOUT" ]; do
+  if ! kill -0 "$PID" 2>/dev/null; then
+    rm -f "$PID_FILE"
+    echo "$APP_NAME failed to start, see log: $LOG_FILE" >&2
+    exit 1
+  fi
+  if is_listening; then
+    echo "$APP_NAME started, pid: $PID, port: $PORT, log: $LOG_FILE"
+    exit 0
+  fi
+  sleep 1
+  elapsed=$((elapsed + 1))
+done
+
+if ! kill -0 "$PID" 2>/dev/null; then
   rm -f "$PID_FILE"
   echo "$APP_NAME failed to start, see log: $LOG_FILE" >&2
-  exit 1
 fi
+
+echo "$APP_NAME did not listen on port $PORT within ${STARTUP_TIMEOUT}s, see log: $LOG_FILE" >&2
+exit 1

@@ -398,10 +398,10 @@
     <div class="hero-inner">
       <div class="eyebrow">Repository investigation / 2026-08-25</div>
       <h1>single_argus 如何使用 manager-api 的配置</h1>
-      <p class="hero-copy">一份基于仓库真实代码的配置流、热加载、运行控制和价差触发分析。文档先区分当前检出 HEAD 与已合入远端主干的最新实现，再回答：谁调用谁、配置经由哪里、何时生效，以及哪些字段看似可配但没有进入运行时。</p>
+      <p class="hero-copy">一份基于当前分支真实代码的配置流、热加载、运行控制和价差触发分析。重点回答：谁调用谁、配置经由哪里、何时生效，以及哪些字段看似可配但没有进入运行时。</p>
       <div class="verdict">
         <strong>核心结论</strong>
-        <p><code>HEAD b2ca734</code> 中没有 Manager 配置交互，也没有启动差价 PriceMonitor；已合入 <code>origin/main</code> 的实现则不通过 HTTP 拉配置，而是以 MySQL 保存版本快照、以 Redis 分发和同步。</p>
+        <p><code>argus_single</code> 不通过 HTTP 调用 <code>manager-api</code> 拉配置。两者以 MySQL 保存版本快照、以 Redis 分发和同步；HTTP 只存在于管理端页面到 <code>manager-api</code> 这一段。</p>
       </div>
     </div>
   </section>
@@ -411,7 +411,7 @@
       <div class="section-inner">
         <div class="section-head">
           <div><span class="section-kicker">01 / EXECUTIVE READ</span><h2>先把调用关系说清楚</h2></div>
-          <p>在已合入远端主干的最新实现中，配置管理链与行情监控链是两条不同的数据流。Manager API 负责版本化与发布；Argus 负责订阅、转换、热替换和执行。行情价格不会经过 Manager API。</p>
+          <p>配置管理链与行情监控链是两条不同的数据流。Manager API 负责版本化与发布；Argus 负责订阅、转换、热替换和执行。行情价格不会经过 Manager API。</p>
         </div>
         <div class="truth-grid">
           <article class="truth-item">
@@ -420,7 +420,7 @@
             <p>读取已发布配置、保存草稿、发布版本、查看运行状态，以及发起启动/停止/重启/重载。</p>
           </article>
           <article class="truth-item">
-            <span class="truth-index">LATEST MAIN</span>
+            <span class="truth-index">MYSQL + REDIS</span>
             <h3>Argus 与 Manager API 共享基础设施</h3>
             <p>MySQL 是版本化事实源，Redis 保存 24 小时快照、发布版本消息、传递 reload 控制并承载心跳。</p>
           </article>
@@ -430,7 +430,7 @@
             <p>Argus 分别订阅 Binance Futures 与 DeepCoin 行情，用发布配置中的币种和价差阈值进行判断，再决定告警和交易。</p>
           </article>
         </div>
-        <div class="version-note"><strong>版本事实：</strong>当前检出的 <code>HEAD b2ca734</code> 尚无 <code>argus_config</code> 源码，<code>initialization.Init()</code> 只启动 BTC AI 行情、账户监控和 Telegram，没有初始化差价 PriceMonitor；properties 中的差价字段属于残留/预备配置，不能据此认定差价链正在运行。完整实现位于提交 <code>6bf4f73</code>，并已合入 <code>origin/main 72ee244</code>。工作区现存日志和前端构建缓存也留下了该实现的运行痕迹。本文后续架构、时序和字段矩阵均以 <code>6bf4f73</code> 的可审计源码描述最新实现。</div>
+        <div class="version-note"><strong>核对基线：</strong>本文已按当前工作区提交 <code>949afc1</code> 复核。该分支包含 <code>service/argus_config</code>、Manager API 配置与运行控制 Handler、Argus <code>runtimeconfig</code>/<code>runtimehealth</code>、PriceMonitor 及管理端配置页面；以下结论均直接对应当前工作树源码。</div>
       </div>
     </section>
 
@@ -438,7 +438,7 @@
       <div class="section-inner">
         <div class="section-head">
           <div><span class="section-kicker">02 / SYSTEM MAP</span><h2>不是服务对服务 HTTP</h2></div>
-          <p>以下为提交 <code>6bf4f73</code>（已合入远端主干）的架构。真正的中间层是数据存储和消息通道。Manager API 不把配置直接 POST 给 Argus；Argus 也不定时请求 Manager API。</p>
+          <p>真正的中间层是数据存储和消息通道。Manager API 不把配置直接 POST 给 Argus；Argus 也不定时请求 Manager API。</p>
         </div>
         <div class="architecture" role="img" aria-label="管理端、数据层和 Argus 的交互架构图">
           <article class="node role-manager">
@@ -608,7 +608,7 @@
       <div class="section-inner">
         <div class="section-head">
           <div><span class="section-kicker">07 / EVIDENCE</span><h2>主要代码依据</h2></div>
-          <p>以下引用均来自提交 <code>6bf4f73</code>。当前检出分支缺少这些源文件，因此评审时应先同步到已合入该提交的分支，再按路径核对。</p>
+          <p>以下引用均来自当前工作区源码，可直接按路径和行号核对。</p>
         </div>
         <div class="source-list">
           <div class="source-row"><code>server/manager-api/pkg/argus_config/argus_config.go:23</code><p>配置 HTTP 路由：published、drafts、publish。</p></div>

@@ -35,3 +35,7 @@ old_client_code
 client/pl_instance/configs
 client/pl_instance/dist
 client/pl_instance/node_modules
+!.codex/delivery-task-*
+!.claude/delivery-task-*
+
+!doc/**/*.png
