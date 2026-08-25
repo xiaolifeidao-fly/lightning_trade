@@ -1,0 +1,657 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>single_argus 与 manager-api 配置交互分析</title>
+  <style>
+    :root {
+      --ink: #17211b;
+      --muted: #617068;
+      --paper: #f5f7f2;
+      --surface: #ffffff;
+      --line: #ccd5cd;
+      --line-strong: #9ead9f;
+      --green: #176b4d;
+      --green-soft: #dff1e8;
+      --blue: #2d5f86;
+      --blue-soft: #e2edf6;
+      --yellow: #9a6800;
+      --yellow-soft: #fff1c7;
+      --red: #a43a32;
+      --red-soft: #f8dfdc;
+      --charcoal: #26332b;
+      --shadow: 0 16px 38px rgba(23, 33, 27, 0.08);
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --body: "Avenir Next", "Noto Sans SC", "PingFang SC", sans-serif;
+      --display: "Iowan Old Style", "Songti SC", STSong, serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(rgba(23, 107, 77, 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(23, 107, 77, 0.035) 1px, transparent 1px),
+        var(--paper);
+      background-size: 24px 24px;
+      font-family: var(--body);
+      line-height: 1.65;
+      letter-spacing: 0;
+    }
+
+    a { color: inherit; }
+    code {
+      font-family: var(--mono);
+      font-size: 0.91em;
+      background: #edf1ec;
+      border: 1px solid #d9e0da;
+      padding: 0.12rem 0.34rem;
+      border-radius: 3px;
+      overflow-wrap: anywhere;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      min-height: 58px;
+      padding: 8px clamp(18px, 4vw, 58px);
+      color: #f7faf7;
+      background: rgba(38, 51, 43, 0.96);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+      backdrop-filter: blur(14px);
+    }
+
+    .brand { font-weight: 700; white-space: nowrap; }
+    .brand span { color: #8fd8b9; }
+    .topnav { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+    .topnav a {
+      flex: 0 0 auto;
+      color: #dce6df;
+      text-decoration: none;
+      font-size: 13px;
+      padding: 7px 10px;
+      border-bottom: 2px solid transparent;
+    }
+    .topnav a:hover, .topnav a:focus-visible { color: #fff; border-color: #8fd8b9; outline: none; }
+
+    .hero {
+      min-height: min(690px, calc(100vh - 58px));
+      display: grid;
+      align-items: center;
+      padding: clamp(54px, 9vw, 116px) clamp(20px, 7vw, 100px) 78px;
+      color: #f5faf6;
+      background:
+        linear-gradient(105deg, rgba(18, 34, 26, 0.98), rgba(25, 77, 57, 0.91)),
+        repeating-linear-gradient(135deg, transparent 0 42px, rgba(255,255,255,0.04) 42px 43px);
+      border-bottom: 8px solid #88c9ad;
+    }
+
+    .hero-inner { max-width: 1160px; margin: 0 auto; width: 100%; }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      margin-bottom: 22px;
+      color: #bde4d2;
+      font-family: var(--mono);
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+    .eyebrow::before { content: ""; width: 34px; height: 2px; background: #8fd8b9; }
+    h1 {
+      max-width: 970px;
+      margin: 0;
+      font-family: var(--display);
+      font-size: clamp(42px, 7vw, 88px);
+      line-height: 1.02;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+    .hero-copy {
+      max-width: 840px;
+      margin: 28px 0 0;
+      color: #d9e8df;
+      font-size: clamp(17px, 2vw, 21px);
+    }
+    .verdict {
+      display: grid;
+      grid-template-columns: 126px minmax(0, 1fr);
+      max-width: 900px;
+      margin-top: 42px;
+      border-top: 1px solid rgba(255,255,255,0.2);
+      border-bottom: 1px solid rgba(255,255,255,0.2);
+      padding: 18px 0;
+    }
+    .verdict strong { color: #8fd8b9; font-family: var(--mono); font-size: 13px; }
+    .verdict p { margin: 0; }
+
+    main { overflow: hidden; }
+    .band { padding: 82px clamp(20px, 6vw, 88px); background: rgba(245,247,242,0.94); }
+    .band.alt { background: #edf2ed; }
+    .band.dark { color: #f0f6f2; background: var(--charcoal); }
+    .section-inner { max-width: 1240px; margin: 0 auto; }
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(220px, 0.75fr) minmax(300px, 1.25fr);
+      gap: 52px;
+      align-items: end;
+      margin-bottom: 42px;
+    }
+    .section-kicker { color: var(--green); font-family: var(--mono); font-size: 12px; font-weight: 700; }
+    .dark .section-kicker { color: #8fd8b9; }
+    h2 {
+      margin: 8px 0 0;
+      font-family: var(--display);
+      font-size: clamp(31px, 4.5vw, 54px);
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+    .section-head p { margin: 0; color: var(--muted); font-size: 16px; }
+    .dark .section-head p { color: #c3cec7; }
+
+    .truth-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      border: 1px solid var(--line-strong);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    .truth-item { min-height: 210px; padding: 28px; border-right: 1px solid var(--line); }
+    .truth-item:last-child { border-right: 0; }
+    .truth-index { font-family: var(--mono); color: var(--green); font-size: 12px; }
+    .truth-item h3 { margin: 24px 0 10px; font-size: 21px; letter-spacing: 0; }
+    .truth-item p { margin: 0; color: var(--muted); }
+
+    .version-note {
+      margin-top: 24px;
+      padding: 20px 22px;
+      border-left: 4px solid var(--yellow);
+      background: var(--yellow-soft);
+      color: #4d3a0b;
+    }
+
+    .architecture {
+      display: grid;
+      grid-template-columns: 1fr 58px 1fr 58px 1fr;
+      align-items: stretch;
+      gap: 0;
+    }
+    .node {
+      position: relative;
+      min-width: 0;
+      padding: 25px;
+      border: 1px solid var(--line-strong);
+      background: var(--surface);
+      box-shadow: 7px 7px 0 rgba(23,107,77,0.11);
+    }
+    .node.role-manager { border-top: 5px solid var(--blue); }
+    .node.role-data { border-top: 5px solid var(--yellow); }
+    .node.role-argus { border-top: 5px solid var(--green); }
+    .node-label { color: var(--muted); font-family: var(--mono); font-size: 11px; text-transform: uppercase; }
+    .node h3 { margin: 10px 0 12px; font-size: 23px; }
+    .node ul { margin: 0; padding-left: 18px; color: var(--muted); }
+    .arrow {
+      display: grid;
+      place-items: center;
+      color: var(--green);
+      font-family: var(--mono);
+      font-size: 30px;
+    }
+    .arrow small { display: none; }
+    .architecture-caption { margin: 28px 0 0; color: var(--muted); text-align: center; }
+
+    .flow-switcher { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 28px; }
+    .flow-switcher button {
+      border: 1px solid #536159;
+      background: transparent;
+      color: #dce6df;
+      min-height: 38px;
+      padding: 8px 14px;
+      border-radius: 4px;
+      font: 600 13px var(--body);
+      cursor: pointer;
+    }
+    .flow-switcher button[aria-selected="true"] { color: #17211b; background: #8fd8b9; border-color: #8fd8b9; }
+    .flow-panel { display: none; }
+    .flow-panel.active { display: block; animation: reveal 240ms ease both; }
+    @keyframes reveal { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+
+    .timeline { display: grid; gap: 0; counter-reset: flow; }
+    .step {
+      display: grid;
+      grid-template-columns: 64px minmax(170px, 0.55fr) minmax(260px, 1.45fr);
+      gap: 22px;
+      align-items: start;
+      min-height: 112px;
+      padding: 21px 0;
+      border-top: 1px solid #536159;
+      counter-increment: flow;
+    }
+    .step:last-child { border-bottom: 1px solid #536159; }
+    .step::before {
+      content: counter(flow, decimal-leading-zero);
+      display: grid;
+      place-items: center;
+      width: 44px;
+      height: 44px;
+      color: #15231b;
+      background: #8fd8b9;
+      font: 700 12px var(--mono);
+      border-radius: 50%;
+    }
+    .step h3 { margin: 7px 0 0; font-size: 17px; }
+    .step p { margin: 3px 0 0; color: #c8d2cc; }
+    .step code { color: #eaf6ee; background: rgba(255,255,255,0.07); border-color: rgba(255,255,255,0.15); }
+
+    .formula-layout { display: grid; grid-template-columns: minmax(280px, 0.8fr) minmax(420px, 1.2fr); gap: 30px; }
+    .formula-box {
+      display: grid;
+      align-content: center;
+      min-height: 330px;
+      padding: clamp(26px, 4vw, 48px);
+      color: #f5faf6;
+      background: #1d5f46;
+      box-shadow: 10px 10px 0 #b9d9c9;
+    }
+    .formula-box .math { font-family: var(--display); font-size: clamp(25px, 3.4vw, 45px); line-height: 1.25; }
+    .formula-box p { color: #d2e9de; }
+    .gates { border-top: 1px solid var(--line-strong); }
+    .gate {
+      display: grid;
+      grid-template-columns: 44px 1fr;
+      gap: 17px;
+      padding: 18px 2px;
+      border-bottom: 1px solid var(--line);
+    }
+    .gate b { color: var(--green); font: 700 12px var(--mono); }
+    .gate h3 { margin: 0; font-size: 16px; }
+    .gate p { margin: 3px 0 0; color: var(--muted); }
+
+    .matrix-tools { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
+    .filter-group { display: flex; flex-wrap: wrap; gap: 7px; }
+    .filter-group button {
+      min-height: 35px;
+      padding: 7px 12px;
+      color: var(--ink);
+      border: 1px solid var(--line-strong);
+      border-radius: 4px;
+      background: transparent;
+      cursor: pointer;
+      font: 600 12px var(--body);
+    }
+    .filter-group button.active { color: white; background: var(--charcoal); border-color: var(--charcoal); }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line-strong); background: var(--surface); box-shadow: var(--shadow); }
+    table { width: 100%; border-collapse: collapse; min-width: 920px; }
+    th, td { padding: 15px 16px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { position: sticky; top: 57px; z-index: 2; color: #f3f7f4; background: var(--charcoal); font-size: 12px; }
+    td { font-size: 14px; }
+    tr:last-child td { border-bottom: 0; }
+    tr:hover td { background: #f4f8f4; }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      min-height: 25px;
+      padding: 3px 8px;
+      border-radius: 3px;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .status.hot { color: var(--green); background: var(--green-soft); }
+    .status.restart { color: var(--blue); background: var(--blue-soft); }
+    .status.static { color: var(--yellow); background: var(--yellow-soft); }
+    .status.gap { color: var(--red); background: var(--red-soft); }
+
+    .findings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    .finding {
+      min-height: 210px;
+      padding: 24px;
+      border: 1px solid var(--line-strong);
+      background: var(--surface);
+    }
+    .finding.severe { border-top: 5px solid var(--red); }
+    .finding.caution { border-top: 5px solid var(--yellow); }
+    .finding strong { font: 700 11px var(--mono); color: var(--red); }
+    .finding.caution strong { color: var(--yellow); }
+    .finding h3 { margin: 12px 0 8px; font-size: 18px; }
+    .finding p { margin: 0; color: var(--muted); }
+
+    .source-list { display: grid; gap: 1px; background: #536159; border: 1px solid #536159; }
+    .source-row {
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      gap: 18px;
+      padding: 16px 18px;
+      color: #dce6df;
+      background: var(--charcoal);
+    }
+    .source-row code { color: #a9e2c9; background: transparent; border: 0; padding: 0; }
+    .source-row p { margin: 0; }
+
+    footer { padding: 32px 20px; color: #dce6df; background: #17211b; text-align: center; font-size: 13px; }
+
+    @media (max-width: 900px) {
+      .topbar { align-items: flex-start; flex-direction: column; gap: 2px; }
+      .topnav { width: 100%; }
+      .hero { min-height: auto; }
+      .section-head, .formula-layout { grid-template-columns: 1fr; gap: 18px; }
+      .truth-grid, .findings { grid-template-columns: 1fr; }
+      .truth-item { border-right: 0; border-bottom: 1px solid var(--line); }
+      .truth-item:last-child { border-bottom: 0; }
+      .architecture { grid-template-columns: 1fr; gap: 14px; }
+      .arrow { min-height: 32px; transform: rotate(90deg); }
+      .step { grid-template-columns: 50px 1fr; gap: 14px; }
+      .step p { grid-column: 2; }
+      .source-row { grid-template-columns: 1fr; gap: 6px; }
+      th { top: 97px; }
+    }
+
+    @media (max-width: 560px) {
+      .topbar { padding-inline: 14px; }
+      .brand { font-size: 14px; }
+      h1 { font-size: 41px; }
+      .hero { padding-inline: 20px; }
+      .verdict { grid-template-columns: 1fr; gap: 7px; }
+      .band { padding: 62px 18px; }
+      .truth-item, .node, .finding { padding: 21px; }
+      .matrix-tools { align-items: flex-start; flex-direction: column; }
+    }
+
+    @media print {
+      .topbar, .flow-switcher, .matrix-tools { display: none; }
+      .hero { min-height: 0; color: var(--ink); background: white; border-color: var(--green); }
+      .hero-copy, .verdict p { color: var(--ink); }
+      .eyebrow, .verdict strong { color: var(--green); }
+      .flow-panel { display: block !important; margin-bottom: 36px; }
+      .band, .band.alt, .band.dark { color: var(--ink); background: white; padding-block: 34px; }
+      .dark .section-head p, .step p { color: var(--muted); }
+      .step { border-color: var(--line); }
+      .step code { color: var(--ink); background: #edf1ec; border-color: var(--line); }
+      .table-wrap, .truth-grid { box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">LIGHTNING TRADE <span>/ ARGUS CONFIG MAP</span></div>
+    <nav class="topnav" aria-label="文档导航">
+      <a href="#conclusion">结论</a>
+      <a href="#architecture">架构</a>
+      <a href="#flows">交互时序</a>
+      <a href="#spread">差价触发</a>
+      <a href="#matrix">生效矩阵</a>
+      <a href="#gaps">接入缺口</a>
+      <a href="#sources">代码依据</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <div class="hero-inner">
+      <div class="eyebrow">Repository investigation / 2026-08-25</div>
+      <h1>single_argus 如何使用 manager-api 的配置</h1>
+      <p class="hero-copy">一份基于仓库真实代码的配置流、热加载、运行控制和价差触发分析。文档先区分当前检出 HEAD 与已合入远端主干的最新实现，再回答：谁调用谁、配置经由哪里、何时生效，以及哪些字段看似可配但没有进入运行时。</p>
+      <div class="verdict">
+        <strong>核心结论</strong>
+        <p><code>HEAD b2ca734</code> 中没有 Manager 配置交互，也没有启动差价 PriceMonitor；已合入 <code>origin/main</code> 的实现则不通过 HTTP 拉配置，而是以 MySQL 保存版本快照、以 Redis 分发和同步。</p>
+      </div>
+    </div>
+  </section>
+
+  <main>
+    <section class="band" id="conclusion">
+      <div class="section-inner">
+        <div class="section-head">
+          <div><span class="section-kicker">01 / EXECUTIVE READ</span><h2>先把调用关系说清楚</h2></div>
+          <p>在已合入远端主干的最新实现中，配置管理链与行情监控链是两条不同的数据流。Manager API 负责版本化与发布；Argus 负责订阅、转换、热替换和执行。行情价格不会经过 Manager API。</p>
+        </div>
+        <div class="truth-grid">
+          <article class="truth-item">
+            <span class="truth-index">HTTP</span>
+            <h3>管理页面调用 Manager API</h3>
+            <p>读取已发布配置、保存草稿、发布版本、查看运行状态，以及发起启动/停止/重启/重载。</p>
+          </article>
+          <article class="truth-item">
+            <span class="truth-index">LATEST MAIN</span>
+            <h3>Argus 与 Manager API 共享基础设施</h3>
+            <p>MySQL 是版本化事实源，Redis 保存 24 小时快照、发布版本消息、传递 reload 控制并承载心跳。</p>
+          </article>
+          <article class="truth-item">
+            <span class="truth-index">WEBSOCKET</span>
+            <h3>差价由 Argus 本地计算</h3>
+            <p>Argus 分别订阅 Binance Futures 与 DeepCoin 行情，用发布配置中的币种和价差阈值进行判断，再决定告警和交易。</p>
+          </article>
+        </div>
+        <div class="version-note"><strong>版本事实：</strong>当前检出的 <code>HEAD b2ca734</code> 尚无 <code>argus_config</code> 源码，<code>initialization.Init()</code> 只启动 BTC AI 行情、账户监控和 Telegram，没有初始化差价 PriceMonitor；properties 中的差价字段属于残留/预备配置，不能据此认定差价链正在运行。完整实现位于提交 <code>6bf4f73</code>，并已合入 <code>origin/main 72ee244</code>。工作区现存日志和前端构建缓存也留下了该实现的运行痕迹。本文后续架构、时序和字段矩阵均以 <code>6bf4f73</code> 的可审计源码描述最新实现。</div>
+      </div>
+    </section>
+
+    <section class="band alt" id="architecture">
+      <div class="section-inner">
+        <div class="section-head">
+          <div><span class="section-kicker">02 / SYSTEM MAP</span><h2>不是服务对服务 HTTP</h2></div>
+          <p>以下为提交 <code>6bf4f73</code>（已合入远端主干）的架构。真正的中间层是数据存储和消息通道。Manager API 不把配置直接 POST 给 Argus；Argus 也不定时请求 Manager API。</p>
+        </div>
+        <div class="architecture" role="img" aria-label="管理端、数据层和 Argus 的交互架构图">
+          <article class="node role-manager">
+            <span class="node-label">Control plane</span>
+            <h3>Manager Web + manager-api</h3>
+            <ul>
+              <li>HTTP 配置编辑与发布</li>
+              <li>字段校验、敏感值掩码</li>
+              <li>版本状态与回滚保护</li>
+            </ul>
+          </article>
+          <div class="arrow" aria-hidden="true">⇄</div>
+          <article class="node role-data">
+            <span class="node-label">Shared state</span>
+            <h3>MySQL + Redis</h3>
+            <ul>
+              <li>MySQL：不可变版本及子表</li>
+              <li>Redis：快照、版本广播、控制</li>
+              <li>Redis：实例心跳与加载结果</li>
+            </ul>
+          </article>
+          <div class="arrow" aria-hidden="true">⇄</div>
+          <article class="node role-argus">
+            <span class="node-label">Data plane</span>
+            <h3>argus_single</h3>
+            <ul>
+              <li>启动恢复已发布快照</li>
+              <li>订阅版本变更并热替换</li>
+              <li>独立接收行情、比较差价、交易</li>
+            </ul>
+          </article>
+        </div>
+        <p class="architecture-caption">因此“Argus 调 manager-api 配置”的准确表述应是：<strong>Manager API 发布配置，Argus 从共享快照消费配置。</strong></p>
+      </div>
+    </section>
+
+    <section class="band dark" id="flows">
+      <div class="section-inner">
+        <div class="section-head">
+          <div><span class="section-kicker">03 / SEQUENCES</span><h2>四条关键交互时序</h2></div>
+          <p>点击切换不同链路。发布与 reload 是两次消息：发布本身已经广播版本；当前前端仍会紧接着再发送一次显式 reload，作为主动确认。</p>
+        </div>
+        <div class="flow-switcher" role="tablist" aria-label="交互时序选择">
+          <button role="tab" aria-selected="true" aria-controls="flow-publish" data-flow="flow-publish">发布与热更新</button>
+          <button role="tab" aria-selected="false" aria-controls="flow-startup" data-flow="flow-startup">Argus 启动</button>
+          <button role="tab" aria-selected="false" aria-controls="flow-health" data-flow="flow-health">心跳与状态</button>
+          <button role="tab" aria-selected="false" aria-controls="flow-control" data-flow="flow-control">运行控制</button>
+        </div>
+
+        <div class="flow-panel active" id="flow-publish" role="tabpanel">
+          <div class="timeline">
+            <article class="step"><h3>保存草稿</h3><p>管理端调用 <code>POST /api/argus-config/drafts</code>。Manager API 校验字段，把敏感信息加密写入 MySQL，生成新的 draft 版本。</p></article>
+            <article class="step"><h3>发布版本</h3><p>管理端调用 <code>POST /api/argus-config/versions/:id/publish</code>。Service 加载完整子表，写 Redis 快照并生成 SHA-256 checksum，再把数据库中的唯一 published 槽切到新版本。</p></article>
+            <article class="step"><h3>广播变化</h3><p>Manager API 向 <code>argus:config:changed</code> 发布 <code>{version, checksum}</code>。发布失败时尝试回滚数据库发布状态并恢复旧 Redis 快照。</p></article>
+            <article class="step"><h3>校验并热替换</h3><p>Argus 读取 <code>argus:config:snapshot</code>，校验 checksum 和版本一致性，转换配置，然后执行 <code>trade.ReplaceManager</code> 与 <code>monitor.ReloadMonitor</code>。失败则保留旧运行配置。</p></article>
+            <article class="step"><h3>显式 reload</h3><p>前端随后调用 <code>POST /api/argus/runtime/reload</code>，Manager API 再向 <code>argus:control</code> 发布定向 reload。Argus 重新读取当前快照；这是一次额外确认，并非 HTTP 直推。</p></article>
+          </div>
+        </div>
+
+        <div class="flow-panel" id="flow-startup" role="tabpanel">
+          <div class="timeline">
+            <article class="step"><h3>加载本地引导配置</h3><p><code>vipper.Init()</code> 仍读取 <code>./configs/application.properties</code>，用于数据库、Redis、实例 ID、心跳周期以及少量尚未迁移的运行参数。</p></article>
+            <article class="step"><h3>要求 DB 与 Redis 可用</h3><p>Argus 初始化数据库和 Redis。当前实现把两者都视为启动必需依赖；任一关键初始化失败会终止启动。</p></article>
+            <article class="step"><h3>优先读取 Redis</h3><p>读取 <code>argus:config:snapshot</code> 并校验 SHA-256。若 Redis 没有快照，则直接查询 MySQL 唯一 published 版本及全部子表，再把快照回填 Redis。</p></article>
+            <article class="step"><h3>初始化运行组件</h3><p>把账户、币种和通知配置转成运行时结构，初始化交易管理器、PriceMonitor、AccountMonitor 与 Telegram。</p></article>
+            <article class="step"><h3>订阅与心跳</h3><p>订阅配置及控制频道；每 5 秒向 <code>argus:heartbeat:&lt;instanceId&gt;</code> 写心跳，默认 TTL 15 秒。</p></article>
+          </div>
+        </div>
+
+        <div class="flow-panel" id="flow-health" role="tabpanel">
+          <div class="timeline">
+            <article class="step"><h3>Argus 写状态</h3><p>心跳包含 PID、启动时间、构建版本、当前配置版本、最近 reload 结果、健康状态和更新时间。</p></article>
+            <article class="step"><h3>Manager API 读 Redis</h3><p><code>GET /api/argus/runtime/status</code> 读取实例心跳。Key 已过期或不存在即返回 <code>online=false</code>。</p></article>
+            <article class="step"><h3>管理页轮询</h3><p>页面可见且自动刷新开启时，每 10 秒请求一次运行状态；首次加载同时读取已发布配置和运行状态。</p></article>
+          </div>
+        </div>
+
+        <div class="flow-panel" id="flow-control" role="tabpanel">
+          <div class="timeline">
+            <article class="step"><h3>Start / Stop / Restart</h3><p>Manager API 在同机执行受限的 <code>control.sh</code>，脚本只接受固定动作并委托 <code>start.sh</code>/<code>stop.sh</code>。这条链不经过 Redis。</p></article>
+            <article class="step"><h3>Reload</h3><p>Manager API 不执行脚本，而是向 <code>argus:control</code> 发布 <code>reload</code>，可按 <code>instanceId</code> 定向。</p></article>
+            <article class="step"><h3>跨机限制</h3><p>源码注释明确说明控制脚本适合同机部署；分离部署应使用受限控制代理，不能直接复用本地脚本路径。</p></article>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="band" id="spread">
+      <div class="section-inner">
+        <div class="section-head">
+          <div><span class="section-kicker">04 / SPREAD ENGINE</span><h2>差价如何真正触发</h2></div>
+          <p>阈值不是“只要绝对差价大于阈值就不断触发”。实现记录上一次有方向价差，只在从阈值区间内向外穿越时触发一次。</p>
+        </div>
+        <div class="formula-layout">
+          <div class="formula-box">
+            <div class="math">signedSpread =<br>(Binance − DeepCoin)<br>÷ DeepCoin</div>
+            <p>正值表示 Binance 价格更高，负值表示 DeepCoin 价格更高。比较配置项为 <code>monitorSymbols[].spreadThreshold</code>。</p>
+          </div>
+          <div class="gates">
+            <article class="gate"><b>G1</b><div><h3>两边价格都必须有效</h3><p>任一价格为 0，直接跳过。</p></div></article>
+            <article class="gate"><b>G2</b><div><h3>必须存在 spread 逻辑账户</h3><p><code>hasSpreadTradeAccounts()</code> 为 false 时不比较差价。</p></div></article>
+            <article class="gate"><b>G3</b><div><h3>行情必须足够新</h3><p>Binance 与 DeepCoin 的价格年龄均不得超过 <code>monitor.spread.max_price_age_ms</code>，默认 500ms。该值目前仍来自本地 properties。</p></div></article>
+            <article class="gate"><b>G4</b><div><h3>需要发生阈值穿越</h3><p><code>prev &lt; threshold &amp;&amp; current ≥ threshold</code>，或负方向对称条件。第一次样本只建立基线，不触发。</p></div></article>
+            <article class="gate"><b>G5</b><div><h3>余额检查与 2 秒交易冷却</h3><p>余额不足只告警不交易；成功进入交易路径后，同币种 2 秒内的重复触发会被抑制。</p></div></article>
+            <article class="gate"><b>OUT</b><div><h3>告警 + 执行套利交易</h3><p>并发发送 Telegram 告警，并调用 <code>trade.ExecuteArbitrage</code>。实际开仓方向由账户配置决定。</p></div></article>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="band alt" id="matrix">
+      <div class="section-inner">
+        <div class="section-head">
+          <div><span class="section-kicker">05 / EFFECT MATRIX</span><h2>配置字段到底是否生效</h2></div>
+          <p>“能在管理页保存”不等于“进入 Argus 运行时”。以下矩阵以 <code>runtimeconfig.runtimeFromSnapshot</code> 和 <code>applyRuntimeConfig</code> 的真实映射为准。</p>
+        </div>
+        <div class="matrix-tools">
+          <span>点击筛选当前状态</span>
+          <div class="filter-group" aria-label="配置生效状态筛选">
+            <button class="active" data-filter="all">全部</button>
+            <button data-filter="hot">热生效</button>
+            <button data-filter="restart">需重启</button>
+            <button data-filter="static">本地静态</button>
+            <button data-filter="gap">未接入 / 缺口</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>配置项</th><th>来源</th><th>运行时落点</th><th>状态</th><th>结论</th></tr></thead>
+            <tbody>
+              <tr data-state="hot"><td><code>monitorSymbols[].spreadThreshold</code></td><td>Manager DB / Redis snapshot</td><td><code>SymbolConfig.Threshold</code></td><td><span class="status hot">热生效</span></td><td>价差监控的核心阈值；发布后会重建 PriceMonitor。</td></tr>
+              <tr data-state="hot"><td><code>symbol / deepInstrument / tradeInstrument / enabled</code></td><td>Manager DB / Redis snapshot</td><td><code>RuntimeConfig.Symbols</code></td><td><span class="status hot">热生效</span></td><td>决定订阅哪些行情以及使用哪个下单标识；禁用项被过滤。</td></tr>
+              <tr data-state="hot"><td><code>defaultOrderSize</code></td><td>Manager DB / Redis snapshot</td><td><code>TradingSystemConfig.Trade.OrderSize</code></td><td><span class="status hot">热生效</span></td><td>账户未设置单独张数时的全局回退。</td></tr>
+              <tr data-state="hot"><td>账户凭证、启用状态及部分风控</td><td>Manager DB / Redis snapshot</td><td><code>trade.AccountConfig</code></td><td><span class="status hot">热生效</span></td><td>敏感值在数据库加密、API 响应只返回 <code>******</code>；Argus 内部解密使用。</td></tr>
+              <tr data-state="hot"><td>Telegram 开关与凭证</td><td>Manager DB / Redis snapshot</td><td>Viper runtime + TelegramBot</td><td><span class="status hot">热生效</span></td><td>变化时替换 Telegram Bot。</td></tr>
+              <tr data-state="restart"><td><code>serverPort / requestPath / logDir</code></td><td>Manager DB / Redis snapshot</td><td>启动阶段写入 Viper</td><td><span class="status restart">需重启</span></td><td>热加载只记录警告，不重建 HTTP Server 或日志组件。</td></tr>
+              <tr data-state="static"><td><code>monitor.spread.max_price_age_ms</code></td><td>Argus 本地 properties</td><td><code>getSpreadMaxPriceAge()</code></td><td><span class="status static">本地静态</span></td><td>行情新鲜度门槛，默认 500ms；Manager 配置模型中没有对应字段。</td></tr>
+              <tr data-state="static"><td><code>trade.signal.delay_seconds</code></td><td>Argus 本地 properties</td><td><code>NewPriceMonitor()</code></td><td><span class="status static">本地静态</span></td><td>PriceMonitor 重建时会重新读取，但管理页不可配置。</td></tr>
+              <tr data-state="gap"><td><code>tradeEnabled</code></td><td>Manager DB / UI</td><td>无运行时映射</td><td><span class="status gap">未接入</span></td><td>页面文案称“关闭后不下单”，但当前转换和执行链均未检查该字段。</td></tr>
+              <tr data-state="gap"><td><code>monitorIntervalSecond / profitThreshold / lossThreshold</code></td><td>Manager DB / UI</td><td>AccountMonitor 仍读本地 Viper</td><td><span class="status gap">未接入</span></td><td>Manager 中的值未写回 Viper，也不会触发 AccountMonitor 重建。</td></tr>
+              <tr data-state="gap"><td>账户 <code>tradeLogic / tradeDirection / orderSize</code></td><td>Manager 模型无对应字段</td><td><code>trade.AccountConfig</code> 留空/回退</td><td><span class="status gap">模型缺口</span></td><td>空 <code>tradeLogic</code> 会归一化为 spread；方向等价 forward；张数回退全局值。管理端无法表达 signal 账户。</td></tr>
+              <tr data-state="gap"><td>AI Open / AI Close 配置组</td><td>Manager DB / UI</td><td><code>RuntimeConfig</code> 未携带</td><td><span class="status gap">未接入</span></td><td>数据可保存和读取，但不进入当前运行时应用链。</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="band" id="gaps">
+      <div class="section-inner">
+        <div class="section-head">
+          <div><span class="section-kicker">06 / FINDINGS</span><h2>当前最值得注意的缺口</h2></div>
+          <p>这些不是架构设想，而是配置模型、运行时转换和消费者代码之间的实际断点。它们会直接影响“管理端改了配置是否真的生效”的判断。</p>
+        </div>
+        <div class="findings">
+          <article class="finding severe"><strong>HIGH</strong><h3>交易总开关未被执行链消费</h3><p><code>tradeEnabled</code> 能保存、能展示，但 <code>runtimeFromSnapshot</code> 没有映射，价差触发后仍可能进入下单路径。UI 承诺与后端行为不一致。</p></article>
+          <article class="finding severe"><strong>HIGH</strong><h3>账户交易逻辑在管理模型中丢失</h3><p>DB/DTO 没有 <code>tradeLogic</code>。运行时构造账户时该字段为空，而空值会被当成 <code>spread</code>，因此管理配置天然偏向差价逻辑，无法可靠配置 signal 模式。</p></article>
+          <article class="finding caution"><strong>MEDIUM</strong><h3>部分“全局配置”仍由本地文件决定</h3><p>价差行情最大年龄、信号延迟，以及 AccountMonitor 的间隔和盈亏阈值没有统一进入发布快照。Manager 与 Argus 可能展示两套不一致的值。</p></article>
+          <article class="finding caution"><strong>MEDIUM</strong><h3>订阅恢复缺少显式重连循环</h3><p><code>Manager.subscribe</code> 建立一次 Pub/Sub；订阅通道关闭后函数返回。虽然启动恢复和手动 reload 可补救，但长时间运行中的消息恢复策略不够明确。</p></article>
+          <article class="finding caution"><strong>MEDIUM</strong><h3>启动依赖 MySQL 与 Redis 同时可用</h3><p>即使 Redis 已有快照，初始化仍要求 DB 可用；Redis 初始化失败也会终止。控制面故障会扩大到 Argus 冷启动可用性。</p></article>
+          <article class="finding caution"><strong>BOUNDARY</strong><h3>同机与跨机控制需明确区分</h3><p>start/stop/restart 依赖本地可执行 <code>control.sh</code>。只有 reload 是 Redis 消息。跨机部署需要受限代理，否则 Manager API 无法控制远端进程。</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="band dark" id="sources">
+      <div class="section-inner">
+        <div class="section-head">
+          <div><span class="section-kicker">07 / EVIDENCE</span><h2>主要代码依据</h2></div>
+          <p>以下引用均来自提交 <code>6bf4f73</code>。当前检出分支缺少这些源文件，因此评审时应先同步到已合入该提交的分支，再按路径核对。</p>
+        </div>
+        <div class="source-list">
+          <div class="source-row"><code>server/manager-api/pkg/argus_config/argus_config.go:23</code><p>配置 HTTP 路由：published、drafts、publish。</p></div>
+          <div class="source-row"><code>server/service/argus_config/service.go:189</code><p>发布事务、Redis 快照写入、版本广播和失败回滚。</p></div>
+          <div class="source-row"><code>server/common/middleware/redis/ArgusConfig.go:15</code><p>Redis key/channel 协议、checksum、heartbeat 与 control 消息。</p></div>
+          <div class="source-row"><code>server/argus_single/pkg/runtimeconfig/runtime.go:62</code><p>启动加载、Redis/MySQL 回退、订阅、校验和热加载。</p></div>
+          <div class="source-row"><code>server/argus_single/pkg/runtimeconfig/runtime.go:277</code><p>数据库快照到 Trade/Symbol 运行时对象的字段映射。</p></div>
+          <div class="source-row"><code>server/argus_single/pkg/runtimeconfig/runtime.go:424</code><p>交易管理器、PriceMonitor、Telegram 的热替换与重启字段判定。</p></div>
+          <div class="source-row"><code>server/argus_single/pkg/monitor/price_monitor.go:1091</code><p>价差公式、行情年龄检查、阈值穿越、余额门控与交易触发。</p></div>
+          <div class="source-row"><code>server/argus_single/pkg/runtimehealth/heartbeat.go:84</code><p>心跳周期、TTL 和 reload 状态回传。</p></div>
+          <div class="source-row"><code>server/service/argus_runtime/service.go:60</code><p>心跳状态读取、本地进程脚本控制和 Redis reload。</p></div>
+          <div class="source-row"><code>client/manager/src/app/(console)/argus-config/hooks/useArgusConfig.ts:85</code><p>前端“保存草稿 → 发布 → reload → 刷新”调用顺序。</p></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>Generated for requirement req-1787647574745 · Source review only · No task-board data was modified</footer>
+
+  <script>
+    const flowButtons = document.querySelectorAll('[data-flow]');
+    const flowPanels = document.querySelectorAll('.flow-panel');
+    flowButtons.forEach((button) => {
+      button.addEventListener('click', () => {
+        flowButtons.forEach((item) => item.setAttribute('aria-selected', 'false'));
+        flowPanels.forEach((panel) => panel.classList.remove('active'));
+        button.setAttribute('aria-selected', 'true');
+        document.getElementById(button.dataset.flow).classList.add('active');
+      });
+    });
+
+    const filterButtons = document.querySelectorAll('[data-filter]');
+    const matrixRows = document.querySelectorAll('tbody tr[data-state]');
+    filterButtons.forEach((button) => {
+      button.addEventListener('click', () => {
+        const filter = button.dataset.filter;
+        filterButtons.forEach((item) => item.classList.remove('active'));
+        button.classList.add('active');
+        matrixRows.forEach((row) => {
+          row.hidden = filter !== 'all' && row.dataset.state !== filter;
+        });
+      });
+    });
+  </script>
+</body>
+</html>
