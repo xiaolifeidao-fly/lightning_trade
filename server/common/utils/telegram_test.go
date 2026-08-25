@@ -1,6 +1,9 @@
 package utils
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -29,7 +32,22 @@ func TestDefaultTimeout_Constant(t *testing.T) {
 // ==================== SendMessage 成功场景测试 ====================
 
 func TestTelegramClient_SendMessage_Success(t *testing.T) {
-	client := NewTelegramClient()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/bottest-token/sendMessage", r.URL.Path)
+
+		var request SendMessageRequest
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		assert.Equal(t, "test-chat", request.ChatID)
+		assert.Equal(t, "测试消息", request.Text)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1}}`))
+	}))
+	defer server.Close()
+
+	client := NewTelegramClientWithBotTokenAndChatID("test-token", "test-chat")
+	client.setAPIBaseURL(server.URL)
 	success, err := client.SendMessage("测试消息")
 	assert.True(t, success)
 	assert.NoError(t, err)

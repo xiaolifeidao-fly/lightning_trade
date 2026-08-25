@@ -1,15 +1,12 @@
 package monitor
 
 import (
-	"fmt"
-	"regexp"
 	"strings"
 	"sync"
 
 	"common/middleware/vipper"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/shopspring/decimal"
 	"github.com/sirupsen/logrus"
 )
 
@@ -28,6 +25,7 @@ type TelegramBot struct {
 	handlers map[string]CommandHandler // 关键词到处理器的映射
 	mu       sync.RWMutex              // 保护handlers的读写锁
 	stopChan chan struct{}
+	stopOnce sync.Once
 	wg       sync.WaitGroup
 }
 
@@ -68,6 +66,28 @@ func (h *PositionCommandHandler) Handle(msg *tgbotapi.Message) string {
 	return GetPositionReport()
 }
 
+// ROICommandHandler 收益率查询命令处理器
+type ROICommandHandler struct{}
+
+func (h *ROICommandHandler) Keywords() []string {
+	return []string{"roi", "收益率"}
+}
+
+func (h *ROICommandHandler) Handle(msg *tgbotapi.Message) string {
+	return GetROIReport()
+}
+
+// StatusCommandHandler 系统状态查询命令处理器
+type StatusCommandHandler struct{}
+
+func (h *StatusCommandHandler) Keywords() []string {
+	return []string{"status", "状态"}
+}
+
+func (h *StatusCommandHandler) Handle(msg *tgbotapi.Message) string {
+	return GetSystemStatus()
+}
+
 // ClosePositionCommandHandler 一键平仓命令处理器
 type ClosePositionCommandHandler struct{}
 
@@ -76,78 +96,14 @@ func (h *ClosePositionCommandHandler) Keywords() []string {
 }
 
 func (h *ClosePositionCommandHandler) Handle(msg *tgbotapi.Message) string {
+	text := strings.ToLower(msg.Text)
+	if strings.Contains(text, "long") || strings.Contains(text, "多") {
+		return ClosePositionsBySide("long")
+	}
+	if strings.Contains(text, "short") || strings.Contains(text, "空") {
+		return ClosePositionsBySide("short")
+	}
 	return CloseAllPositions()
-}
-
-type HelpCommandHandler struct{}
-
-func (h *HelpCommandHandler) Keywords() []string {
-	return []string{"help", "/help", "帮助"}
-}
-
-func (h *HelpCommandHandler) Handle(msg *tgbotapi.Message) string {
-	return formatTelegramHelpMessage()
-}
-
-type ApproveAICloseCommandHandler struct{}
-
-func (h *ApproveAICloseCommandHandler) Keywords() []string {
-	return []string{"确认平仓", "批准平仓", "approve"}
-}
-
-func (h *ApproveAICloseCommandHandler) Handle(msg *tgbotapi.Message) string {
-	id := extractAICloseRequestID(msg.Text)
-	if id == "" {
-		return fmt.Sprintf("⚠️ 请带上请求ID，例如: %s 确认平仓 AICLOSE-123", botMentionOrFallback())
-	}
-	return ApprovePendingAIClose(id)
-}
-
-type RejectAICloseCommandHandler struct{}
-
-func (h *RejectAICloseCommandHandler) Keywords() []string {
-	return []string{"拒绝平仓", "取消平仓", "reject"}
-}
-
-func (h *RejectAICloseCommandHandler) Handle(msg *tgbotapi.Message) string {
-	id := extractAICloseRequestID(msg.Text)
-	if id == "" {
-		return fmt.Sprintf("⚠️ 请带上请求ID，例如: %s 拒绝平仓 AICLOSE-123", botMentionOrFallback())
-	}
-	return RejectPendingAIClose(id)
-}
-
-type ListAICloseCommandHandler struct{}
-
-func (h *ListAICloseCommandHandler) Keywords() []string {
-	return []string{"待审批平仓", "审批列表", "pending"}
-}
-
-func (h *ListAICloseCommandHandler) Handle(msg *tgbotapi.Message) string {
-	return ListPendingAICloseRequests()
-}
-
-type RunAICloseCommandHandler struct{}
-
-func (h *RunAICloseCommandHandler) Keywords() []string {
-	return []string{"AI", "ai", "AI平仓", "ai平仓"}
-}
-
-func (h *RunAICloseCommandHandler) Handle(msg *tgbotapi.Message) string {
-	if manualInput, ok := extractManualAICloseInput(msg.Text); ok {
-		return RunAICloseStrategyWithManualPosition(manualInput)
-	}
-	return RunAICloseStrategyNow()
-}
-
-type RunAIOpenCommandHandler struct{}
-
-func (h *RunAIOpenCommandHandler) Keywords() []string {
-	return []string{"AI加仓", "ai加仓", "加仓"}
-}
-
-func (h *RunAIOpenCommandHandler) Handle(msg *tgbotapi.Message) string {
-	return RunAIOpenStrategyNow()
 }
 
 // RegisterCommand 注册命令处理器
@@ -164,15 +120,16 @@ func (tb *TelegramBot) RegisterCommand(handler CommandHandler) {
 
 // registerDefaultHandlers 注册默认的命令处理器
 func (tb *TelegramBot) registerDefaultHandlers() {
-	tb.RegisterCommand(&HelpCommandHandler{})
 	// 注册余额查询处理器
 	tb.RegisterCommand(&BalanceCommandHandler{})
 	// 注册持仓查询处理器
 	tb.RegisterCommand(&PositionCommandHandler{})
+	// 注册收益率查询处理器
+	tb.RegisterCommand(&ROICommandHandler{})
+	// 注册系统状态查询处理器
+	tb.RegisterCommand(&StatusCommandHandler{})
 	// 注册一键平仓处理器
 	tb.RegisterCommand(&ClosePositionCommandHandler{})
-	tb.RegisterCommand(&RunAICloseCommandHandler{})
-	tb.RegisterCommand(&RunAIOpenCommandHandler{})
 }
 
 // Start 启动Telegram Bot消息监听
@@ -199,13 +156,11 @@ func (tb *TelegramBot) Start() {
 
 // Stop 停止Telegram Bot
 func (tb *TelegramBot) Stop() {
-	close(tb.stopChan)
-	tb.wg.Wait()
-	logrus.Info("Telegram Bot已停止")
-}
-
-func (tb *TelegramBot) BotName() string {
-	return tb.botName
+	tb.stopOnce.Do(func() {
+		close(tb.stopChan)
+		tb.wg.Wait()
+		logrus.Info("Telegram Bot已停止")
+	})
 }
 
 // startPolling 启动消息轮询（使用Long Polling）
@@ -261,20 +216,19 @@ func (tb *TelegramBot) handleMessage(msg *tgbotapi.Message) {
 		hasMention = strings.Contains(text, tb.botName)
 	}
 
-	if !hasMention && !isHelpCommandText(text) {
+	if !hasMention {
 		return
 	}
 
 	// 查找匹配的命令处理器
 	textLower := strings.ToLower(text)
 	var matchedHandler CommandHandler
-	longestKeyword := 0
 
 	tb.mu.RLock()
 	for keyword, handler := range tb.handlers {
-		if strings.Contains(textLower, keyword) && len(keyword) > longestKeyword {
+		if strings.Contains(textLower, keyword) {
 			matchedHandler = handler
-			longestKeyword = len(keyword)
+			break
 		}
 	}
 	tb.mu.RUnlock()
@@ -296,95 +250,4 @@ func (tb *TelegramBot) handleMessage(msg *tgbotapi.Message) {
 	} else {
 		logrus.Infof("命令响应已发送 (ChatID: %d)", msg.Chat.ID)
 	}
-}
-
-func extractAICloseRequestID(text string) string {
-	for _, token := range strings.Fields(text) {
-		normalized := strings.Trim(token, " ,，。:：;；()[]{}")
-		if strings.HasPrefix(strings.ToUpper(normalized), "AICLOSE-") {
-			return normalized
-		}
-	}
-	return ""
-}
-
-func isHelpCommandText(text string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(text))
-	return normalized == "help" || normalized == "/help" || normalized == "帮助"
-}
-
-func formatTelegramHelpMessage() string {
-	return strings.Join([]string{
-		"📖 支持的命令",
-		"",
-		"help / 帮助: 查看这份命令列表",
-		"余额 / balance: 查询账户余额",
-		"仓位 / 持仓 / position: 查询当前持仓",
-		"平仓 / close: 一键平仓所有账户持仓",
-		"AI: 按当前真实仓位执行 AI 策略建议",
-		"AI + 75000: 用手工均价执行 AI 策略建议，不查询当前仓位",
-		"AI + 75000 + L: 用手工均价按做多仓位执行 AI 策略建议",
-		"AI + 75000 + S: 用手工均价按做空仓位执行 AI 策略建议",
-		"AI + 75000 + L + 100 + 30 + 125: 用手工均价、方向、余额、张数、杠杆倍数执行 AI 策略建议（1张=0.001BTC，倍数默认125，全仓估算）",
-	}, "\n")
-}
-
-type manualAICloseInput struct {
-	AvgPrice     decimal.Decimal
-	PositionSide string
-	Balance      decimal.Decimal
-	PositionSize decimal.Decimal
-	Leverage     decimal.Decimal
-}
-
-var manualAICloseInputPattern = regexp.MustCompile(`(?i)(?:^|\s)ai(?:平仓)?\s*\+\s*([0-9]+(?:\.[0-9]+)?)(?:\s*\+\s*([ls]))?(?:\s*\+\s*([0-9]+(?:\.[0-9]+)?))?(?:\s*\+\s*([0-9]+(?:\.[0-9]+)?))?(?:\s*\+\s*([0-9]+(?:\.[0-9]+)?))?`)
-
-func extractManualAICloseInput(text string) (manualAICloseInput, bool) {
-	match := manualAICloseInputPattern.FindStringSubmatch(text)
-	if len(match) < 2 {
-		return manualAICloseInput{}, false
-	}
-	price, err := decimal.NewFromString(match[1])
-	if err != nil || !price.IsPositive() {
-		return manualAICloseInput{}, false
-	}
-
-	input := manualAICloseInput{AvgPrice: price}
-	if len(match) >= 3 {
-		switch strings.ToUpper(strings.TrimSpace(match[2])) {
-		case "L":
-			input.PositionSide = "long"
-		case "S":
-			input.PositionSide = "short"
-		}
-	}
-	if len(match) >= 4 && strings.TrimSpace(match[3]) != "" {
-		balance, err := decimal.NewFromString(match[3])
-		if err == nil && balance.IsPositive() {
-			input.Balance = balance
-		}
-	}
-	if len(match) >= 5 && strings.TrimSpace(match[4]) != "" {
-		size, err := decimal.NewFromString(match[4])
-		if err == nil && size.IsPositive() {
-			input.PositionSize = size
-		}
-	}
-	if len(match) >= 6 && strings.TrimSpace(match[5]) != "" {
-		leverage, err := decimal.NewFromString(match[5])
-		if err == nil && leverage.IsPositive() {
-			input.Leverage = leverage
-		}
-	}
-	if !input.Leverage.IsPositive() {
-		input.Leverage = decimal.NewFromInt(125)
-	}
-	return input, true
-}
-
-func botMentionOrFallback() string {
-	if mention := GetTelegramBotMention(); mention != "" {
-		return mention
-	}
-	return "@你的Bot"
 }

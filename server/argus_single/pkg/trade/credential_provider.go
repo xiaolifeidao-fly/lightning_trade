@@ -8,7 +8,6 @@ import (
 
 	"common/middleware/vipper"
 	"common/utils/pc_trade/user"
-
 	"github.com/sirupsen/logrus"
 )
 

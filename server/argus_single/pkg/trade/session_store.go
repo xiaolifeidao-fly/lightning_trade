@@ -49,6 +49,19 @@ type SessionStore struct {
 }
 
 var (
+	sessionSaveHookMu sync.RWMutex
+	sessionSaveHook   func(AccountConfig, SessionAccountData) error
+)
+
+// SetSessionSaveHook installs the durable runtime-session writer. The local
+// file remains a compatibility cache, while the hook persists the source of truth.
+func SetSessionSaveHook(hook func(AccountConfig, SessionAccountData) error) {
+	sessionSaveHookMu.Lock()
+	sessionSaveHook = hook
+	sessionSaveHookMu.Unlock()
+}
+
+var (
 	defaultSessionStore     *SessionStore
 	defaultSessionStoreOnce sync.Once
 )
@@ -112,13 +125,31 @@ func (s *SessionStore) Get(acc AccountConfig) (SessionAccountData, bool) {
 	return entry, ok
 }
 
+// GetByUsername 按 username 字段查找 session 数据（key 一般与 accountName/username 相同）。
+func (s *SessionStore) GetByUsername(username string) (SessionAccountData, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.data.Accounts == nil {
+		return SessionAccountData{}, false
+	}
+	// 优先直接按 key 查找
+	if entry, ok := s.data.Accounts[username]; ok {
+		return entry, true
+	}
+	// 遍历兜底：匹配 Username 字段
+	for _, entry := range s.data.Accounts {
+		if entry.Username == username {
+			return entry, true
+		}
+	}
+	return SessionAccountData{}, false
+}
+
 func (s *SessionStore) SaveFromLoginResult(acc AccountConfig, result *DeepCoinLoginResult) error {
 	if result == nil {
 		return fmt.Errorf("session 保存失败: 登录结果为空")
 	}
-
-	fmt.Printf("[session] SaveFromLoginResult account=%s cookieLen=%d token=%q oToken=%q sentryRelease=%q baggage=%q\n",
-		acc.Name, len(result.Cookie), result.Token, result.OToken, result.SentryRelease, result.Baggage)
 
 	entry := SessionAccountData{
 		AccountName:     acc.Name,
@@ -190,6 +221,13 @@ func (s *SessionStore) Save(acc AccountConfig, entry SessionAccountData) error {
 	}
 	if err := os.Rename(tempPath, s.path); err != nil {
 		return fmt.Errorf("替换 session 文件失败: %w", err)
+	}
+
+	sessionSaveHookMu.RLock()
+	hook := sessionSaveHook
+	sessionSaveHookMu.RUnlock()
+	if hook != nil {
+		return hook(acc, entry)
 	}
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"common/utils/pc_trade/user"
+	"strings"
 )
 
 // TestTradeFlow 测试完整下单流程：先下单，再进行下单风控
@@ -148,5 +149,20 @@ func TestTPSLFlow(t *testing.T) {
 		t.Logf("止盈止损风控请求失败: %v", err)
 	} else {
 		t.Log("✓ 止盈止损风控请求发送成功")
+	}
+}
+
+// 埋点上报端点（2026-07-31 修）：旧域名 ubt.deepcoin.pro 已 NXDOMAIN 下线，
+// 导致每次上报静默失败（代码只 Warnf 不阻断下单，故长期无人察觉）。
+// 现网页版实测端点为 net-api.deepcoin.com——由浏览器抓包比对确认，
+// payload 结构（de_* 12 字段 / 行为指纹 / 浏览器检测）两侧本就一致，仅域名有别。
+// 用测试钉住，防再次漂移；下次若上报又停，先跑这个测试并重新抓包核对域名。
+func TestTrackEndpointPinned(t *testing.T) {
+	const want = "https://net-api.deepcoin.com/save.gif"
+	if trackEndpoint != want {
+		t.Fatalf("埋点端点 = %q, want %q", trackEndpoint, want)
+	}
+	if strings.Contains(trackEndpoint, "ubt.deepcoin.pro") {
+		t.Fatalf("ubt.deepcoin.pro 已下线(NXDOMAIN)，不可再用")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf16"
 )
 
 // Eh 实现字符串哈希算法，对应 JavaScript 中的 eh 函数
@@ -19,12 +20,11 @@ func GetExt(e string) int32 {
 		return 0
 	}
 
-	var i int32 = 0
-	// 遍历字符串的每个字符
-	for _, char := range e {
-		// JavaScript 的 charCodeAt 返回 UTF-16 编码单元
-		// Go 的 rune 是 Unicode 码点，对于基本字符是相同的
-		i = (i << 5) - i + int32(char)
+	var i int32
+	// JavaScript charCodeAt 按 UTF-16 code unit 遍历；不能直接遍历 Go rune，
+	// 否则非 BMP 字符会少算一个代理项。
+	for _, unit := range utf16.Encode([]rune(e)) {
+		i = (i << 5) - i + int32(unit)
 		// JavaScript 中的 i &= i 是为了确保整数运算
 		// Go 中 int32 已经保证是 32 位整数
 	}

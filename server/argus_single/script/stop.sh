@@ -1,87 +1,42 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Argus Single 停止脚本
-
-APP_NAME="argus_single"
-PORT=8855
-PID_FILE="argus_single.pid"
-
-# 获取脚本所在目录的绝对路径
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# 如果脚本在 script/ 目录下，则项目根目录是父目录
-if [ "$(basename "$SCRIPT_DIR")" = "script" ]; then
-    SCRIPT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib.sh"
+argus_init_paths
+owns_lock=0
+if [ "${ARGUS_CONTROL_LOCK_HELD:-}" != "1" ]; then
+    argus_acquire_lock
+    owns_lock=1
 fi
-APP_PATH="$SCRIPT_DIR/$APP_NAME"
+if [ "$owns_lock" = "1" ]; then
+    trap argus_release_lock EXIT
+fi
 
 echo "🛑 停止 $APP_NAME..."
-
-# 方法1: 通过PID文件查找进程
-PID=""
-if [ -f "$SCRIPT_DIR/$PID_FILE" ]; then
-    PID=$(cat "$SCRIPT_DIR/$PID_FILE")
-    # 验证PID是否有效且确实是我们的进程
-    if ! ps -p $PID > /dev/null 2>&1; then
-        PID=""
-    else
-        # 验证进程路径是否匹配
-        PROC_PATH=$(ps -p $PID -o cmd= | awk '{print $1}')
-        if [ "$PROC_PATH" != "$APP_PATH" ] && [ "$PROC_PATH" != "./$APP_NAME" ] && [[ ! "$PROC_PATH" =~ "$SCRIPT_DIR" ]]; then
-            PID=""
-        fi
-    fi
-fi
-
-# 方法2: 通过完整路径查找进程（避免匹配到其他argus进程）
-if [ -z "$PID" ]; then
-    PID=$(ps -ef | grep "$APP_PATH" | grep -v grep | awk '{print $2}' | head -n 1)
-fi
-
-# 方法3: 如果方法2没找到，通过当前目录下的进程查找
-if [ -z "$PID" ]; then
-    PID=$(ps -ef | grep "$SCRIPT_DIR/$APP_NAME" | grep -v grep | awk '{print $2}' | head -n 1)
-fi
-
-# 方法4: 如果还没找到，通过端口查找
-if [ -z "$PID" ]; then
-    if command -v lsof >/dev/null 2>&1; then
-        PORT_PID=$(lsof -ti :$PORT 2>/dev/null)
-        if [ -n "$PORT_PID" ]; then
-            # 验证端口对应的进程是否是我们的应用
-            PROC_PATH=$(ps -p $PORT_PID -o cmd= | awk '{print $1}')
-            if [[ "$PROC_PATH" =~ "$APP_NAME" ]] && [[ "$PROC_PATH" =~ "$SCRIPT_DIR" ]]; then
-                PID=$PORT_PID
-            fi
-        fi
-    fi
-fi
-
-# 检查是否找到了进程ID
-if [ -z "$PID" ]; then
-    echo "ℹ️  没有找到运行中的 $APP_NAME 进程"
-    # 清理可能存在的无效PID文件
-    rm -f "$SCRIPT_DIR/$PID_FILE"
+if ! pid="$(argus_read_pid)"; then
+    echo "ℹ️  没有找到由 $PID_FILE 管理且路径匹配的 $APP_NAME 进程"
     exit 0
-else
-    echo "找到进程ID: $PID"
-    # 显示进程信息
-    ps -p $PID -o pid,cmd
-    
-    # 优雅停止
-    kill $PID
-    
-    # 等待进程停止
-    sleep 2
-    
-    # 检查是否还在运行
-    if ps -p $PID > /dev/null 2>&1; then
-        echo "⚠️  进程未停止，强制杀死..."
-        kill -9 $PID
-        sleep 1
-    fi
-    
-    # 清理PID文件
-    rm -f "$SCRIPT_DIR/$PID_FILE"
-    
-    echo "✅ $APP_NAME 已停止"
 fi
+
+echo "找到受控进程 ID: $pid"
+kill -TERM "$pid"
+for _ in $(seq 1 10); do
+    if ! argus_pid_is_target "$pid"; then
+        rm -f "$PID_FILE"
+        echo "✅ $APP_NAME 已优雅停止"
+        exit 0
+    fi
+    sleep 1
+done
+
+if argus_pid_is_target "$pid"; then
+    echo "⚠️  进程在 10 秒内未退出，发送 SIGKILL" >&2
+    kill -KILL "$pid"
+    sleep 1
+fi
+if argus_pid_is_target "$pid"; then
+    echo "❌ 无法停止受控进程 $pid" >&2
+    exit 1
+fi
+rm -f "$PID_FILE"
+echo "✅ $APP_NAME 已停止"

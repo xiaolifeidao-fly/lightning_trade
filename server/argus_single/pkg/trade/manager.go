@@ -1,41 +1,80 @@
 package trade
 
 import (
+	"argus_single/pkg/eventlog"
+	"common/middleware/vipper"
+	"common/utils"
 	"context"
 	"fmt"
 	"math/rand"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
-
-	"common/middleware/vipper"
-	"common/utils"
 
 	"github.com/shopspring/decimal"
 	"github.com/sirupsen/logrus"
 )
 
+// SignalLeverage 盘口信号开仓使用的杠杆（与仓位上限公式中的 L 保持一致）。
+const SignalLeverage = 125
+
 type TradeManager struct {
-	config          *TradingSystemConfig
-	clients         map[string]*utils.DeepCoinClient
-	webClients      map[string]*DirectWebClient
-	exchangeClients map[string]ExchangeClient // 按平台工厂构建，key=账户Name
-	mu              sync.RWMutex
-	lastTrade       time.Time
-	tradeCooldown   time.Duration
-	stopShuffle     chan struct{} // 用于停止shuffle goroutine
-	telegramClient  *utils.TelegramClient
-	loginScheduler  *LoginScheduler
+	config                        *TradingSystemConfig
+	clients                       map[string]*utils.DeepCoinClient
+	webClients                    map[string]*DirectWebClient
+	mu                            sync.RWMutex
+	lastTrade                     time.Time
+	tradeCooldown                 time.Duration
+	stopShuffle                   chan struct{} // 用于停止shuffle goroutine
+	stopOnce                      sync.Once
+	telegramClient                *utils.TelegramClient
+	loginScheduler                *LoginScheduler
+	capGuard                      *PositionCapGuard  // 仓位上限守卫（仅 trailing 账户使用）
+	reverseGateMinProfitByAccount map[string]float64 // 账户级反向减仓最小盈利 ROI%
+	riskEquityByAccount           map[string]float64 // 风险基数（cap 公式唯一输入, P5 三拆）
+}
+
+func (tm *TradeManager) Config() *TradingSystemConfig {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+	if tm.config == nil {
+		return nil
+	}
+	copy := *tm.config
+	copy.Accounts = append([]AccountConfig(nil), tm.config.Accounts...)
+	return &copy
 }
 
 func NewTradeManager(config *TradingSystemConfig) *TradeManager {
+	// 账户级参数解析（champion/challenger）
+	capByAccount := make(map[string]CapParams)
+	gateMinByAccount := make(map[string]float64)
+	riskEquityByAccount := make(map[string]float64)
+	for _, acc := range config.Accounts {
+		capByAccount[acc.Name] = resolveCapParams(acc)
+		gateMinByAccount[acc.Name] = resolveReverseGateMinProfit(acc)
+		riskEquityByAccount[acc.Name] = ResolveRiskEquity(acc)
+		// P5：启动校验（fail-fast）+ 静态参数打印（动态行在 cap guard 首次初始化时打）
+		if acc.IsTrailingTP() {
+			view := resolveRiskParamsView(acc, config.Trade.OrderSize)
+			if err := ValidateRiskParams(view); err != nil {
+				logrus.Fatalf("[风险参数] 账户 %s 配置非法, 拒绝启动: %v", acc.Name, err)
+			}
+			logStaticRiskParams(acc, view)
+		}
+	}
+
 	tm := &TradeManager{
-		config:          config,
-		clients:         make(map[string]*utils.DeepCoinClient),
-		webClients:      make(map[string]*DirectWebClient),
-		exchangeClients: make(map[string]ExchangeClient),
-		tradeCooldown:   5 * time.Second,
-		stopShuffle:     make(chan struct{}),
-		telegramClient:  utils.NewTelegramClientWithBotTokenAndChatID(vipper.GetString("telegram.bot_token"), vipper.GetString("telegram.chat_id")),
+		config:                        config,
+		clients:                       make(map[string]*utils.DeepCoinClient),
+		webClients:                    make(map[string]*DirectWebClient),
+		tradeCooldown:                 5 * time.Second,
+		stopShuffle:                   make(chan struct{}),
+		telegramClient:                utils.NewTelegramClientWithBotTokenAndChatID(vipper.GetString("telegram.bot_token"), vipper.GetString("telegram.chat_id")),
+		capGuard:                      NewPositionCapGuard(loadCapParams(), capByAccount),
+		reverseGateMinProfitByAccount: gateMinByAccount,
+		riskEquityByAccount:           riskEquityByAccount,
 	}
 
 	// 为每个账户创建客户端
@@ -45,22 +84,20 @@ func NewTradeManager(config *TradingSystemConfig) *TradeManager {
 		tm.clients[acc.Name] = client
 		logrus.Infof("✅ 账户 %s 直连API客户端已创建", acc.Name)
 
-		var webClient *DirectWebClient
 		// 如果有 Web 配置种子，创建直连 Web 客户端。
+		// userProvider 负责在交易时解析 cookie/token：config 模式直读静态凭证，
+		// password 模式走 session 检测 + pl-instance 无头登录。
 		if acc.HasWebCredentialSeed() {
 			userProvider, err := BuildUserProvider(acc)
 			if err != nil {
 				logrus.Warnf("⚠️  账户 %s Web 凭证提供器创建失败: %v", acc.Name, err)
-			} else {
-				webClient = NewDirectWebClient(userProvider)
-				tm.webClients[acc.Name] = webClient
-				logrus.Infof("✅ 账户 %s 直连Web客户端已创建(mode=%s)", acc.Name, acc.LoginType)
+				continue
 			}
-		}
 
-		// 通过工厂构建统一交易所客户端（platform 字段决定使用哪套 API）
-		tm.exchangeClients[acc.Name] = NewExchangeClient(acc, webClient)
-		logrus.Infof("✅ 账户 %s 交易所客户端已创建(platform=%s)", acc.Name, acc.Platform)
+			webClient := NewDirectWebClient(userProvider)
+			tm.webClients[acc.Name] = webClient
+			logrus.Infof("✅ 账户 %s 直连Web客户端已创建(mode=%s)", acc.Name, acc.LoginType)
+		}
 	}
 
 	// 启动定时打乱账户position_side的goroutine
@@ -78,9 +115,93 @@ func NewTradeManager(config *TradingSystemConfig) *TradeManager {
 	return tm
 }
 
-// EnsureSessionsReady 启动时主动检测所有密码型账户的 session 是否有效。
-// 检测方式与 TestSessionAccountValid 一致（net-wapi 接口）。
-// 失效则立即触发无头模式重新登录。定时调度器（凌晨1点）复用同一套流程。
+// loadCapParams 从配置读取仓位上限公式参数（带默认值）。
+func loadCapParams() CapParams {
+	budgetPct := vipper.GetFloat64("position.risk.budget_pct")
+	if budgetPct <= 0 {
+		budgetPct = 20
+	}
+	stopPct := vipper.GetFloat64("position.monitor.catastrophe_stop_pct")
+	if stopPct <= 0 {
+		stopPct = 300
+	}
+	ceiling := vipper.GetInt("position.risk.max_contracts_ceiling")
+	if ceiling <= 0 {
+		ceiling = 20
+	}
+	face := vipper.GetFloat64("position.risk.contract_face")
+	if face <= 0 {
+		face = 0.001 // BTC 1张=0.001
+	}
+	return CapParams{
+		Leverage:           SignalLeverage,
+		FaceValue:          face,
+		RiskBudgetFraction: budgetPct / 100,
+		CatastropheStopPct: stopPct,
+		Ceiling:            ceiling,
+	}
+}
+
+// CapGuard 返回仓位上限守卫（供 monitor 按 N_max 定档使用）。
+func (tm *TradeManager) CapGuard() *PositionCapGuard {
+	return tm.capGuard
+}
+
+// capParamsFor 该账户的 cap 参数；guard 缺失时回退默认合约面值（防御，P2-D 用）。
+func (tm *TradeManager) capParamsFor(account string) CapParams {
+	if tm.capGuard != nil {
+		return tm.capGuard.paramsFor(account)
+	}
+	return CapParams{FaceValue: 0.001}
+}
+
+// instrumentBase 提取合约的基础币，用于归一化匹配 trade_inst 与 swap inst。
+// 例：BTCUSDT -> BTC，BTC-USDT-SWAP -> BTC。
+func instrumentBase(instId string) string {
+	s := strings.ToUpper(strings.TrimSpace(instId))
+	s = strings.ReplaceAll(s, "-", "")
+	s = strings.TrimSuffix(s, "SWAP")
+	s = strings.TrimSuffix(s, "USDT")
+	return s
+}
+
+// parseNetPosition 从持仓列表中解析 instId 对应合约的净持仓（纯函数，可测）。
+// 按基础币归一化匹配（BTCUSDT ↔ BTC-USDT-SWAP）。
+// 张数/价格解析失败或价格 <=0 → ok=false（A2 fail-closed）；无匹配 → Size=0, ok=true（flat）。
+func parseNetPosition(data []utils.PositionInfo, instId string) (NetPosition, bool) {
+	base := instrumentBase(instId)
+	for _, p := range data {
+		if instrumentBase(p.InstId) != base {
+			continue
+		}
+		n, perr := strconv.Atoi(strings.TrimSpace(p.Pos))
+		if perr != nil {
+			return NetPosition{}, false
+		}
+		if n < 0 {
+			n = -n
+		}
+		if n == 0 {
+			continue
+		}
+		avg, aerr := strconv.ParseFloat(strings.TrimSpace(p.AvgPx), 64)
+		last, lerr := strconv.ParseFloat(strings.TrimSpace(p.LastPx), 64)
+		if aerr != nil || lerr != nil || avg <= 0 || last <= 0 {
+			return NetPosition{}, false // A2: 价格解析失败/异常 → fail-closed
+		}
+		return NetPosition{
+			Side:   strings.ToLower(strings.TrimSpace(p.PosSide)),
+			Size:   n,
+			AvgPx:  avg,
+			LastPx: last,
+			PosId:  p.PosId,
+		}, true
+	}
+	return NetPosition{Size: 0}, true // 无持仓（flat）
+}
+
+// EnsureSessionsReady 启动时主动检测所有密码型账户的 session 是否有效（net-wapi 接口）。
+// 失效则立即触发无头模式重新登录。定时调度器复用同一套流程。
 func (tm *TradeManager) EnsureSessionsReady() {
 	tm.mu.RLock()
 	snapshot := make(map[string]*DirectWebClient, len(tm.webClients))
@@ -90,7 +211,7 @@ func (tm *TradeManager) EnsureSessionsReady() {
 	tm.mu.RUnlock()
 
 	if len(snapshot) == 0 {
-		logrus.Info("[session] 无密码型账户，跳过启动检测")
+		logrus.Info("[session] 无 Web 客户端账户，跳过启动检测")
 		return
 	}
 
@@ -117,9 +238,55 @@ func (tm *TradeManager) EnsureSessionsReady() {
 	}
 }
 
+// currentNetPosition 查询账户在 instId 对应合约上的当前净持仓（净仓模式）。
+// 返回 ok=false 表示查询/解析失败/价格异常（调用方 fail-closed）；Size=0 表示无持仓。
+func (tm *TradeManager) currentNetPosition(accName, instId string) (NetPosition, bool) {
+	client := tm.clients[accName]
+	if client == nil {
+		return NetPosition{}, false
+	}
+	resp, err := client.GetPositionsTyped(&utils.GetPositionsRequest{InstType: "SWAP"})
+	if err != nil {
+		return NetPosition{}, false
+	}
+	np, ok := parseNetPosition(resp.Data, instId)
+	if !ok {
+		logrus.Warnf("[持仓门控] 账户 %s %s 持仓解析失败/价格异常，fail-closed 跳过本单", accName, instId)
+	}
+	return np, ok
+}
+
 // getAccountOrderSize 获取指定账户的开仓张数（优先账户级 order_size，回退到全局 trade.order_size）
 func (tm *TradeManager) getAccountOrderSize(acc AccountConfig) int {
 	return acc.GetOrderSize(tm.config.Trade.OrderSize)
+}
+
+func (tm *TradeManager) getSpreadLogicAccounts() []AccountConfig {
+	accounts := make([]AccountConfig, 0)
+	for _, acc := range tm.config.Accounts {
+		if acc.IsSpreadLogic() {
+			accounts = append(accounts, acc)
+		}
+	}
+	return accounts
+}
+
+func (tm *TradeManager) getSignalLogicAccounts() []AccountConfig {
+	accounts := make([]AccountConfig, 0)
+	for _, acc := range tm.config.Accounts {
+		if acc.IsSignalLogic() {
+			accounts = append(accounts, acc)
+		}
+	}
+	return accounts
+}
+
+func (tm *TradeManager) HasSpreadLogicAccounts() bool {
+	return len(tm.getSpreadLogicAccounts()) > 0
+}
+
+func (tm *TradeManager) HasSignalLogicAccounts() bool {
+	return len(tm.getSignalLogicAccounts()) > 0
 }
 
 // OpenedAccount 记录开过仓的账户信息
@@ -162,9 +329,9 @@ type OpenedAccountWithTPSL struct {
 // 并使用自身 order_size 决定下单张数。
 // 返回: 所有开仓成功的账号
 func (tm *TradeManager) executeArbitrageTrades_From_WEB(instId string, price float64, needBuyDeep bool) []OpenedAccount {
-	accounts := tm.config.Accounts
+	accounts := tm.getSpreadLogicAccounts()
 	if len(accounts) == 0 {
-		logrus.Warnf("没有配置任何账户，跳过开仓")
+		logrus.Debugf("没有配置价差老逻辑账户，跳过价差开仓")
 		return nil
 	}
 
@@ -275,6 +442,303 @@ func (tm *TradeManager) ExecuteArbitrage_From_WEB(instId string, binPrice, deepP
 	}
 
 	return nil
+}
+
+func normalizeOrderBookSignal(direction string) (string, error) {
+	switch strings.ToUpper(strings.TrimSpace(direction)) {
+	case OrderBookSignalUp:
+		return OrderBookSignalUp, nil
+	case OrderBookSignalDown:
+		return OrderBookSignalDown, nil
+	default:
+		return "", fmt.Errorf("未知盘口信号方向: %s", direction)
+	}
+}
+
+func signalPosSide(direction string) string {
+	if direction == OrderBookSignalUp {
+		return "long"
+	}
+	return "short"
+}
+
+func signalSideEmoji(direction string) string {
+	if direction == OrderBookSignalUp {
+		return "🔵"
+	}
+	return "🔴"
+}
+
+// ExecuteSignalTrade_From_WEB 执行盘口信号交易（使用Web接口）。
+// UP 固定开多，DOWN 固定开空；只作用于 trade_logic=signal 的账户。
+// ExecuteSignalTrade_From_WEB 执行盘口信号开仓。
+// 返回 opened=true 仅当至少一个账户真正开仓（全跳过/全失败均为 false），供调度器据此判定是否进入 POSITION 状态。
+func (tm *TradeManager) ExecuteSignalTrade_From_WEB(instId string, price float64, direction string, q SignalQuote) (opened bool, err error) {
+	direction, err = normalizeOrderBookSignal(direction)
+	if err != nil {
+		return false, err
+	}
+
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	accounts := tm.getSignalLogicAccounts()
+	if len(accounts) == 0 {
+		logrus.Debugf("没有配置盘口信号逻辑账户，跳过信号交易")
+		return false, nil
+	}
+
+	posSide := signalPosSide(direction)
+	logrus.Infof("%s [盘口信号] 执行%s: %s, 价格=%.2f, signal账户数=%d",
+		signalSideEmoji(direction), posSide, instId, price, len(accounts))
+
+	openedAccounts, failures, skipped := tm.executeSignalTrades_From_WEB(accounts, instId, price, direction, q)
+	tm.lastTrade = time.Now()
+
+	if len(openedAccounts) > 0 || len(failures) > 0 || len(skipped) > 0 {
+		accountsCopy := make([]OpenedAccount, len(openedAccounts))
+		copy(accountsCopy, openedAccounts)
+		failuresCopy := append([]string(nil), failures...)
+		skippedCopy := append([]string(nil), skipped...)
+		go tm.sendSignalSummaryToTelegram(instId, price, direction, accountsCopy, failuresCopy, skippedCopy)
+	}
+
+	// opened 仅当确有账户开仓为真；全跳过/全失败为 false（调度器据此不进入 POSITION）
+	opened = len(openedAccounts) > 0
+	// 全部失败（无成功、无跳过）才算错误；全部被 cap/gate 跳过不算错误（正常生效）
+	if !opened && len(failures) > 0 {
+		return false, fmt.Errorf("盘口信号 %s 下单全部失败: %v", direction, failures)
+	}
+	return opened, nil
+}
+
+func (tm *TradeManager) executeSignalTrades_From_WEB(accounts []AccountConfig, instId string, price float64, direction string, q SignalQuote) ([]OpenedAccount, []string, []string) {
+	type result struct {
+		acc     OpenedAccount
+		err     error
+		skipped bool
+		skipMsg string
+	}
+
+	resultCh := make(chan result, len(accounts))
+	posSide := signalPosSide(direction)
+	lever := SignalLeverage
+	isCrossMargin := 1
+
+	for _, acc := range accounts {
+		acc := acc
+		accSize := tm.getAccountOrderSize(acc)
+
+		go func() {
+			webClient := tm.webClients[acc.Name]
+			if webClient == nil {
+				err := fmt.Errorf("%s 未配置Web客户端", acc.Name)
+				logrus.Errorf("  ⚠️  %v，跳过盘口信号下单", err)
+				resultCh <- result{err: err}
+				return
+			}
+
+			// 持仓门控：cap(加仓) / reverse_gate(反向减仓)，共用一次净仓查询；无法核验时 fail-closed
+			var net NetPosition
+			netOK := false
+			if acc.IsTrailingTP() || acc.IsReverseGate() {
+				net, netOK = tm.currentNetPosition(acc.Name, instId)
+				if !netOK {
+					logrus.Warnf("  ⚠️  %s [持仓门控] 查询净仓失败，fail-closed 跳过开%s", acc.Name, posSide)
+					resultCh <- result{skipped: true, skipMsg: fmt.Sprintf("%s 净仓查询失败(fail-closed)", acc.Name)}
+					return
+				}
+				if isReduction(posSide, net.Side, net.Size) {
+					// 反向减仓 → reverse_gate（盈利且不翻转才放行）
+					if acc.IsReverseGate() {
+						dec := EvaluateReverseGate(net.Side, net.AvgPx, net.LastPx, SignalLeverage, tm.reverseGateMinProfitByAccount[acc.Name], accSize, net.Size)
+						if !dec.Allow {
+							logrus.Warnf("  🚦 %s [门控] 反向减仓被拦截: %s", acc.Name, dec.Reason)
+							eventlog.Log(applySignalQuote(eventlog.Event{Account: acc.Name, Variant: acc.Variant, InstId: instId, Event: eventlog.EvGateBlock,
+								Side: posSide, NetSide: net.Side, Size: net.Size, AvgPx: net.AvgPx, LastPx: net.LastPx, RoiPct: dec.RoiPct, OrderSize: accSize, Reason: dec.Reason}, q))
+							resultCh <- result{skipped: true, skipMsg: fmt.Sprintf("🚦门控 %s %s", acc.Name, dec.Reason)}
+							return
+						}
+					}
+				} else if acc.IsTrailingTP() && tm.capGuard != nil {
+					// 全新开仓 / 加仓 → 仓位上限
+					if tm.capGuard.WouldExceedCap(acc.Name, tm.riskEquityByAccount[acc.Name], net.Size, accSize, price) {
+						nmax, _ := tm.capGuard.MaxContracts(acc.Name)
+						logrus.Warnf("  ⛔ %s [仓位上限] 当前%d张 + %d张 > 上限%d，跳过开%s", acc.Name, net.Size, accSize, nmax, posSide)
+						eventlog.Log(applySignalQuote(eventlog.Event{Account: acc.Name, Variant: acc.Variant, InstId: instId, Event: eventlog.EvCapSkip,
+							Side: posSide, Size: net.Size, OrderSize: accSize, Reason: fmt.Sprintf("当前%d+%d>上限%d", net.Size, accSize, nmax)}, q))
+						resultCh <- result{skipped: true, skipMsg: fmt.Sprintf("⛔上限 %s 当前%d张+%d>上限%d", acc.Name, net.Size, accSize, nmax)}
+						return
+					}
+				}
+			}
+
+			resp, err := tm.placeSignalWebOrderWithRetry(webClient, acc, instId, accSize, lever, isCrossMargin, price, posSide)
+			if err != nil {
+				logrus.Errorf("  ⚠️  %s [盘口信号] 开%s失败: %v", acc.Name, posSide, err)
+				resultCh <- result{err: err}
+				return
+			}
+
+			logrus.Infof("  ✅ %s %s [盘口信号] 开%s成功: 张数=%d, code=%d",
+				signalSideEmoji(direction), acc.Name, posSide, accSize, resp.Code)
+			// Size 记开仓后预计净仓张数（让"最大堆积"口径正确）；OrderSize 记本次下单张数
+			postNet := accSize
+			if netOK {
+				if net.Size == 0 || strings.EqualFold(posSide, net.Side) {
+					postNet = net.Size + accSize // 全新/加仓
+				} else {
+					postNet = net.Size - accSize // 反向减仓
+					if postNet < 0 {
+						postNet = 0
+					}
+				}
+			}
+			openEv := eventlog.Event{Account: acc.Name, Variant: acc.Variant, InstId: instId, Event: eventlog.EvOpen, Side: posSide, Size: postNet, OrderSize: accSize}
+			if netOK && isReduction(posSide, net.Side, net.Size) && postNet == 0 {
+				// P2-A：减仓清零=自家平仓，打标防对账误报 external_close
+				MarkBotClose(acc.Name, instId, net.Side, net.PosId)
+			}
+			if netOK && isReduction(posSide, net.Side, net.Size) {
+				// P2-D：减仓锁利的已实现盈亏估算（lastPx=门控时点价，非成交价）
+				face := tm.capParamsFor(acc.Name).FaceValue
+				openEv.Pnl = estimateReducePnl(net.Side, net.AvgPx, net.LastPx, face, accSize)
+				openEv.RoiPct = netRoiPct(net.Side, net.AvgPx, net.LastPx, SignalLeverage)
+				openEv.AvgPx, openEv.LastPx, openEv.NetSide = net.AvgPx, net.LastPx, net.Side
+				openEv.Reason = "减仓锁利(pnl为估算)"
+			}
+			eventlog.Log(applySignalQuote(openEv, q))
+			resultCh <- result{acc: OpenedAccount{
+				Account: acc,
+				Size:    accSize,
+				PosSide: posSide,
+				WebResp: resp,
+			}}
+		}()
+	}
+
+	opened := make([]OpenedAccount, 0, len(accounts))
+	failures := make([]string, 0)
+	skipped := make([]string, 0)
+	for range accounts {
+		r := <-resultCh
+		switch {
+		case r.skipped:
+			// 被仓位上限拦下，不计成功也不计失败，但记录用于可见性
+			if r.skipMsg != "" {
+				skipped = append(skipped, r.skipMsg)
+			}
+		case r.err == nil:
+			opened = append(opened, r.acc)
+		default:
+			failures = append(failures, r.err.Error())
+		}
+	}
+	return opened, failures, skipped
+}
+
+func (tm *TradeManager) placeSignalWebOrderWithRetry(
+	webClient *DirectWebClient,
+	acc AccountConfig,
+	instId string,
+	size, lever, isCrossMargin int,
+	price float64,
+	posSide string,
+) (*utils.WebOrderResponse, error) {
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		var resp *utils.WebOrderResponse
+		var err error
+		if posSide == "long" {
+			resp, err = webClient.MarketBuyLongWithRisk(instId, size, lever, isCrossMargin, acc.UID, price)
+		} else {
+			resp, err = webClient.MarketSellShortWithRisk(instId, size, lever, isCrossMargin, acc.UID, price)
+		}
+
+		if err == nil && resp != nil && (resp.Code == 0 || resp.Code == 200) {
+			return resp, nil
+		}
+		if err != nil {
+			lastErr = err
+		} else if resp == nil {
+			lastErr = fmt.Errorf("空响应")
+		} else {
+			lastErr = fmt.Errorf("code=%d msg=%s", resp.Code, resp.Msg)
+		}
+
+		if attempt < 3 {
+			logrus.Warnf("  ⚠️  %s [盘口信号] 第%d次开%s失败，准备重试: %v", acc.Name, attempt, posSide, lastErr)
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	return nil, lastErr
+}
+
+func (tm *TradeManager) sendSignalSummaryToTelegram(instId string, price float64, direction string, accounts []OpenedAccount, failures []string, skipped []string) {
+	if tm.telegramClient == nil {
+		return
+	}
+
+	posSide := signalPosSide(direction)
+	currentTime := time.Now().Format("2006-01-02 15:04:05")
+	totalSize := 0
+	for _, acc := range accounts {
+		totalSize += acc.Size
+	}
+
+	capSkip, gateSkip := 0, 0
+	for _, s := range skipped {
+		if strings.Contains(s, "门控") {
+			gateSkip++
+		} else {
+			capSkip++
+		}
+	}
+
+	msg := fmt.Sprintf(
+		"🔔 盘口信号开仓完成\n\n"+
+			"📊 交易对: %s\n"+
+			"%s 信号: %s -> %s\n"+
+			"💰 参考价格: %.2f\n"+
+			"📦 总张数: %d\n"+
+			"✅ 成功账户数: %d\n"+
+			"⚠️ 失败账户数: %d\n"+
+			"⛔ 上限跳过: %d  🚦 门控跳过: %d\n"+
+			"⏰ 时间: %s\n\n",
+		instId,
+		signalSideEmoji(direction), direction, posSide,
+		price,
+		totalSize,
+		len(accounts),
+		len(failures),
+		capSkip, gateSkip,
+		currentTime,
+	)
+
+	for i, acc := range accounts {
+		var openPrice, tradePrice string
+		if acc.WebResp != nil {
+			if od, err := acc.WebResp.GetOrderData(); err == nil {
+				openPrice = fmt.Sprintf("%.2f", od.OpenPrice)
+				tradePrice = fmt.Sprintf("%.2f", od.Price)
+			}
+		}
+		msg += fmt.Sprintf("[%d] %s %s [%s %d张]  均价:%s  成交:%s\n",
+			i+1, signalSideEmoji(direction), acc.Account.Name, acc.PosSide, acc.Size, openPrice, tradePrice)
+	}
+	for i, failure := range failures {
+		msg += fmt.Sprintf("[失败%d] %s\n", i+1, failure)
+	}
+	for i, s := range skipped {
+		msg += fmt.Sprintf("[跳过%d] %s\n", i+1, s)
+	}
+
+	success, err := tm.telegramClient.SendMessage(msg)
+	if err != nil {
+		logrus.Errorf("❌ 发送Telegram盘口信号开仓消息失败: %v", err)
+	} else if success {
+		logrus.Info("✅ Telegram盘口信号开仓消息发送成功")
+	}
 }
 
 // sendOpenSummaryToTelegram 发送开仓汇总到Telegram
@@ -836,7 +1300,7 @@ func (tm *TradeManager) setSLTPForShort(account AccountConfig, instId string, en
 func (tm *TradeManager) getLongAccounts() []AccountConfig {
 	accounts := make([]AccountConfig, 0)
 	for _, acc := range tm.config.Accounts {
-		if acc.IsLongAccount() {
+		if acc.IsSpreadLogic() && acc.IsLongAccount() {
 			accounts = append(accounts, acc)
 		}
 	}
@@ -847,7 +1311,7 @@ func (tm *TradeManager) getLongAccounts() []AccountConfig {
 func (tm *TradeManager) getShortAccounts() []AccountConfig {
 	accounts := make([]AccountConfig, 0)
 	for _, acc := range tm.config.Accounts {
-		if acc.IsShortAccount() {
+		if acc.IsSpreadLogic() && acc.IsShortAccount() {
 			accounts = append(accounts, acc)
 		}
 	}
@@ -925,13 +1389,6 @@ func (tm *TradeManager) GetAccountStatus() map[string]interface{} {
 }
 
 // GetClient 获取指定账户的客户端
-// GetExchangeClient 返回账户对应的交易所统一客户端（由工厂模式构建）。
-func (tm *TradeManager) GetExchangeClient(accountName string) ExchangeClient {
-	tm.mu.RLock()
-	defer tm.mu.RUnlock()
-	return tm.exchangeClients[accountName]
-}
-
 func (tm *TradeManager) GetClient(accountName string) *utils.DeepCoinClient {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
@@ -945,29 +1402,15 @@ func (tm *TradeManager) GetWebClient(accountName string) *DirectWebClient {
 	return tm.webClients[accountName]
 }
 
-// OpenPositionByAI 按 AI 决策对指定账户市价开/加仓。
-// side: "long"=做多/买入, "short"=做空/卖出。size 为合约张数。tradePrice 仅用于风控埋点。
-// 内部通过 ExchangeClient 工厂分发，支持 deepcoin / binance 等多平台。
-func (tm *TradeManager) OpenPositionByAI(accountName, instId, side string, size int, tradePrice float64) (*utils.WebOrderResponse, error) {
-	if size <= 0 {
-		return nil, fmt.Errorf("开仓张数无效: %d", size)
-	}
-
-	ec := tm.GetExchangeClient(accountName)
-	if ec == nil {
-		return nil, fmt.Errorf("账户 %s 未找到交易所客户端", accountName)
-	}
-
-	return ec.OpenPosition(instId, side, size, tradePrice)
-}
-
 // Stop 停止TradeManager
 func (tm *TradeManager) Stop() {
-	close(tm.stopShuffle)
-	if tm.loginScheduler != nil {
-		tm.loginScheduler.Stop()
-	}
-	logrus.Info("🛑 TradeManager已停止")
+	tm.stopOnce.Do(func() {
+		close(tm.stopShuffle)
+		if tm.loginScheduler != nil {
+			tm.loginScheduler.Stop()
+		}
+		logrus.Info("🛑 TradeManager已停止")
+	})
 }
 
 // startPositionSideShuffle 启动定时打乱账户position_side

@@ -1,1 +1,7 @@
-configs/session.json
+# Runtime artifacts
+argus_single
+argus_single.pid
+server.log
+logs/
+data/
+configs/session*.json
