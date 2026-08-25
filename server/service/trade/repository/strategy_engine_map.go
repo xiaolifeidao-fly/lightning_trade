@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"encoding/json"
 	"math"
 	"service/trade/strategy"
 	"time"
@@ -11,28 +12,36 @@ import (
 // repository 依赖 strategy(叶子包)，strategy 不反向依赖，无 import 环。
 func ParamsFromStrategy(s *TradeStrategy) strategy.Params {
 	return strategy.Params{
-		TrendFilter:        trendFilter(s.TrendFilter),
-		MinConfidence:      s.MinConfidence,
-		MinMovePct:         s.MinMovePct,
-		EntryMode:          strategy.EntryMode(s.EntryMode),
-		Alpha:              s.EntryAlpha,
-		Gamma:              s.ExitGamma,
-		EntryTTL:           time.Duration(s.EntryTTL) * time.Second,
-		EfficiencyRoute:    s.EfficiencyRoute,
-		TakeProfitSource:   s.TakeProfitSource,
-		StopLossSource:     s.StopLossSource,
-		TakeProfitPct:      s.TakeProfitPct,
-		StopLossPct:        s.StopLossPct,
-		PredictSLBufferPct: s.PredictSLBufferPct,
-		PressureBufferPct:  s.PressureBufferPct,
-		TakeProfitFloorPct: s.TakeProfitFloorPct,
-		StopLossFloorPct:   s.StopLossFloorPct,
-		HoldDuration:       time.Duration(s.HoldDuration) * time.Second,
-		MaxHold:            time.Duration(s.MaxHoldDuration) * time.Second,
-		Leverage:           s.Leverage,
-		Contracts:          s.Contracts,
-		MakerFee:           s.MakerFeeRate,
-		TakerFee:           s.TakerFeeRate,
+		TrendFilter:           trendFilter(s.TrendFilter),
+		MinConfidence:         s.MinConfidence,
+		MinMovePct:            s.MinMovePct,
+		RequireCompositeDir:   s.RequireCompositeDir == 1,
+		EntryMode:             strategy.EntryMode(s.EntryMode),
+		Alpha:                 s.EntryAlpha,
+		Gamma:                 s.ExitGamma,
+		EntryTTL:              time.Duration(s.EntryTTL) * time.Second,
+		EfficiencyRoute:       s.EfficiencyRoute,
+		TakeProfitSource:      s.TakeProfitSource,
+		StopLossSource:        s.StopLossSource,
+		TakeProfitPct:         s.TakeProfitPct,
+		StopLossPct:           s.StopLossPct,
+		PredictSLBufferPct:    s.PredictSLBufferPct,
+		PressureBufferPct:     s.PressureBufferPct,
+		TakeProfitFloorPct:    s.TakeProfitFloorPct,
+		StopLossFloorPct:      s.StopLossFloorPct,
+		TrailActivatePct:      s.TrailActivatePct,
+		TrailGiveback:         s.TrailGiveback,
+		TrailGivebackMin:      s.TrailGivebackMin,
+		EarlyCutTimePct:       s.EarlyCutTimePct,
+		EarlyCutMinProfitPct:  s.EarlyCutMinProfitPct,
+		EarlyCutMaxAdversePct: s.EarlyCutMaxAdversePct,
+		EarlyCutArmProfitPct:  s.EarlyCutArmProfitPct,
+		HoldDuration:          time.Duration(s.HoldDuration) * time.Second,
+		MaxHold:               time.Duration(s.MaxHoldDuration) * time.Second,
+		Leverage:              s.Leverage,
+		Contracts:             s.Contracts,
+		MakerFee:              s.MakerFeeRate,
+		TakerFee:              s.TakerFeeRate,
 	}
 }
 
@@ -82,6 +91,7 @@ func BacktestTradeFromOrder(runID, predictionID int64, o *strategy.Order, st str
 		PnlRate:            st.PnlRate,
 		Fee:                st.Fee,
 		NetPnl:             st.NetPnl,
+		NetPnlRate:         st.NetPnlRate,
 		Confidence:         pr.Confidence,
 		PredictedMovePct:   pr.MovePct,
 		Efficiency:         pr.Efficiency,
@@ -91,6 +101,13 @@ func BacktestTradeFromOrder(runID, predictionID int64, o *strategy.Order, st str
 		PressureLow:        pr.KeySupport,
 		MaxPriceDuringHold: o.MaxPrice,
 		MinPriceDuringHold: o.MinPrice,
+	}
+	// 分时段峰值浮盈十分位落库为 JSON 数组，供前端"前X%时间内最大利润"筛选。
+	// 只要有观测就落库(含全程零浮盈的单——正是早段疲软要找的目标)；未成交/无持仓时长则不落。
+	if o.FavTracked() {
+		if b, err := json.Marshal(o.FavPeakDeciles()); err == nil {
+			row.FavPeakDeciles = string(b)
+		}
 	}
 	if !o.OpenedAt.IsZero() {
 		t := o.OpenedAt
@@ -106,25 +123,28 @@ func BacktestTradeFromOrder(runID, predictionID int64, o *strategy.Order, st str
 // BacktestMetricFromAgg 把聚合指标映射成回测汇总行(按结算口径区分)。
 func BacktestMetricFromAgg(runID int64, calcMode string, m strategy.Metric) *TradeBacktestMetric {
 	return &TradeBacktestMetric{
-		RunID:        runID,
-		CalcMode:     calcMode,
-		TradeCount:   m.TradeCount,
-		FillCount:    m.FillCount,
-		ExpiredCount: m.ExpiredCount,
-		FillRate:     m.FillRate,
-		WinCount:     m.WinCount,
-		WinRate:      m.WinRate,
-		GrossPnl:     m.GrossPnl,
-		FeeTotal:     m.FeeTotal,
-		NetPnl:       m.NetPnl,
-		Expectancy:   m.Expectancy,
-		ProfitFactor: m.ProfitFactor,
-		MaxDrawdown:  m.MaxDrawdown,
-		Sharpe:       m.Sharpe,
-		AvgHoldSecs:  m.AvgHoldSecs,
-		TpCount:      m.TpCount,
-		SlCount:      m.SlCount,
-		TimeoutCount: m.TimeoutCount,
+		RunID:             runID,
+		CalcMode:          calcMode,
+		TradeCount:        m.TradeCount,
+		FillCount:         m.FillCount,
+		ExpiredCount:      m.ExpiredCount,
+		FillRate:          m.FillRate,
+		WinCount:          m.WinCount,
+		WinRate:           m.WinRate,
+		GrossPnl:          m.GrossPnl,
+		FeeTotal:          m.FeeTotal,
+		NetPnl:            m.NetPnl,
+		Expectancy:        m.Expectancy,
+		ProfitFactor:      m.ProfitFactor,
+		MaxDrawdown:       m.MaxDrawdown,
+		Sharpe:            m.Sharpe,
+		AvgHoldSecs:       m.AvgHoldSecs,
+		TpCount:           m.TpCount,
+		SlCount:           m.SlCount,
+		TrailCount:        m.TrailCount,
+		EarlyCutCount:     m.EarlyCutCount,
+		EarlyAdverseCount: m.EarlyAdverseCount,
+		TimeoutCount:      m.TimeoutCount,
 	}
 }
 

@@ -31,7 +31,12 @@ func TestEh(t *testing.T) {
 		{
 			name:     "包含特殊字符",
 			input:    "test@123",
-			expected: -1422447899, // 根据算法计算的哈希值
+			expected: -1147436668, // JavaScript 的 32 位 charCodeAt 哈希值
+		},
+		{
+			name:     "非BMP字符按UTF-16代理项计算",
+			input:    "A😀",
+			expected: 1835364,
 		},
 	}
 

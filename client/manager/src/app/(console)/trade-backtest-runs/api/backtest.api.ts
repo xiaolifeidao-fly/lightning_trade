@@ -46,6 +46,9 @@ export interface BacktestMetric {
   avgHoldSecs: number;
   tpCount: number;
   slCount: number;
+  trailCount: number;
+  earlyCutCount: number;
+  earlyAdverseCount: number;
   timeoutCount: number;
 }
 
@@ -68,7 +71,8 @@ export interface BacktestTrade {
   openedAt: string;
   closedAt: string;
   pnl: number;
-  pnlRate: number; // 盈亏率%(含杠杆)
+  pnlRate: number; // 盈亏率%(含杠杆，未扣费)
+  netPnlRate: number; // 净盈亏率%(含杠杆，已扣往返手续费)
   netPnl: number;
   fee: number;
   confidence: number;
@@ -84,11 +88,13 @@ export interface BacktestTrade {
   pressureLow: number; // 压力面最低价(关键支撑)
   maxPriceDuringHold: number; // 持仓期间最高价
   minPriceDuringHold: number; // 持仓期间最低价
+  favPeakDeciles: number[] | null; // 分时段峰值浮盈[10]：第i项=前(i+1)×10%持仓时间内累积最高浮盈ROI%(含杠杆)
   leverage: number; // 杠杆倍数(算含杠杆浮盈用)
   markPrice: number; // 当前最新价(标记价)，仅持仓中(open)有值
   unrealizedPnl: number; // 浮动毛盈亏 USDT
-  unrealizedPnlRate: number; // 浮动盈亏率%(含杠杆)
+  unrealizedPnlRate: number; // 浮动盈亏率%(含杠杆，未扣费)
   unrealizedNetPnl: number; // 浮动净盈亏 = 浮动盈亏 - 预估手续费
+  unrealizedNetPnlRate: number; // 浮动净盈亏率%(含杠杆，已扣预估手续费)
 }
 
 export interface BacktestRunDetail {

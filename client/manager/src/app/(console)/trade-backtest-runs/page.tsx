@@ -9,6 +9,7 @@ import {
   Empty,
   Form,
   Input,
+  InputNumber,
   Modal,
   Radio,
   Segmented,
@@ -72,13 +73,6 @@ const PRICE_INTERVALS = [
   { label: "1日", value: "1d" },
 ];
 
-const TRADING_PERIODS = [
-  { label: "1小时", value: "1h" },
-  { label: "4小时", value: "4h" },
-  { label: "12小时", value: "12h" },
-  { label: "1日", value: "1d" },
-];
-
 const CALC_MODE_LABEL: Record<string, string> = {
   prediction: "预测周期",
   trading: "交易周期",
@@ -93,6 +87,9 @@ const STATUS_META: Record<string, { text: string; color: string }> = {
 
 const REASON_META: Record<string, { text: string; color: string }> = {
   tp: { text: "止盈", color: "green" },
+  trail: { text: "移动止盈", color: "gold" },
+  early_cut: { text: "疲软离场", color: "volcano" },
+  early_adverse: { text: "逆行离场", color: "magenta" },
   sl: { text: "止损", color: "red" },
   timeout: { text: "超时", color: "orange" },
   expired: { text: "未成交", color: "default" },
@@ -118,6 +115,32 @@ function num(value: number, digits = 2) {
   return value.toFixed(digits);
 }
 
+// holdDuration 持仓时长：成交(openedAt) → 平仓(closedAt，未平仓用当前时间)的时长文案。
+// 未成交/无成交时间返回 null；持仓中(open)返回 { text, ongoing:true } 以便标注「持仓中」。
+function holdDuration(t: BacktestTrade): { text: string; ongoing: boolean } | null {
+  if (!t.openedAt) return null;
+  const start = dayjs(t.openedAt);
+  const ongoing = !t.closedAt;
+  const end = t.closedAt ? dayjs(t.closedAt) : dayjs();
+  const secs = end.diff(start, "second");
+  if (secs < 0) return null;
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  let text: string;
+  if (d > 0) text = `${d}天${h}小时`;
+  else if (h > 0) text = `${h}小时${m}分`;
+  else text = `${m}分`;
+  return { text, ongoing };
+}
+
+// holdSeconds 持仓秒数(供排序)：未成交/无成交时间返回 -1，排序时沉底。
+function holdSeconds(t: BacktestTrade): number {
+  if (!t.openedAt) return -1;
+  const secs = (t.closedAt ? dayjs(t.closedAt) : dayjs()).diff(dayjs(t.openedAt), "second");
+  return secs < 0 ? -1 : secs;
+}
+
 // holdMaxAdverse 持仓期间最大亏损：取持仓内最不利价(多头看最低价、空头看最高价)相对成交价的逆向幅度。
 // 返回 { pricePct, levPct, adversePx }，均为 ≤0 的百分比(亏损)；未成交/缺数据返回 null。
 function holdMaxAdverse(t: BacktestTrade): { pricePct: number; levPct: number; adversePx: number } | null {
@@ -128,6 +151,34 @@ function holdMaxAdverse(t: BacktestTrade): { pricePct: number; levPct: number; a
   const pricePct = ((t.direction === "long" ? adversePx - entry : entry - adversePx) / entry) * 100;
   const lev = t.leverage && t.leverage > 0 ? t.leverage : 1;
   return { pricePct, levPct: pricePct * lev, adversePx };
+}
+
+// holdMaxFavorable 持仓期间最大浮盈：取持仓内最有利价(多头看最高价、空头看最低价)相对成交价的顺向幅度(含杠杆)。
+// 返回 { pricePct, levPct, favPx }，均为 ≥0 的百分比(浮盈)；未成交/缺数据返回 null。
+function holdMaxFavorable(t: BacktestTrade): { pricePct: number; levPct: number; favPx: number } | null {
+  const entry = t.openPrice;
+  if (!(entry > 0)) return null;
+  const favPx = t.direction === "long" ? t.maxPriceDuringHold : t.minPriceDuringHold;
+  if (!(favPx > 0)) return null;
+  const pricePct = ((t.direction === "long" ? favPx - entry : entry - favPx) / entry) * 100;
+  const lev = t.leverage && t.leverage > 0 ? t.leverage : 1;
+  return { pricePct, levPct: pricePct * lev, favPx };
+}
+
+// realizedRate 已实现(或持仓中浮动)含杠杆盈亏率%，口径与 holdMaxFavorable 的 levPct 一致(均为毛率)，供「浮盈回吐」比较。
+function realizedRate(t: BacktestTrade): number {
+  return t.status === "open" ? t.unrealizedPnlRate : t.pnlRate;
+}
+
+// earlyPeakProfit 前 pctTime% 持仓时间内的累积最高浮盈 ROI%(含杠杆)，取自分时段十分位(就近向上取整到 10% 粒度)。
+// 无分时段数据(旧回测/未成交)返回 null。
+function earlyPeakProfit(t: BacktestTrade, pctTime: number): number | null {
+  const d = t.favPeakDeciles;
+  if (!d || d.length < 10) return null;
+  let idx = Math.ceil(pctTime / 10) - 1; // 前(idx+1)×10% 覆盖 pctTime%
+  if (idx < 0) idx = 0;
+  if (idx > 9) idx = 9;
+  return d[idx];
 }
 
 export default function TradeBacktestRunsPage() {
@@ -150,6 +201,15 @@ export default function TradeBacktestRunsPage() {
   // 详情结算口径：全局切换 + 行级覆盖（仅当 run 选了交易周期时可切）
   const [calcMode, setCalcMode] = useState<string>("prediction");
   const [rowModes, setRowModes] = useState<Record<number, string>>({});
+
+  // 逐笔筛选：方向(all/long/short) + 盈亏(all/win/loss)；受控分页，筛选变化时回到第 1 页。
+  const [dirFilter, setDirFilter] = useState<string>("all");
+  const [pnlFilter, setPnlFilter] = useState<string>("all");
+  // 早段疲软筛选：前 earlyPctTime% 持仓时间内，最大浮盈 < earlyMaxProfit%(含杠杆)。两者都 >0 才生效。
+  const [earlyPctTime, setEarlyPctTime] = useState<number | null>(null);
+  const [earlyMaxProfit, setEarlyMaxProfit] = useState<number | null>(null);
+  const [tradePage, setTradePage] = useState(1);
+  const [tradePageSize, setTradePageSize] = useState(20);
 
   // K线详情弹窗
   const [klineOpen, setKlineOpen] = useState(false);
@@ -229,7 +289,7 @@ export default function TradeBacktestRunsPage() {
         symbol: "BTCUSDT",
         predictionInterval: values.predictionInterval,
         priceInterval: values.priceInterval,
-        tradingPeriod: values.tradingPeriod || undefined,
+        // 交易周期已改为由策略配置决定，回测不再传。
         startTime: range[0].format("YYYY-MM-DD HH:mm:ss"),
         endTime: range[1].format("YYYY-MM-DD HH:mm:ss"),
         strategyId: values.strategyId,
@@ -249,8 +309,16 @@ export default function TradeBacktestRunsPage() {
     setDetail(null);
     setCalcMode("prediction");
     setRowModes({});
+    setDirFilter("all");
+    setPnlFilter("all");
+    setEarlyPctTime(null);
+    setEarlyMaxProfit(null);
+    setTradePage(1);
     try {
-      setDetail(await fetchBacktestRunDetail(id));
+      const d = await fetchBacktestRunDetail(id);
+      setDetail(d);
+      // 详情以交易周期口径为主：run 配了交易周期就默认选它，否则回退预测周期。
+      setCalcMode(d.run.tradingPeriod ? "trading" : "prediction");
     } catch (err) {
       message.error(err instanceof Error ? err.message : "详情加载失败");
     } finally {
@@ -395,7 +463,7 @@ export default function TradeBacktestRunsPage() {
           {
             title: "口径",
             key: "calcMode",
-            width: 116,
+            width: 128,
             fixed: "left" as const,
             render: (_: unknown, r: BacktestTrade) => (
               <Segmented
@@ -445,6 +513,12 @@ export default function TradeBacktestRunsPage() {
       dataIndex: "status",
       width: 80,
       render: (s: string) => {
+        if (s === "no_trade")
+          return (
+            <Tooltip title="该结算口径下此信号未开仓(区间使止盈/止损落在入场同侧被拒单)">
+              <Tag color="default">未成交</Tag>
+            </Tooltip>
+          );
         if (s === "expired") return <Tag color="default">未成交</Tag>;
         if (s === "open") return <Tag color="blue">持仓</Tag>;
         return <Tag color="default">{s}</Tag>;
@@ -576,13 +650,30 @@ export default function TradeBacktestRunsPage() {
       },
     },
     {
-      title: "盈亏率%",
-      dataIndex: "pnlRate",
+      title: "手续费",
+      dataIndex: "fee",
       width: 100,
       render: (v: number, r: BacktestTrade) => {
+        if (!v) return "-";
+        const taker = r.entryMode === "pullback" ? "Maker 入场" : "Taker 入场";
+        const closeFee =
+          r.closeReason === "tp" ? "Maker 平仓" : r.status === "closed" ? "Taker 平仓" : "预估 Taker 平仓";
+        return (
+          <Tooltip title={`往返手续费(名义价值×费率，已从净盈亏/净率中扣除)：${taker} + ${closeFee}`}>
+            <Text type="secondary">{money(v)}</Text>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: "盈亏率%(净)",
+      dataIndex: "netPnlRate",
+      width: 110,
+      render: (_: number, r: BacktestTrade) => {
         if (r.status === "closed") {
+          const v = r.netPnlRate;
           return (
-            <Tooltip title="含杠杆的盈亏率 = 价差/开仓价×杠杆×100（与张数无关，张数只影响净盈亏金额）">
+            <Tooltip title="扣除往返手续费后的含杠杆盈亏率 = (价差-单位手续费)/开仓价×杠杆×100（止盈止损均已减去手续费）">
               <Text style={{ color: v > 0 ? "#3f8600" : v < 0 ? "#cf1322" : undefined }}>
                 {v > 0 ? "+" : ""}
                 {num(v, 2)}%
@@ -590,11 +681,11 @@ export default function TradeBacktestRunsPage() {
             </Tooltip>
           );
         }
-        // 持仓中：按最新价标记的浮动盈亏率(含杠杆)。
+        // 持仓中：按最新价标记的浮动净盈亏率(含杠杆，已扣预估手续费)。
         if (r.status === "open" && r.markPrice > 0) {
-          const u = r.unrealizedPnlRate;
+          const u = r.unrealizedNetPnlRate;
           return (
-            <Tooltip title="按当前最新价标记的浮动盈亏率(含杠杆) = (最新价-成交价)/成交价×杠杆×100，尚未实现">
+            <Tooltip title="按当前最新价标记的浮动净盈亏率(含杠杆，已扣预估往返手续费)，尚未实现">
               <Text style={{ color: u > 0 ? "#3f8600" : u < 0 ? "#cf1322" : undefined }}>
                 {u > 0 ? "+" : ""}
                 {num(u, 2)}%
@@ -603,6 +694,44 @@ export default function TradeBacktestRunsPage() {
           );
         }
         return "-";
+      },
+    },
+    {
+      title: "最大持仓利润%",
+      key: "maxFavorable",
+      width: 130,
+      sorter: (a: BacktestTrade, b: BacktestTrade) =>
+        (holdMaxFavorable(a)?.levPct ?? -Infinity) - (holdMaxFavorable(b)?.levPct ?? -Infinity),
+      render: (_: unknown, r: BacktestTrade) => {
+        const mfe = holdMaxFavorable(r);
+        if (!mfe) return "-";
+        return (
+          <Tooltip title={`持仓期间最高浮盈(含杠杆) = 最有利价/成交价顺向幅度×杠杆。${r.direction === "long" ? "最高价" : "最低价"} ${num(mfe.favPx, 2)} · 成交价 ${num(r.openPrice, 2)} · 价格幅度 ${num(mfe.pricePct, 2)}%`}>
+            <Text style={{ color: mfe.levPct > 0 ? "#3f8600" : undefined }}>+{num(mfe.levPct, 2)}%</Text>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: "浮盈回吐",
+      key: "giveback",
+      width: 120,
+      sorter: (a: BacktestTrade, b: BacktestTrade) => {
+        const ga = (holdMaxFavorable(a)?.levPct ?? 0) - realizedRate(a);
+        const gb = (holdMaxFavorable(b)?.levPct ?? 0) - realizedRate(b);
+        return ga - gb;
+      },
+      render: (_: unknown, r: BacktestTrade) => {
+        const mfe = holdMaxFavorable(r);
+        if (!mfe) return "-";
+        const giveback = mfe.levPct - realizedRate(r);
+        // 最大持仓利润 > 已实现利润 → 曾有更高浮盈却没落袋，标注回吐幅度(含杠杆)。
+        if (giveback <= 0) return <Text type="secondary">-</Text>;
+        return (
+          <Tooltip title={`最大持仓利润 +${num(mfe.levPct, 2)}% 高于最终利润 ${num(realizedRate(r), 2)}%，回吐了 ${num(giveback, 2)}% 未落袋`}>
+            <Tag color="orange">回吐 {num(giveback, 2)}%</Tag>
+          </Tooltip>
+        );
       },
     },
     {
@@ -622,6 +751,26 @@ export default function TradeBacktestRunsPage() {
     { title: "置信", dataIndex: "confidence", width: 70, render: (v: number) => num(v, 2) },
     { title: "效率", dataIndex: "efficiency", width: 70, render: (v: number) => num(v, 2) },
     { title: "成交时间", dataIndex: "openedAt", width: 150, render: (v: string) => v || "-" },
+    {
+      title: "持仓时间",
+      key: "holdDuration",
+      width: 110,
+      sorter: (a: BacktestTrade, b: BacktestTrade) => holdSeconds(a) - holdSeconds(b),
+      render: (_: unknown, r: BacktestTrade) => {
+        const hd = holdDuration(r);
+        if (!hd) return "-";
+        return (
+          <Tooltip title={`成交 ${r.openedAt || "-"} → ${r.closedAt ? `平仓 ${r.closedAt}` : "持仓中(至当前)"}`}>
+            <Text>
+              {hd.text}
+              {hd.ongoing ? (
+                <Tag color="blue" style={{ marginLeft: 4 }}>持仓中</Tag>
+              ) : null}
+            </Text>
+          </Tooltip>
+        );
+      },
+    },
     {
       title: "K线",
       key: "klineAction",
@@ -654,9 +803,85 @@ export default function TradeBacktestRunsPage() {
     return order.map((pid) => {
       const group = byPred.get(pid)!;
       const mode = rowModes[pid] ?? calcMode;
-      return group[mode] ?? group.prediction ?? Object.values(group)[0];
+      const hit = group[mode];
+      if (hit) return hit;
+      // 所选口径下该信号未开仓(常见于交易周期区间使止盈/止损落在入场同侧被拒单)：
+      // 不回退到另一口径，改用同一信号的元数据造一个"未成交"占位行，清空成交/盈亏字段。
+      const ref = (group.prediction ?? Object.values(group)[0])!;
+      return {
+        ...ref,
+        calcMode: mode,
+        status: "no_trade",
+        closeReason: "",
+        entryMode: "",
+        plannedEntryPrice: 0,
+        takeProfitPrice: 0,
+        stopLossPrice: 0,
+        openPrice: 0,
+        closePrice: 0,
+        openedAt: "",
+        closedAt: "",
+        pnl: 0,
+        pnlRate: 0,
+        netPnlRate: 0,
+        netPnl: 0,
+        fee: 0,
+        windowOpen: 0,
+        windowClose: 0,
+        windowLow: 0,
+        windowHigh: 0,
+        maxPriceDuringHold: 0,
+        minPriceDuringHold: 0,
+        favPeakDeciles: null,
+        markPrice: 0,
+        unrealizedPnl: 0,
+        unrealizedPnlRate: 0,
+        unrealizedNetPnl: 0,
+        unrealizedNetPnlRate: 0,
+      } as BacktestTrade;
     });
   }, [detail?.trades, rowModes, calcMode]);
+
+  // 逐笔筛选后的结果：方向 + 盈亏(净额口径) + 早段疲软(前X%时间内最大浮盈<Y%)。
+  const earlyOn = (earlyPctTime ?? 0) > 0 && (earlyMaxProfit ?? 0) > 0;
+  const filteredTrades = useMemo<BacktestTrade[]>(() => {
+    return displayedTrades.filter((t) => {
+      if (dirFilter !== "all" && t.direction !== dirFilter) return false;
+      if (pnlFilter !== "all") {
+        const net = t.status === "open" ? t.unrealizedNetPnl : t.netPnl;
+        if (pnlFilter === "win" && !(net > 0)) return false;
+        if (pnlFilter === "loss" && !(net < 0)) return false;
+      }
+      if (earlyOn) {
+        const peak = earlyPeakProfit(t, earlyPctTime as number);
+        // 无分时段数据(旧回测/未成交)的单直接排除，避免误当作"疲软"。
+        if (peak === null || !(peak < (earlyMaxProfit as number))) return false;
+      }
+      return true;
+    });
+  }, [displayedTrades, dirFilter, pnlFilter, earlyOn, earlyPctTime, earlyMaxProfit]);
+
+  // 当前筛选(全部页)对应的合计：净盈亏/手续费/净率累计 + 盈亏笔数(净额口径；持仓中用浮动)。
+  const tradeTotals = useMemo(() => {
+    let netPnl = 0;
+    let fee = 0;
+    let netRate = 0;
+    let win = 0;
+    let loss = 0;
+    let count = 0;
+    filteredTrades.forEach((t) => {
+      if (t.status === "no_trade") return; // 未成交占位不计入合计
+      count += 1;
+      const np = t.status === "open" ? t.unrealizedNetPnl : t.netPnl;
+      const nr = t.status === "open" ? t.unrealizedNetPnlRate : t.netPnlRate;
+      netPnl += np;
+      fee += t.fee;
+      netRate += nr;
+      if (np > 0) win += 1;
+      else if (np < 0) loss += 1;
+    });
+    return { count, netPnl, fee, netRate, win, loss };
+  }, [filteredTrades]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -686,13 +911,6 @@ export default function TradeBacktestRunsPage() {
           </Form.Item>
           <Form.Item label="价格周期" name="priceInterval" initialValue="1m" rules={[{ required: true }]}>
             <Select style={{ width: 110 }} options={PRICE_INTERVALS} />
-          </Form.Item>
-          <Form.Item
-            label="交易周期"
-            name="tradingPeriod"
-            tooltip="可选。选了则额外按交易周期再算一套：入场不变，只把持仓上限拉长到该周期(TP/SL 照常)，详情可切换查看。不选=仅按预测周期(现状)。"
-          >
-            <Select style={{ width: 120 }} options={TRADING_PERIODS} placeholder="不选=现状" allowClear />
           </Form.Item>
           <Form.Item label="时间段" name="range" rules={[{ required: true, message: "请选择时间段" }]}>
             <RangePicker showTime format="YYYY-MM-DD HH:mm" presets={RANGE_PRESETS} />
@@ -806,6 +1024,9 @@ export default function TradeBacktestRunsPage() {
               <Tag color="blue">成交 {metric.fillCount}</Tag>
               <Tag>未成交 {metric.expiredCount}</Tag>
               <Tag color="green">止盈 {metric.tpCount}</Tag>
+              <Tag color="gold">移动止盈 {metric.trailCount}</Tag>
+              <Tag color="volcano">疲软离场 {metric.earlyCutCount}</Tag>
+              <Tag color="magenta">逆行离场 {metric.earlyAdverseCount}</Tag>
               <Tag color="red">止损 {metric.slCount}</Tag>
               <Tag color="orange">超时 {metric.timeoutCount}</Tag>
             </Space>
@@ -826,13 +1047,159 @@ export default function TradeBacktestRunsPage() {
           </Text>
         )}
 
+        <Space style={{ marginBottom: 12 }} wrap>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            方向
+          </Text>
+          <Segmented
+            size="small"
+            value={dirFilter}
+            onChange={(v) => {
+              setDirFilter(v as string);
+              setTradePage(1);
+            }}
+            options={[
+              { label: "全部", value: "all" },
+              { label: "多", value: "long" },
+              { label: "空", value: "short" },
+            ]}
+          />
+          <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+            盈亏
+          </Text>
+          <Segmented
+            size="small"
+            value={pnlFilter}
+            onChange={(v) => {
+              setPnlFilter(v as string);
+              setTradePage(1);
+            }}
+            options={[
+              { label: "全部", value: "all" },
+              { label: "只看盈利", value: "win" },
+              { label: "只看亏损", value: "loss" },
+            ]}
+          />
+          <Tooltip title="早段疲软筛选：只看「前 X% 持仓时间内，最高浮盈仍低于 Y%(含杠杆)」的单——即早期就没走出利润的交易。两个值都填(>0)才生效。按 10% 时间粒度就近取整。">
+            <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+              早段疲软 · 前
+            </Text>
+          </Tooltip>
+          <InputNumber
+            size="small"
+            min={0}
+            max={100}
+            step={10}
+            value={earlyPctTime}
+            onChange={(v) => {
+              setEarlyPctTime(v);
+              setTradePage(1);
+            }}
+            style={{ width: 110 }}
+            addonAfter="%"
+            placeholder="时间"
+          />
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            时间内最高浮盈 &lt;
+          </Text>
+          <InputNumber
+            size="small"
+            min={0}
+            value={earlyMaxProfit}
+            onChange={(v) => {
+              setEarlyMaxProfit(v);
+              setTradePage(1);
+            }}
+            style={{ width: 110 }}
+            addonAfter="%"
+            placeholder="浮盈"
+          />
+          <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+            筛出 {filteredTrades.length} / {displayedTrades.length} 笔
+          </Text>
+        </Space>
+
         <Table<BacktestTrade>
           rowKey="predictionId"
           size="small"
-          dataSource={displayedTrades}
+          dataSource={filteredTrades}
           columns={tradeColumns}
           scroll={{ x: 1000 }}
-          pagination={{ pageSize: 20, size: "small" }}
+          pagination={{
+            current: tradePage,
+            pageSize: tradePageSize,
+            size: "small",
+            showSizeChanger: true,
+            pageSizeOptions: [20, 50, 100, 200],
+            showTotal: (total) =>
+              total > tradeTotals.count
+                ? `共 ${total} 笔(成交 ${tradeTotals.count} · 未成交 ${total - tradeTotals.count})`
+                : `共 ${total} 笔`,
+            onChange: (p, ps) => {
+              setTradePage(p);
+              setTradePageSize(ps);
+            },
+          }}
+          summary={() =>
+            tradeTotals.count > 0 ? (
+              <Table.Summary fixed>
+                <Table.Summary.Row>
+                  {tradeColumns.map((c, i) => {
+                    const id = ((c as { key?: React.Key }).key ??
+                      (c as { dataIndex?: React.Key }).dataIndex) as string | undefined;
+                    let content: React.ReactNode = "";
+                    if (i === 0) {
+                      const noTrade = filteredTrades.length - tradeTotals.count;
+                      content = (
+                        <Space direction="vertical" size={0}>
+                          <Text strong>合计 {tradeTotals.count} 笔</Text>
+                          {noTrade > 0 ? (
+                            <Text type="secondary" style={{ fontSize: 11 }}>
+                              另 {noTrade} 笔未成交
+                            </Text>
+                          ) : null}
+                        </Space>
+                      );
+                    } else if (id === "direction") {
+                      content = (
+                        <Text type="secondary">
+                          盈 {tradeTotals.win} / 亏 {tradeTotals.loss}
+                        </Text>
+                      );
+                    } else if (id === "netPnl") {
+                      content = (
+                        <Text
+                          strong
+                          style={{ color: tradeTotals.netPnl >= 0 ? "#3f8600" : "#cf1322" }}
+                        >
+                          {money(tradeTotals.netPnl)}
+                        </Text>
+                      );
+                    } else if (id === "fee") {
+                      content = <Text type="secondary">{money(tradeTotals.fee)}</Text>;
+                    } else if (id === "netPnlRate") {
+                      content = (
+                        <Tooltip title="当前筛选各笔含杠杆净盈亏率之和(等额保证金口径的累计收益)">
+                          <Text
+                            strong
+                            style={{ color: tradeTotals.netRate >= 0 ? "#3f8600" : "#cf1322" }}
+                          >
+                            {tradeTotals.netRate > 0 ? "+" : ""}
+                            {num(tradeTotals.netRate, 2)}%
+                          </Text>
+                        </Tooltip>
+                      );
+                    }
+                    return (
+                      <Table.Summary.Cell key={id ?? i} index={i}>
+                        {content}
+                      </Table.Summary.Cell>
+                    );
+                  })}
+                </Table.Summary.Row>
+              </Table.Summary>
+            ) : null
+          }
         />
       </Drawer>
 

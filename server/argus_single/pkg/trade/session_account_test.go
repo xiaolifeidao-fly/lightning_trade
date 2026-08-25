@@ -2,6 +2,7 @@ package trade
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -19,9 +20,12 @@ func checkSessionValidViaWAPI(entry SessionAccountData) (bool, error) {
 	return CheckSessionValidViaWAPI(context.Background(), entry)
 }
 
-
 // TestSessionAccountValid 读取 session.json，调用 DeepCoin 账户接口，验证 session 是否有效
 func TestSessionAccountValid(t *testing.T) {
+	if os.Getenv("ARGUS_RUN_DEEPCOIN_INTEGRATION") != "1" {
+		t.Skip("set ARGUS_RUN_DEEPCOIN_INTEGRATION=1 with configs/session.json to validate a live DeepCoin session")
+	}
+
 	sessionPath := filepath.Clean("../../configs/session.json")
 	store := NewSessionStore(sessionPath)
 	if err := store.Load(); err != nil {

@@ -3,10 +3,15 @@ package monitor
 import (
 	"encoding/json"
 	"fmt"
+	"math"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"argus_single/pkg/eventlog"
 	"argus_single/pkg/trade"
 	"common/middleware/vipper"
 	"common/utils"
@@ -18,7 +23,6 @@ import (
 // AccountMonitor 账户监控器
 type AccountMonitor struct {
 	telegramClient     *utils.TelegramClient
-	aiCloseDecider     AICloseDecider
 	stopChan           chan struct{}
 	wg                 sync.WaitGroup
 	queryInterval      time.Duration        // 查询间隔，默认1分钟
@@ -36,20 +40,66 @@ type AccountMonitor struct {
 	pnlAlertCooldown   time.Duration        // 同一持仓告警冷却时间
 	pnlAlertMu         sync.RWMutex         // 保护告警记录
 	lastPnlAlerts      map[string]time.Time // 上次告警时间，key: "账户名:instId:posSide"
-	aiCheckInterval    time.Duration        // AI定时平仓检查间隔（AI未给建议时的回退值）
-	aiCloseMinInterval time.Duration        // AI平仓建议巡检间隔下限
-	aiCloseMaxInterval time.Duration        // AI平仓建议巡检间隔上限
-	aiApprovalStore    *aiCloseApprovalStore
 
-	aiOpenDecider       AIOpenDecider // AI加仓决策器
-	aiOpenCheckInterval time.Duration // AI定时加仓巡检间隔（AI未给建议时的回退值）
-	aiOpenMinInterval   time.Duration // AI建议巡检间隔下限
-	aiOpenMaxInterval   time.Duration // AI建议巡检间隔上限
-	aiOpenAutoTrade     bool          // AI加仓/开仓是否自动下单（false=仅告警）
+	trailStates map[string]TrailState // 移动止盈状态，key 同上（仅 trailing 账户）
+	trailMu     sync.RWMutex          // 保护 trailStates
+
+	// P4 trail 持久化：重启不再丢峰值保护。身份只认 posId（探针 v3 结论）。
+	trailStatePath string                    // 快照路径（可配置）
+	trailDirty     atomic.Bool               // 状态变更标脏，30s 快照据此决定是否落盘
+	pendingRestore map[string]persistedTrail // 启动时载入、各账户首轮轮询时消费
+	restoreMu      sync.Mutex                // 保护 pendingRestore
+
+	uplByAccount map[string]uplSample // 账户未实现盈亏缓存（持仓轮询每5s刷新，P2-C；带采样时刻防陈旧值冒充实时）
+	uplMu        sync.RWMutex         // 保护 uplByAccount
+
+	snapshots map[string]posSnapshot // 上一轮持仓快照，key 同 trailStates（P2-A 对账）
+	snapMu    sync.RWMutex           // 保护 snapshots
+
+	closeFails *closeFailTracker // 平仓连败计数（P3，≥3 连败升级告警）
+
+	eventLogDir           string        // 结构化事件日志目录
+	compareReportInterval time.Duration // 对比报告周期（实验期 12h）
 }
 
-// aiOpenTradeInst 是 AI 开仓/加仓实际下单使用的合约（当前仅支持 BTC）。
-const aiOpenTradeInst = "BTCUSDT"
+func normalizePositionPnl(pos utils.PositionInfo) (decimal.Decimal, bool) {
+	if pos.UnrealizedProfit == "" {
+		return decimal.Zero, false
+	}
+
+	rawPnl, err := decimal.NewFromString(pos.UnrealizedProfit)
+	if err != nil {
+		return decimal.Zero, false
+	}
+
+	absPnl := rawPnl.Abs()
+	avgPx, avgErr := decimal.NewFromString(pos.AvgPx)
+	lastPx, lastErr := decimal.NewFromString(pos.LastPx)
+	if avgErr != nil || lastErr != nil {
+		return rawPnl, true
+	}
+
+	switch strings.ToLower(strings.TrimSpace(pos.PosSide)) {
+	case "long":
+		if lastPx.LessThan(avgPx) {
+			return absPnl.Neg(), true
+		}
+		if lastPx.GreaterThan(avgPx) {
+			return absPnl, true
+		}
+		return decimal.Zero, true
+	case "short":
+		if lastPx.GreaterThan(avgPx) {
+			return absPnl.Neg(), true
+		}
+		if lastPx.LessThan(avgPx) {
+			return absPnl, true
+		}
+		return decimal.Zero, true
+	default:
+		return rawPnl, true
+	}
+}
 
 // NewAccountMonitor 创建账户监控器
 func NewAccountMonitor() *AccountMonitor {
@@ -65,57 +115,23 @@ func NewAccountMonitor() *AccountMonitor {
 	if lossThreshold <= 0 {
 		lossThreshold = 150
 	}
-	aiCheckMinutes := vipper.GetInt("position.ai_close.interval_minutes")
-	if aiCheckMinutes <= 0 {
-		aiCheckMinutes = 10
-	}
-	aiCloseMinMinutes := vipper.GetInt("position.ai_close.min_interval_minutes")
-	if aiCloseMinMinutes <= 0 {
-		aiCloseMinMinutes = 15
-	}
-	aiCloseMaxMinutes := vipper.GetInt("position.ai_close.max_interval_minutes")
-	if aiCloseMaxMinutes <= 0 {
-		aiCloseMaxMinutes = 240
-	}
-	if aiCloseMaxMinutes < aiCloseMinMinutes {
-		aiCloseMaxMinutes = aiCloseMinMinutes
-	}
 
 	logrus.Infof("持仓监控配置: 间隔=%ds, 盈利阈值=%.2f%%, 亏损阈值=%.2f%%", intervalSec, profitThreshold, lossThreshold)
 
-	aiCloseDecider := NewAICloseDeciderFromConfig()
-	if aiCloseDecider == nil {
-		logrus.Infof("AI平仓决策: 已禁用")
-	} else {
-		logrus.Infof("AI平仓决策: 已启用, provider=%s", vipper.GetString("position.ai_close.provider"))
+	// 事件日志已在 initialization 阶段 Init；这里仅取目录用于对比报告读取
+	logDir := vipper.GetString("log.dir")
+	if strings.TrimSpace(logDir) == "" {
+		logDir = "./logs"
 	}
 
-	aiOpenCheckMinutes := vipper.GetInt("position.ai_open.interval_minutes")
-	if aiOpenCheckMinutes <= 0 {
-		aiOpenCheckMinutes = 15
-	}
-	aiOpenMinMinutes := vipper.GetInt("position.ai_open.min_interval_minutes")
-	if aiOpenMinMinutes <= 0 {
-		aiOpenMinMinutes = 5
-	}
-	aiOpenMaxMinutes := vipper.GetInt("position.ai_open.max_interval_minutes")
-	if aiOpenMaxMinutes <= 0 {
-		aiOpenMaxMinutes = 15
-	}
-	if aiOpenMaxMinutes < aiOpenMinMinutes {
-		aiOpenMaxMinutes = aiOpenMinMinutes
-	}
-	aiOpenAutoTrade := vipper.GetBool("position.ai_open.auto_trade")
-	aiOpenDecider := NewAIOpenDeciderFromConfig()
-	if aiOpenDecider == nil {
-		logrus.Infof("AI加仓决策: 已禁用")
-	} else {
-		logrus.Infof("AI加仓决策: 已启用, 巡检间隔=%d分钟, 自动下单=%t", aiOpenCheckMinutes, aiOpenAutoTrade)
+	// P4：trail 快照路径（可配置；默认放部署目录下的 data/，需与部署目录同生命周期）
+	trailPath := strings.TrimSpace(vipper.GetString("position.monitor.trail_state_path"))
+	if trailPath == "" {
+		trailPath = "./data/trail_state.json"
 	}
 
 	return &AccountMonitor{
 		telegramClient:     utils.NewTelegramClientWithBotTokenAndChatID(vipper.GetString("telegram.bot_token"), vipper.GetString("telegram.chat_id")),
-		aiCloseDecider:     aiCloseDecider,
 		stopChan:           make(chan struct{}),
 		queryInterval:      1 * time.Minute,  // 1分钟查询一次
 		reportInterval:     30 * time.Minute, // 30分钟发送一次报告
@@ -129,22 +145,56 @@ func NewAccountMonitor() *AccountMonitor {
 		pnlLossThreshold:   decimal.NewFromFloat(lossThreshold),
 		pnlAlertCooldown:   5 * time.Minute, // 同一持仓5分钟内不重复告警
 		lastPnlAlerts:      make(map[string]time.Time),
-		aiCheckInterval:    time.Duration(aiCheckMinutes) * time.Minute,
-		aiCloseMinInterval: time.Duration(aiCloseMinMinutes) * time.Minute,
-		aiCloseMaxInterval: time.Duration(aiCloseMaxMinutes) * time.Minute,
-		aiApprovalStore:    newAICloseApprovalStore(defaultAICloseApprovalTimeout),
+		trailStates:        make(map[string]TrailState),
+		trailStatePath:     trailPath,
+		uplByAccount:       make(map[string]uplSample),
+		snapshots:          make(map[string]posSnapshot),
+		closeFails:         newCloseFailTracker(time.Now),
 
-		aiOpenDecider:       aiOpenDecider,
-		aiOpenCheckInterval: time.Duration(aiOpenCheckMinutes) * time.Minute,
-		aiOpenMinInterval:   time.Duration(aiOpenMinMinutes) * time.Minute,
-		aiOpenMaxInterval:   time.Duration(aiOpenMaxMinutes) * time.Minute,
-		aiOpenAutoTrade:     aiOpenAutoTrade,
+		eventLogDir:           logDir,
+		compareReportInterval: 12 * time.Hour,
+	}
+}
+
+// resolveTrailParamsForAccount 解析某账户的移动止盈参数（账户级覆盖 + 全局回退）。
+func resolveTrailParamsForAccount(index int) TrailParams {
+	f := func(name, globalKey string, def float64) float64 {
+		return trade.AccFloat(index, name, globalKey, def)
+	}
+	return TrailParams{
+		TierSmallRatio:     f("tier_small_ratio", "position.monitor.trail.tier_small_ratio", 0.30),
+		TierLargeRatio:     f("tier_large_ratio", "position.monitor.trail.tier_large_ratio", 0.65),
+		Small:              Tier{ActivatePct: f("small_activate", "position.monitor.trail.small_activate", 150), GivebackFrac: f("small_giveback", "position.monitor.trail.small_giveback", 0.35)},
+		Medium:             Tier{ActivatePct: f("medium_activate", "position.monitor.trail.medium_activate", 90), GivebackFrac: f("medium_giveback", "position.monitor.trail.medium_giveback", 0.28)},
+		Large:              Tier{ActivatePct: f("large_activate", "position.monitor.trail.large_activate", 40), GivebackFrac: f("large_giveback", "position.monitor.trail.large_giveback", 0.20)},
+		CatastropheStopPct: f("catastrophe_stop_pct", "position.monitor.catastrophe_stop_pct", 300),
 	}
 }
 
 // Start 启动账户监控
 func (am *AccountMonitor) Start() {
 	logrus.Info("启动账户监控...")
+
+	// 埋点失败 → TG 告警（底层 web 包不依赖 TG，此处注入通知方式）
+	am.installTrackFailureAlert()
+
+	// P4：载入 trail 快照，待各账户首轮持仓轮询时用 posId 对账恢复。
+	// 载入失败一律冷启动（=旧行为），不阻断启动。
+	if states, err := loadTrailStateFile(am.trailStatePath); err != nil {
+		logrus.Warnf("[trail持久化] 载入 %s 失败，按冷启动处理: %v", am.trailStatePath, err)
+	} else if len(states) > 0 {
+		am.restoreMu.Lock()
+		am.pendingRestore = states
+		am.restoreMu.Unlock()
+		logrus.Infof("[trail持久化] 载入 %d 条待恢复状态，将在各账户首轮持仓轮询时按 posId 对账", len(states))
+	}
+
+	// 启动 trail 状态快照（30s，仅脏时落盘）
+	am.wg.Add(1)
+	go func() {
+		defer am.wg.Done()
+		am.startTrailSnapshot()
+	}()
 
 	// 程序启动后立即查询（如果余额低于100才发送报告）
 	am.wg.Add(1)
@@ -174,28 +224,104 @@ func (am *AccountMonitor) Start() {
 		am.startPositionMonitor()
 	}()
 
-	// 启动 AI 定时平仓巡检
+	// 启动账户对比报告（12h 一份，从结构化事件日志聚合）
 	am.wg.Add(1)
 	go func() {
 		defer am.wg.Done()
-		am.startAICloseMonitor()
+		am.startComparisonReport()
 	}()
 
-	// 启动 AI 定时加仓巡检
-	am.wg.Add(1)
-	go func() {
-		defer am.wg.Done()
-		am.startAIOpenMonitor()
-	}()
-
-	logrus.Infof("✅ 账户监控已启动，每1分钟查询余额，每%v监控持仓盈亏（盈利>%s%%/亏损<-%s%%），每%v执行一次AI平仓巡检",
-		am.posQueryInterval, am.pnlProfitThreshold.String(), am.pnlLossThreshold.String(), am.aiCheckInterval)
+	logrus.Infof("✅ 账户监控已启动，每1分钟查询余额，每%v监控持仓盈亏（盈利>%s%%/亏损<-%s%%）",
+		am.posQueryInterval, am.pnlProfitThreshold.String(), am.pnlLossThreshold.String())
 }
 
-// Stop 停止账户监控
+// startComparisonReport 周期性发送账户对比报告。
+func (am *AccountMonitor) startComparisonReport() {
+	ticker := time.NewTicker(am.compareReportInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-am.stopChan:
+			return
+		case <-ticker.C:
+			am.sendComparisonReport()
+		}
+	}
+}
+
+// sendComparisonReport 读取 [now-周期, now] 窗口的事件日志（跨午夜读今天+昨天），
+// 聚合各账户指标并发送 TG 对比报告。
+func (am *AccountMonitor) sendComparisonReport() {
+	until := time.Now()
+	since := until.Add(-am.compareReportInterval)
+	events := eventlog.LoadWindow(am.eventLogDir, since, until)
+	msg := formatComparisonReport(eventlog.Aggregate(events), since, until)
+	if success, err := am.telegramClient.SendMessage(msg); err != nil {
+		logrus.Errorf("[对比报告] 发送失败: %v", err)
+	} else if success {
+		logrus.Info("[对比报告] 已发送")
+	}
+}
+
+// formatComparisonReport 把各账户指标格式化为 TG 文本（按账户名排序，口径统一）。
+func formatComparisonReport(metrics map[string]*eventlog.AccountMetrics, since, until time.Time) string {
+	msg := fmt.Sprintf("📊 账户对比报告\n⏰ %s ~ %s\n",
+		since.Format("01-02 15:04"), until.Format("01-02 15:04"))
+	names := make([]string, 0, len(metrics))
+	for n := range metrics {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return msg + "\n（当日暂无事件）"
+	}
+	for _, n := range names {
+		m := metrics[n]
+		// 权益诚实标注：未知不得伪装成已知（codex round-3 #1）。
+		// 全覆盖=现有口径；部分覆盖=下界+覆盖率；零覆盖（老日志/持续故障）=降级已实现口径。
+		var ddStr string
+		switch {
+		case m.EquityKnownEvents == 0:
+			ddStr = fmt.Sprintf("最大回撤(仅已实现): %.2f%%", m.BalanceDrawdownPct)
+		case m.EquityKnownEvents < m.BalanceEvents:
+			// 覆盖率向下取整：与"至少"同为下界语义。四舍五入会把 99.86%（实盘常见：
+			// 12h 窗口内一次重启后的首查缺 equity）显示成"覆盖100%"，与"至少"自相矛盾。
+			ddStr = fmt.Sprintf("最大回撤(含浮亏): 至少%.2f%% (权益覆盖%.0f%%)",
+				m.MaxDrawdownPct, math.Floor(m.EquityCoveragePct()))
+		default:
+			ddStr = fmt.Sprintf("最大回撤(含浮亏): %.2f%%", m.MaxDrawdownPct)
+		}
+		eqStr := "未知"
+		if m.LastEquityKnown {
+			eqStr = fmt.Sprintf("%.2f", m.LastEquity)
+		}
+		msg += fmt.Sprintf(
+			"\n━━━━━━━━━━━━━━\n账户: %s  [%s]\n"+
+				"收益率: %+.2f%%  %s\n"+
+				"余额: %.2f → %.2f  当前权益: %s\n"+
+				"最大张数: %d\n"+
+				"开仓:%d  上限跳过:%d  门控拦截:%d  亏损告警:%d\n"+
+				"平仓: 移动止盈%d / 兜底%d / 固定%d  胜率%.0f%%  (外部%d/手动%d不计)\n"+
+				"平仓ROI: 均%.1f%% [%.1f%%~%.1f%%]  锁利合计:%.4f\n",
+			m.Account, m.Variant,
+			m.PnLPct(), ddStr,
+			m.FirstBalance, m.LastBalance, eqStr,
+			m.MaxSize,
+			m.Opens, m.CapSkips, m.GateBlocks, m.LossAlerts,
+			m.TrailingCloses, m.CatastropheStops, m.FixedCloses, m.CloseWinRate()*100,
+			m.ExternalCloses, m.ManualCloses,
+			m.CloseAvgRoi(), m.CloseRoiMin, m.CloseRoiMax, m.ClosePnlSum,
+		)
+	}
+	return msg
+}
+
+// Stop 停止账户监控。停止前同步 flush 一次 trail 状态——
+// 30s 异步快照盖不住正常部署重启（设计 R2）。
 func (am *AccountMonitor) Stop() {
 	close(am.stopChan)
 	am.wg.Wait()
+	am.flushTrailStates(true) // 同步 flush，必须在 goroutine 全部退出后执行
 	logrus.Info("账户监控已停止")
 }
 
@@ -298,6 +424,17 @@ func (am *AccountMonitor) queryBalances(sendReport bool) {
 				})
 				logrus.Infof("[余额查询] 账户 %s 余额: 总=%s 可用=%s 冻结=%s",
 					acc.Name, usdtBal.Bal, usdtBal.AvailBal, usdtBal.FrozenBal)
+				if bal, perr := strconv.ParseFloat(strings.TrimSpace(usdtBal.Bal), 64); perr == nil {
+					// P2-C：补 equity/upl。缓存陈旧（持仓查询持续异常）时诚实省略，
+					// 报告回退 balance——旧 UPL 不得冒充实时权益。
+					sample, ok := am.getUpl(acc.Name)
+					hasUpl := ok && uplFresh(sample, time.Now(), am.posQueryInterval)
+					if ok && !hasUpl {
+						logrus.Warnf("[余额查询] 账户 %s UPL 缓存已陈旧 %.0fs（持仓查询持续异常?），balance 事件省略 equity/upl",
+							acc.Name, time.Since(sample.ObservedAt).Seconds())
+					}
+					eventlog.Log(buildBalanceEvent(acc, bal, sample.Value, hasUpl, am.accountNetSize(acc.Name)))
+				}
 			} else {
 				logrus.Warnf("[余额查询] 账户 %s Data中未找到 ccy=USDT 的条目（Data共%d条）", acc.Name, len(balResp.Data))
 				for idx, b := range balResp.Data {
@@ -664,26 +801,21 @@ func (am *AccountMonitor) GetPositionReport() string {
 			pnlDisplay := pos.UnrealizedProfit
 			pnlEmoji := "➡️"
 			pnlPercentDisplay := ""
-			if pos.UnrealizedProfit != "" {
-				if pnl, err := decimal.NewFromString(pos.UnrealizedProfit); err == nil {
-					if pos.PosSide == "short" {
-						pnl = pnl.Neg()
-						pnlDisplay = pnl.String()
-					}
-					if pnl.IsPositive() {
-						pnlEmoji = "📈"
-					} else if pnl.IsNegative() {
-						pnlEmoji = "📉"
-					}
-					if pos.UseMargin != "" {
-						if margin, merr := decimal.NewFromString(pos.UseMargin); merr == nil && margin.IsPositive() {
-							pct := pnl.Div(margin).Mul(decimal.NewFromInt(100))
-							pctStr := pct.StringFixed(2)
-							if pct.IsPositive() {
-								pctStr = "+" + pctStr
-							}
-							pnlPercentDisplay = fmt.Sprintf("(%s%%)", pctStr)
+			if pnl, ok := normalizePositionPnl(pos); ok {
+				pnlDisplay = pnl.String()
+				if pnl.IsPositive() {
+					pnlEmoji = "📈"
+				} else if pnl.IsNegative() {
+					pnlEmoji = "📉"
+				}
+				if pos.UseMargin != "" {
+					if margin, merr := decimal.NewFromString(pos.UseMargin); merr == nil && margin.IsPositive() {
+						pct := pnl.Div(margin).Mul(decimal.NewFromInt(100))
+						pctStr := pct.StringFixed(2)
+						if pct.IsPositive() {
+							pctStr = "+" + pctStr
 						}
+						pnlPercentDisplay = fmt.Sprintf("(%s%%)", pctStr)
 					}
 				}
 			}
@@ -713,6 +845,109 @@ func (am *AccountMonitor) GetPositionReport() string {
 	return message
 }
 
+// GetROIReport 实时查询所有账户持仓收益率并返回报告（供 Telegram Bot 调用）
+func (am *AccountMonitor) GetROIReport() string {
+	if !trade.IsInitialized() {
+		return "⚠️ 交易管理器未初始化，无法查询收益率"
+	}
+
+	tm := trade.GetManager()
+	if tm == nil {
+		return "⚠️ 无法获取交易管理器"
+	}
+
+	config := trade.GetConfig()
+	if config == nil || len(config.Accounts) == 0 {
+		return "⚠️ 没有配置账户"
+	}
+
+	now := time.Now().Format("2006-01-02 15:04:05")
+	message := fmt.Sprintf("📈 收益率查询报告\n⏰ 时间: %s\n\n", now)
+	hasAnyPosition := false
+	totalPnl := decimal.Zero
+	totalMargin := decimal.Zero
+
+	for i, acc := range config.Accounts {
+		client := tm.GetClient(acc.Name)
+		if client == nil {
+			message += fmt.Sprintf("❌ 账户%d %s: 客户端不存在\n\n", i+1, acc.Name)
+			continue
+		}
+
+		posResp, err := client.GetPositionsTyped(&utils.GetPositionsRequest{
+			InstType: "SWAP",
+		})
+		if err != nil {
+			logrus.Errorf("[收益率查询] 账户 %s 失败: %v", acc.Name, err)
+			message += fmt.Sprintf("❌ 账户%d %s\n   错误: %v\n\n", i+1, acc.Name, err)
+			continue
+		}
+
+		for _, pos := range posResp.Data {
+			if pos.UnrealizedProfit == "" || pos.UseMargin == "" {
+				continue
+			}
+			pnl, ok := normalizePositionPnl(pos)
+			if !ok {
+				continue
+			}
+			margin, err := decimal.NewFromString(pos.UseMargin)
+			if err != nil || !margin.IsPositive() {
+				continue
+			}
+
+			hasAnyPosition = true
+			totalPnl = totalPnl.Add(pnl)
+			totalMargin = totalMargin.Add(margin)
+
+			roi := pnl.Div(margin).Mul(decimal.NewFromInt(100))
+			roiStr := roi.StringFixed(2)
+			if roi.IsPositive() {
+				roiStr = "+" + roiStr
+			}
+			pnlStr := pnl.StringFixed(4)
+			if pnl.IsPositive() {
+				pnlStr = "+" + pnlStr
+			}
+
+			message += fmt.Sprintf(
+				"账户: %s\n"+
+					"%s %s %s %s张\n"+
+					"收益率: %s%%  浮动盈亏: %s\n\n",
+				acc.Name,
+				func() string {
+					if pos.PosSide == "short" {
+						return "🔴"
+					}
+					return "🔵"
+				}(),
+				pos.InstId, pos.PosSide, pos.Pos,
+				roiStr, pnlStr,
+			)
+		}
+	}
+
+	if !hasAnyPosition {
+		return message + "📭 所有账户当前无持仓"
+	}
+
+	if totalMargin.IsPositive() {
+		totalROI := totalPnl.Div(totalMargin).Mul(decimal.NewFromInt(100))
+		totalROIStr := totalROI.StringFixed(2)
+		if totalROI.IsPositive() {
+			totalROIStr = "+" + totalROIStr
+		}
+		totalPnlStr := totalPnl.StringFixed(4)
+		if totalPnl.IsPositive() {
+			totalPnlStr = "+" + totalPnlStr
+		}
+		message += "━━━━━━━━━━━━━━━━━━━━\n"
+		message += fmt.Sprintf("汇总收益率: %s%%\n汇总浮动盈亏: %s\n", totalROIStr, totalPnlStr)
+	}
+
+	return message
+}
+
 // startPositionMonitor 启动持仓盈亏监控（5秒一次）
 func (am *AccountMonitor) startPositionMonitor() {
 	ticker := time.NewTicker(am.posQueryInterval)
@@ -726,428 +961,6 @@ func (am *AccountMonitor) startPositionMonitor() {
 			am.checkPositionPnl()
 		}
 	}
-}
-
-// startAICloseMonitor 启动 AI 平仓巡检：启动即执行一次，之后按 AI 建议的间隔动态调度。
-func (am *AccountMonitor) startAICloseMonitor() {
-	if am.aiCloseDecider == nil {
-		return
-	}
-
-	// 启动后稍等片刻（让首次持仓/余额查询就绪）再立即执行一次。
-	select {
-	case <-am.stopChan:
-		return
-	case <-time.After(8 * time.Second):
-	}
-
-	next := am.runAICloseCheck()
-	timer := time.NewTimer(next)
-	defer timer.Stop()
-
-	for {
-		select {
-		case <-am.stopChan:
-			return
-		case <-timer.C:
-			next := am.runAICloseCheck()
-			timer.Reset(next)
-		}
-	}
-}
-
-// startAIOpenMonitor 启动 AI 加仓巡检：启动即执行一次，之后按 AI 建议的间隔动态调度。
-func (am *AccountMonitor) startAIOpenMonitor() {
-	if am.aiOpenDecider == nil {
-		return
-	}
-
-	// 启动后立即执行一次（稍等片刻让首次余额查询完成，新仓评估才有余额数据）。
-	select {
-	case <-am.stopChan:
-		return
-	case <-time.After(8 * time.Second):
-	}
-
-	next := am.runAIOpenCheck()
-	timer := time.NewTimer(next)
-	defer timer.Stop()
-
-	for {
-		select {
-		case <-am.stopChan:
-			return
-		case <-timer.C:
-			next := am.runAIOpenCheck()
-			timer.Reset(next)
-		}
-	}
-}
-
-// runAIOpenCheck 执行一次巡检并返回下次执行的间隔（取各账户 AI 建议中最短的一个，无则用默认间隔）。
-func (am *AccountMonitor) runAIOpenCheck() time.Duration {
-	results, nextInterval := am.executeAIOpenStrategy("scheduled")
-
-	if nextInterval <= 0 {
-		nextInterval = am.aiOpenCheckInterval
-	}
-	if nextInterval <= 0 {
-		nextInterval = 15 * time.Minute
-	}
-
-	if len(results) == 0 {
-		logrus.Infof("[AI加仓] 策略执行完成：当前没有可评估的账户，下次 %v 后再巡检", nextInterval)
-		return nextInterval
-	}
-
-	msg := fmt.Sprintf(
-		"🤖 AI加仓策略定时执行（仅告警，未自动下单）\n⏰ %s\n下次巡检: %v 后\n\n%s",
-		time.Now().Format("2006-01-02 15:04:05"),
-		nextInterval,
-		strings.Join(results, "\n\n---\n\n"),
-	)
-	if success, err := am.telegramClient.SendMessage(msg); err != nil {
-		logrus.Errorf("[AI加仓] 发送策略执行结果失败: %v", err)
-	} else if success {
-		logrus.Infof("[AI加仓] 策略执行结果已发送，下次 %v 后再巡检", nextInterval)
-	}
-
-	for _, result := range results {
-		logrus.Infof("[AI加仓] 策略执行结果: %s", strings.TrimSpace(result))
-	}
-	return nextInterval
-}
-
-// RunAIOpenStrategyNow 手动触发一次 AI 加仓巡检（供 Telegram Bot 调用）。
-func (am *AccountMonitor) RunAIOpenStrategyNow() string {
-	if am.aiOpenDecider == nil {
-		return "⚠️ AI加仓: 已禁用"
-	}
-	results, nextInterval := am.executeAIOpenStrategy("manual")
-	if len(results) == 0 {
-		return "🤖 AI加仓策略已执行：当前没有可评估的账户"
-	}
-	if nextInterval <= 0 {
-		nextInterval = am.aiOpenCheckInterval
-	}
-	return fmt.Sprintf(
-		"🤖 AI加仓策略已执行（仅告警，未自动下单）\n⏰ %s\n下次巡检: %v 后\n\n%s",
-		time.Now().Format("2006-01-02 15:04:05"),
-		nextInterval,
-		strings.Join(results, "\n\n---\n\n"),
-	)
-}
-
-// executeAIOpenStrategy 遍历所有账户评估开仓/加仓（空仓评估开新仓，有仓评估加仓/减仓）。
-// 返回告警文本列表，以及下次巡检间隔（取各账户 AI 建议 next_check_in 的最短者，无则 0）。
-func (am *AccountMonitor) executeAIOpenStrategy(triggerType string) ([]string, time.Duration) {
-	results := make([]string, 0)
-	var nextInterval time.Duration // 0 表示无 AI 建议，由调用方回退默认
-	if am.aiOpenDecider == nil || !trade.IsInitialized() {
-		return results, nextInterval
-	}
-
-	tm := trade.GetManager()
-	if tm == nil {
-		return results, nextInterval
-	}
-
-	config := trade.GetConfig()
-	if config == nil || len(config.Accounts) == 0 {
-		return results, nextInterval
-	}
-
-	logrus.Infof("[AI加仓] 开始执行策略，trigger=%s, interval=%v", triggerType, am.aiOpenCheckInterval)
-
-	var btcMarket *BTCAnalysisSnapshot
-	if snapshot, err := GetBTCAnalysisSnapshot(); err != nil {
-		logrus.Warnf("[AI加仓] 获取BTC市场快照失败: %v", err)
-	} else {
-		btcMarket = snapshot
-	}
-
-	for i, acc := range config.Accounts {
-		client := tm.GetClient(acc.Name)
-		if client == nil {
-			logrus.Warnf("[AI加仓] 账户 %s 客户端不存在，跳过", acc.Name)
-			continue
-		}
-
-		var posResp *utils.GetPositionsResponse
-		var err error
-		for attempt := 1; attempt <= 3; attempt++ {
-			posResp, err = client.GetPositionsTyped(&utils.GetPositionsRequest{InstType: "SWAP"})
-			if err == nil {
-				break
-			}
-			logrus.Warnf("[AI加仓] 账户 %s 查询持仓失败(第%d次): %v", acc.Name, attempt, err)
-			if attempt < 3 {
-				time.Sleep(2 * time.Second)
-			}
-		}
-		if err != nil {
-			logrus.Warnf("[AI加仓] 账户 %s 查询持仓失败，已重试3次，跳过: %v", acc.Name, err)
-			continue
-		}
-
-		var availBal, totalBal string
-		am.mu.RLock()
-		for _, b := range am.lastBalances {
-			if b.AccountName == acc.Name && b.Error == "" {
-				availBal = b.AvailBal
-				totalBal = b.Bal
-				break
-			}
-		}
-		am.mu.RUnlock()
-
-		// 空仓账户：评估是否值得开一个新仓（全仓模式下仓位相对余额越小越安全）。
-		if len(posResp.Data) == 0 {
-			accountDisplay := acc.Name
-			if acc.UID != "" {
-				accountDisplay = fmt.Sprintf("%s-%s", acc.Name, acc.UID)
-			}
-			openResultMsg, next := am.evaluateAIOpenNoPosition(acc, btcMarket, availBal, totalBal)
-			nextInterval = minPositiveDuration(nextInterval, next)
-			results = append(results, fmt.Sprintf(
-				"账户: %s\n当前状态: 空仓\n%s%s",
-				accountDisplay, formatNoPositionCurrentPrice(btcMarket), openResultMsg))
-			continue
-		}
-
-		for _, pos := range posResp.Data {
-			// 当前 AI 加仓只用 BTC 行情快照，非 BTC 持仓跳过，避免用 BTC 指标误判其它币种。
-			if !strings.Contains(strings.ToUpper(pos.InstId), "BTC") {
-				logrus.Infof("[AI加仓] 账户 %s 持仓 %s 非BTC，AI加仓暂不支持，跳过", acc.Name, pos.InstId)
-				continue
-			}
-
-			pct, pnl, ok, reason := calculatePositionPnLWithReason(pos)
-			if !ok {
-				logrus.Warnf("[AI加仓] 账户 %s 仓位不可评估，跳过: reason=%s instId=%s posSide=%s", acc.Name, reason, pos.InstId, pos.PosSide)
-				continue
-			}
-
-			openResultMsg, next := am.evaluateAIOpen(acc, pos, pct, triggerType, btcMarket, availBal, totalBal)
-			nextInterval = minPositiveDuration(nextInterval, next)
-
-			accountDisplay := acc.Name
-			if acc.UID != "" {
-				accountDisplay = fmt.Sprintf("%s-%s", acc.Name, acc.UID)
-			}
-			directionEmoji := "🔵"
-			if pos.PosSide == "short" {
-				directionEmoji = "🔴"
-			}
-			pctStr := pct.StringFixed(2)
-			if pct.IsPositive() {
-				pctStr = "+" + pctStr
-			}
-
-			result := fmt.Sprintf(
-				"账户: %s\n"+
-					"%s %s  方向:%s\n"+
-					"持仓:%s张  开仓均价:%s\n"+
-					"最新价:%s  强平价:%s\n"+
-					"占用保证金:%s  可用余额:%s\n"+
-					"未实现盈亏: %s (%s%%)%s",
-				accountDisplay,
-				directionEmoji, pos.InstId, pos.PosSide,
-				pos.Pos, pos.AvgPx,
-				pos.LastPx, pos.LiqPx,
-				pos.UseMargin, defaultString(availBal, "未知"),
-				pnl.String(), pctStr,
-				openResultMsg,
-			)
-			results = append(results, result)
-		}
-
-		if i < len(config.Accounts)-1 {
-			time.Sleep(500 * time.Millisecond)
-		}
-	}
-	return results, nextInterval
-}
-
-// minPositiveDuration 返回两个时长中较小的正值；忽略 <=0 的一方。
-func minPositiveDuration(a, b time.Duration) time.Duration {
-	if b <= 0 {
-		return a
-	}
-	if a <= 0 || b < a {
-		return b
-	}
-	return a
-}
-
-// evaluateAIOpen 对单个持仓调用 AI 加仓决策，第一期仅返回告警文本，不自动下单。
-// 返回 (告警文本, AI 建议的下次巡检间隔)。
-func (am *AccountMonitor) evaluateAIOpen(acc trade.AccountConfig, pos utils.PositionInfo, pct decimal.Decimal, triggerType string, btcMarket *BTCAnalysisSnapshot, availBal, totalBal string) (string, time.Duration) {
-	if am.aiOpenDecider == nil {
-		return "\n\n⚠️ AI加仓: 已禁用", 0
-	}
-
-	posDetails := CurrentPositionDetails{
-		InstType:         pos.InstType,
-		InstID:           pos.InstId,
-		PositionID:       pos.PosId,
-		PositionSide:     pos.PosSide,
-		PositionSize:     pos.Pos,
-		AvgPrice:         pos.AvgPx,
-		LastPrice:        pos.LastPx,
-		LiqPrice:         pos.LiqPx,
-		UseMargin:        pos.UseMargin,
-		UnrealizedProfit: pos.UnrealizedProfit,
-		PnLPercent:       pct.StringFixed(2),
-		Leverage:         pos.Lever,
-		MarginMode:       pos.MgnMode,
-		MarginPosition:   pos.MrgPosition,
-		Currency:         pos.Ccy,
-		CreateTime:       pos.CTime,
-		UpdateTime:       pos.UTime,
-	}
-
-	decision, err := am.aiOpenDecider.Decide(PositionSnapshot{
-		AccountName:        acc.Name,
-		AccountUID:         acc.UID,
-		HasPosition:        true,
-		CurrentPosition:    posDetails,
-		BTCMarket:          btcMarket,
-		PositionSummary:    buildPositionSummary(posDetails),
-		InstID:             pos.InstId,
-		PositionID:         pos.PosId,
-		PositionSide:       pos.PosSide,
-		PositionSize:       pos.Pos,
-		AvgPrice:           pos.AvgPx,
-		LastPrice:          pos.LastPx,
-		LiqPrice:           pos.LiqPx,
-		UseMargin:          pos.UseMargin,
-		UnrealizedProfit:   pos.UnrealizedProfit,
-		PnLPercent:         pct,
-		TriggerType:        triggerType,
-		AvailBal:           availBal,
-		TotalBal:           totalBal,
-		LiqDistancePercent: computeLiqDistancePercent(pos.LastPx, pos.LiqPx, pos.PosSide),
-	})
-	if err != nil {
-		logrus.Errorf("[AI加仓] 决策失败: account=%s inst=%s, err=%v", acc.Name, pos.InstId, err)
-		return fmt.Sprintf("\n\n⚠️ AI加仓: 决策失败\n原因: %v", err), 0
-	}
-	if decision == nil {
-		return "\n\n⚠️ AI加仓: 未返回结果", 0
-	}
-
-	next, _ := parseNextCheckInterval(decision.NextCheckIn, am.aiOpenMinInterval, am.aiOpenMaxInterval)
-
-	wantsOpen := decision.FinalAction == "open_long" || decision.FinalAction == "open_short"
-	if wantsOpen && decision.RiskPassed {
-		logrus.Infof("[AI加仓] 建议操作: account=%s inst=%s mode=%s action=%s size=%s", acc.Name, pos.InstId, decision.Mode, decision.FinalAction, decision.SuggestedSize)
-		execMsg := am.maybeAutoOpen(acc, decision, pos.LastPx)
-		return fmt.Sprintf("\n\n🟢 AI决策: 建议开仓/加仓\n%s%s", formatAIOpenDecision(decision), execMsg), next
-	}
-	if wantsOpen && !decision.RiskPassed {
-		logrus.Warnf("[AI加仓] 建议加仓但本地风控拦截: account=%s inst=%s reason=%s", acc.Name, pos.InstId, decision.RiskBlockReason)
-		return fmt.Sprintf("\n\n⛔ AI决策: 想加仓但本地风控拦截（爆仓距离不足）\n%s", formatAIOpenDecision(decision)), next
-	}
-	logrus.Infof("[AI加仓] 暂不加仓: account=%s inst=%s action=%s", acc.Name, pos.InstId, decision.FinalAction)
-	return fmt.Sprintf("\n\n🤖 AI决策: 暂不加仓\n%s", formatAIOpenDecision(decision)), next
-}
-
-// maybeAutoOpen 在自动下单开启且 AI 决策放行时执行市价开/加仓，并即时推送 Telegram。
-// 返回追加到告警文本里的执行结果；未开启自动下单时返回"仅告警"提示。
-func (am *AccountMonitor) maybeAutoOpen(acc trade.AccountConfig, decision *AIOpenDecision, tradePriceStr string) string {
-	if !am.aiOpenAutoTrade {
-		return "\n（自动下单已关闭，仅告警）"
-	}
-	if !trade.IsInitialized() {
-		return "\n⚠️ 自动下单跳过: 交易管理器未初始化"
-	}
-	tm := trade.GetManager()
-	if tm == nil {
-		return "\n⚠️ 自动下单跳过: 交易管理器未就绪"
-	}
-
-	side := "long"
-	if decision.FinalAction == "open_short" {
-		side = "short"
-	}
-	size := int(parseContracts(decision.SuggestedSize).IntPart())
-	if size <= 0 {
-		return "\n⚠️ 自动下单跳过: 建议张数无效"
-	}
-	price := 0.0
-	if p, err := decimal.NewFromString(strings.TrimSpace(tradePriceStr)); err == nil {
-		price = p.InexactFloat64()
-	}
-
-	accountDisplay := acc.Name
-	if acc.UID != "" {
-		accountDisplay = fmt.Sprintf("%s-%s", acc.Name, acc.UID)
-	}
-
-	resp, err := tm.OpenPositionByAI(acc.Name, aiOpenTradeInst, side, size, price)
-	if err != nil {
-		logrus.Errorf("[AI加仓] 自动下单失败: account=%s side=%s size=%d err=%v", acc.Name, side, size, err)
-		tgMsg := fmt.Sprintf("🔴 AI自动下单失败\n账户: %s\n模式: %s  方向: %s  张数: %d\n合约: %s\n错误: %v\n时间: %s",
-			accountDisplay, decision.Mode, side, size, aiOpenTradeInst, err, time.Now().Format("2006-01-02 15:04:05"))
-		if _, serr := am.telegramClient.SendMessage(tgMsg); serr != nil {
-			logrus.Errorf("[AI加仓] 自动下单失败告警发送失败: %v", serr)
-		}
-		return fmt.Sprintf("\n🔴 自动下单失败: %v", err)
-	}
-
-	logrus.Infof("[AI加仓] 自动下单成功: account=%s side=%s size=%d code=%d", acc.Name, side, size, resp.Code)
-	tgMsg := fmt.Sprintf("🟢 AI自动下单成功\n账户: %s\n模式: %s  方向: %s  张数: %d\n合约: %s  参考价: %.2f\n止损: %s  止盈: %s\n时间: %s",
-		accountDisplay, decision.Mode, side, size, aiOpenTradeInst, price,
-		defaultString(decision.StopLossPrice, "未给"), defaultString(decision.TakeProfitPrice, "未给"),
-		time.Now().Format("2006-01-02 15:04:05"))
-	if _, serr := am.telegramClient.SendMessage(tgMsg); serr != nil {
-		logrus.Errorf("[AI加仓] 自动下单成功告警发送失败: %v", serr)
-	}
-	return fmt.Sprintf("\n🟢 已自动下单: %s %d张 (合约%s)", side, size, aiOpenTradeInst)
-}
-
-// evaluateAIOpenNoPosition 对空仓账户评估是否值得开一个新仓（全仓模式，仅 BTC），第一期仅告警。
-// 返回 (告警文本, AI 建议的下次巡检间隔)。
-func (am *AccountMonitor) evaluateAIOpenNoPosition(acc trade.AccountConfig, btcMarket *BTCAnalysisSnapshot, availBal, totalBal string) (string, time.Duration) {
-	if am.aiOpenDecider == nil {
-		return "\n\n⚠️ AI开仓: 已禁用", 0
-	}
-
-	decision, err := am.aiOpenDecider.Decide(PositionSnapshot{
-		AccountName:     acc.Name,
-		AccountUID:      acc.UID,
-		HasPosition:     false,
-		BTCMarket:       btcMarket,
-		PositionSummary: "no_open_position=true",
-		InstID:          "BTC-USDT-SWAP",
-		LastPrice:       currentBTCPrice(btcMarket),
-		TriggerType:     "no_position",
-		AvailBal:        availBal,
-		TotalBal:        totalBal,
-	})
-	if err != nil {
-		logrus.Errorf("[AI开仓] 空仓决策失败: account=%s, err=%v", acc.Name, err)
-		return fmt.Sprintf("\n\n⚠️ AI开仓: 决策失败\n原因: %v", err), 0
-	}
-	if decision == nil {
-		return "\n\n⚠️ AI开仓: 未返回结果", 0
-	}
-
-	next, _ := parseNextCheckInterval(decision.NextCheckIn, am.aiOpenMinInterval, am.aiOpenMaxInterval)
-
-	wantsOpen := decision.FinalAction == "open_long" || decision.FinalAction == "open_short"
-	if wantsOpen && decision.RiskPassed {
-		logrus.Infof("[AI开仓] 建议开新仓: account=%s action=%s size=%s", acc.Name, decision.FinalAction, decision.SuggestedSize)
-		execMsg := am.maybeAutoOpen(acc, decision, currentBTCPrice(btcMarket))
-		return fmt.Sprintf("\n\n🟢 AI决策: 建议开新仓\n%s%s", formatAIOpenDecision(decision), execMsg), next
-	}
-	if wantsOpen && !decision.RiskPassed {
-		logrus.Warnf("[AI开仓] 建议开新仓但本地风控拦截: account=%s reason=%s", acc.Name, decision.RiskBlockReason)
-		return fmt.Sprintf("\n\n⛔ AI决策: 想开新仓但本地风控拦截\n%s", formatAIOpenDecision(decision)), next
-	}
-	logrus.Infof("[AI开仓] 暂不开仓: account=%s action=%s", acc.Name, decision.FinalAction)
-	return fmt.Sprintf("\n\n🤖 AI决策: 暂不开仓\n%s", formatAIOpenDecision(decision)), next
 }
 
 // checkPositionPnl 检查所有账户持仓的盈亏比例，超过阈值则发送告警
@@ -1166,9 +979,6 @@ func (am *AccountMonitor) checkPositionPnl() {
 		return
 	}
 
-	profitThreshold := am.pnlProfitThreshold
-	lossThreshold := am.pnlLossThreshold.Neg()
-
 	for i, acc := range config.Accounts {
 		client := tm.GetClient(acc.Name)
 		if client == nil {
@@ -1179,96 +989,47 @@ func (am *AccountMonitor) checkPositionPnl() {
 			InstType: "SWAP",
 		})
 		if err != nil {
+			// 查询失败：跳过本账户（并跳过 GC，避免误清空已激活仓的状态）
 			logrus.Debugf("[持仓监控] 账户 %s 查询失败: %v", acc.Name, err)
 			continue
 		}
 
+		// P1(R3)：存活判定与"盈亏是否可评估"解耦——UPL/UseMargin 瞬空只跳过本轮
+		// 评估，不得让仓位落出 liveKeys 被 GC 误删已激活的 trail 峰值。
+		liveKeys := buildLiveKeys(acc.Name, posResp.Data)
+		// P4：该账户首轮轮询时用实盘 posId 对账恢复 trail 状态，须在本轮评估之前
+		// ——否则首轮会以空状态评估，已激活的峰值保护要等下一轮才回来。
+		am.restoreAccountTrails(acc.Name, livePosIds(acc.Name, posResp.Data))
+		if upl, complete := sumAccountUpl(posResp.Data); complete { // review fix#1：不完整轮保留旧缓存
+			am.setUpl(acc.Name, upl, time.Now())
+		}
+		am.reconcileExternalCloses(acc, liveKeys) // P2-A：对账须在 GC 之前（保留 peak 供事件）
 		for _, pos := range posResp.Data {
 			if pos.UnrealizedProfit == "" || pos.UseMargin == "" {
 				continue
 			}
-
-			pnl, err := decimal.NewFromString(pos.UnrealizedProfit)
-			if err != nil {
+			pnl, ok := normalizePositionPnl(pos)
+			if !ok {
 				continue
 			}
-			margin, err := decimal.NewFromString(pos.UseMargin)
-			if err != nil || !margin.IsPositive() {
+			margin, mErr := decimal.NewFromString(pos.UseMargin)
+			if mErr != nil || !margin.IsPositive() {
 				continue
 			}
-
 			pct := pnl.Div(margin).Mul(decimal.NewFromInt(100))
+			key := fmt.Sprintf("%s:%s:%s", acc.Name, pos.InstId, pos.PosSide)
 
-			isProfit := pct.GreaterThan(profitThreshold)
-			isLoss := pct.LessThan(lossThreshold)
-			if !isProfit && !isLoss {
-				continue
-			}
-
-			alertKey := fmt.Sprintf("%s:%s:%s", acc.Name, pos.InstId, pos.PosSide)
-
-			am.pnlAlertMu.RLock()
-			lastAlert, exists := am.lastPnlAlerts[alertKey]
-			am.pnlAlertMu.RUnlock()
-
-			if exists && time.Since(lastAlert) < am.pnlAlertCooldown {
-				continue
-			}
-
-			am.pnlAlertMu.Lock()
-			am.lastPnlAlerts[alertKey] = time.Now()
-			am.pnlAlertMu.Unlock()
-
-			accountDisplay := acc.Name
-			if acc.UID != "" {
-				accountDisplay = fmt.Sprintf("%s-%s", acc.Name, acc.UID)
-			}
-
-			directionEmoji := "🔵"
-			if pos.PosSide == "short" {
-				directionEmoji = "🔴"
-			}
-
-			pctStr := pct.StringFixed(2)
-			if pct.IsPositive() {
-				pctStr = "+" + pctStr
-			}
-
-			now := time.Now().Format("2006-01-02 15:04:05")
-			logrus.Warnf("[持仓监控] %s 盈亏比例 %s%% 超过阈值(盈利>%s%%/亏损<-%s%%)", alertKey, pctStr, am.pnlProfitThreshold.String(), am.pnlLossThreshold.String())
-
-			triggerType := "loss"
-			if isProfit {
-				triggerType = "profit"
-			}
-
-			thresholdActionMsg := am.formatThresholdAction(tm, acc, pos, alertKey, pct, triggerType)
-
-			alertMsg := fmt.Sprintf(
-				"🚨 持仓盈亏告警\n"+
-					"⏰ %s\n\n"+
-					"账户: %s\n"+
-					"%s %s  方向:%s\n"+
-					"持仓:%s张  开仓均价:%s\n"+
-					"最新价:%s  强平价:%s\n"+
-					"占用保证金:%s\n"+
-					"未实现盈亏: %s (%s%%)%s\n",
-				now,
-				accountDisplay,
-				directionEmoji, pos.InstId, pos.PosSide,
-				pos.Pos, pos.AvgPx,
-				pos.LastPx, pos.LiqPx,
-				pos.UseMargin,
-				pnl.String(), pctStr,
-				thresholdActionMsg,
-			)
-
-			if success, err := am.telegramClient.SendMessage(alertMsg); err != nil {
-				logrus.Errorf("[持仓监控] 发送告警消息失败: %v", err)
-			} else if success {
-				logrus.Infof("[持仓监控] 告警消息已发送: %s", alertKey)
+			if acc.IsTrailingTP() {
+				am.handleTrailingPnl(tm, acc, pos, pnl, pct, key)
+			} else {
+				am.handleFixedPnl(tm, acc, pos, pnl, pct, key)
 			}
 		}
+
+		// GC：仅对查询成功的账户，清理已不存在的 trail 状态（覆盖手动/外部平仓）
+		am.gcTrailStates(acc.Name, liveKeys)
+		am.updateSnapshots(acc.Name, posResp.Data)         // P2-A：刷新快照（含 P4 探针日志）
+		am.closeFails.clearMissing(acc.Name+":", liveKeys) // P3/R4：仓位消失连败计数随生命周期清零
 
 		if i < len(config.Accounts)-1 {
 			time.Sleep(500 * time.Millisecond)
@@ -1276,607 +1037,352 @@ func (am *AccountMonitor) checkPositionPnl() {
 	}
 }
 
-// runAICloseCheck 执行一次平仓巡检并返回下次执行间隔（取各持仓 AI 建议中最短者，无则回退默认间隔）。
-func (am *AccountMonitor) runAICloseCheck() time.Duration {
-	results, push, nextInterval := am.executeAICloseStrategy("scheduled")
-
-	if nextInterval <= 0 {
-		nextInterval = am.aiCheckInterval
+// handleFixedPnl 现状逻辑（fixed 模式）：ROI 超过 profit_threshold 整仓平、
+// 超过 -loss_threshold 仅告警；同仓告警 5 分钟冷却。行为与改造前一致。
+func (am *AccountMonitor) handleFixedPnl(tm *trade.TradeManager, acc trade.AccountConfig, pos utils.PositionInfo, pnl, pct decimal.Decimal, key string) {
+	isProfit := pct.GreaterThan(am.pnlProfitThreshold)
+	isLoss := pct.LessThan(am.pnlLossThreshold.Neg())
+	if !isProfit && !isLoss {
+		return
 	}
-	if nextInterval <= 0 {
-		nextInterval = 60 * time.Minute
+	if !am.passAlertCooldown(key) {
+		return
 	}
+	pctStr := signedPctStr(pct)
+	logrus.Warnf("[持仓监控] %s 盈亏比例 %s%% 超过阈值(盈利>%s%%/亏损<-%s%%)", key, pctStr, am.pnlProfitThreshold.String(), am.pnlLossThreshold.String())
 
-	for _, result := range results {
-		logrus.Infof("[AI平仓] 策略执行结果: %s", strings.TrimSpace(result))
-	}
-
-	if len(results) == 0 {
-		logrus.Infof("[AI平仓] 策略执行完成：当前没有可评估的持仓，下次 %v 后再巡检", nextInterval)
-		return nextInterval
-	}
-
-	// 降噪：仅当有"建议平仓/高风险"时才推 Telegram，其余只记日志。
-	if !push {
-		logrus.Infof("[AI平仓] 本轮无建议平仓/高风险项，跳过 Telegram 推送，下次 %v 后再巡检", nextInterval)
-		return nextInterval
-	}
-
-	msg := fmt.Sprintf(
-		"🤖 AI平仓策略定时执行\n⏰ %s\n下次巡检: %v 后\n\n%s",
-		time.Now().Format("2006-01-02 15:04:05"),
-		nextInterval,
-		strings.Join(results, "\n\n---\n\n"),
-	)
-	if success, err := am.telegramClient.SendMessage(msg); err != nil {
-		logrus.Errorf("[AI平仓] 发送策略执行结果失败: %v", err)
-	} else if success {
-		logrus.Infof("[AI平仓] 策略执行结果已发送，下次 %v 后再巡检", nextInterval)
-	}
-	return nextInterval
-}
-
-func (am *AccountMonitor) RunAICloseStrategyNow() string {
-	results, _, _ := am.executeAICloseStrategy("manual")
-	if len(results) == 0 {
-		return "🤖 AI平仓策略已执行：当前没有可评估的持仓"
-	}
-
-	return fmt.Sprintf(
-		"🤖 AI平仓策略已执行\n⏰ %s\n\n%s",
-		time.Now().Format("2006-01-02 15:04:05"),
-		strings.Join(results, "\n\n---\n\n"),
-	)
-}
-
-func (am *AccountMonitor) RunAICloseStrategyWithManualPosition(input manualAICloseInput) string {
-	if am.aiCloseDecider == nil {
-		return "⚠️ AI平仓: 已禁用"
-	}
-	if !input.AvgPrice.IsPositive() {
-		return "⚠️ 手工均价无效，请发送例如: AI + 73210 + L"
-	}
-
-	var btcMarket *BTCAnalysisSnapshot
-	if snapshot, err := GetBTCAnalysisSnapshot(); err != nil {
-		logrus.Warnf("[AI手工均价] 获取BTC市场快照失败: %v", err)
+	closeResultMsg := ""
+	if isProfit {
+		logrus.Infof("[持仓监控] 盈利超阈值，执行市价全平: %s", key)
+		var closed bool
+		closeResultMsg, closed = am.marketClosePosition(tm, acc, pos, key)
+		if closed {
+			// P2-B：fixed 平仓同样补 avgPx/lastPx 审计字段（无 trail 概念，peak 省略）
+			eventlog.Log(buildCloseEvent(acc, pos, eventlog.EvFixedClose, pct, pnl, "", TrailState{}))
+		}
 	} else {
-		btcMarket = snapshot
+		eventlog.Log(eventlog.Event{Account: acc.Name, Variant: acc.Variant, InstId: pos.InstId, Event: eventlog.EvLossAlert,
+			Side: pos.PosSide, Size: absAtoi(pos.Pos), RoiPct: pct.InexactFloat64(), Pnl: pnl.InexactFloat64()})
+	}
+	am.sendPnlAlert(acc, pos, pnl, pct, closeResultMsg)
+}
+
+// handleTrailingPnl 移动止盈模式：分档移动止盈 + 兜底止损；保留普通亏损告警。
+func (am *AccountMonitor) handleTrailingPnl(tm *trade.TradeManager, acc trade.AccountConfig, pos utils.PositionInfo, pnl, pct decimal.Decimal, key string) {
+	pctF := pct.InexactFloat64()
+	size := absAtoi(pos.Pos)
+	lastPx, _ := strconv.ParseFloat(strings.TrimSpace(pos.LastPx), 64)
+	tp := resolveTrailParamsForAccount(acc.Index) // 账户级移动止盈参数
+
+	guard := tm.CapGuard()
+	nmax, capOK := 0, false
+	if guard != nil {
+		guard.EnsureInit(acc.Name, trade.ResolveRiskEquity(acc), lastPx) // 重启后用 LastPx 兜底初始化；E=risk_equity(P5)
+		nmax, capOK = guard.MaxContracts(acc.Name)
 	}
 
-	acc := trade.AccountConfig{Name: "manual-input", PositionSide: "unknown"}
-	if config := trade.GetConfig(); config != nil && len(config.Accounts) > 0 {
-		acc = config.Accounts[0]
-		if strings.TrimSpace(acc.PositionSide) == "" {
-			acc.PositionSide = "unknown"
+	// 降级：cap 不可用 -> 跳过分档移动止盈；兜底止损与亏损告警照常（都不依赖 N_max）
+	if !capOK {
+		logrus.Warnf("[持仓监控] %s cap 未初始化，降级：跳过分档移动止盈", key)
+		if pctF <= -tp.CatastropheStopPct {
+			am.closeTrailing(tm, acc, pos, pnl, pct, key, "兜底止损(降级)")
+			return
+		}
+		am.maybeLossAlert(acc, pos, pnl, pct, key)
+		return
+	}
+
+	cfg := BuildExitConfig(nmax, tp)
+
+	am.trailMu.Lock()
+	prev := am.trailStates[key]
+	action, newState := EvaluateExit(size, pctF, cfg, prev)
+	am.trailStates[key] = newState
+	changed := newState != prev
+	am.trailMu.Unlock()
+	if changed {
+		am.markTrailDirty() // P4：峰值/激活态变化才需要重新落盘
+	}
+
+	switch action {
+	case ActionTrailingClose:
+		am.closeTrailing(tm, acc, pos, pnl, pct, key, "移动止盈")
+	case ActionCatastropheStop:
+		am.closeTrailing(tm, acc, pos, pnl, pct, key, "兜底止损")
+	default: // ActionHold
+		am.maybeLossAlert(acc, pos, pnl, pct, key)
+	}
+}
+
+// closeTrailing 执行整仓平并发告警；平仓成功才删除 trail 状态。
+func (am *AccountMonitor) closeTrailing(tm *trade.TradeManager, acc trade.AccountConfig, pos utils.PositionInfo, pnl, pct decimal.Decimal, key, reason string) {
+	logrus.Warnf("[持仓监控] %s 触发%s (ROI %s%%)，执行市价全平", key, reason, signedPctStr(pct))
+	msg, closed := am.marketClosePosition(tm, acc, pos, key)
+	if closed {
+		// P2-B：删除前捕获 trail 状态，平仓事件带 peakPct 审计字段（激活过才有）
+		am.trailMu.Lock()
+		st := am.trailStates[key]
+		delete(am.trailStates, key)
+		am.trailMu.Unlock()
+		ev := eventlog.EvTrailingClose
+		if strings.Contains(reason, "兜底") {
+			ev = eventlog.EvCatastropheStop
+		}
+		eventlog.Log(buildCloseEvent(acc, pos, ev, pct, pnl, reason, st))
+		am.sendPnlAlert(acc, pos, pnl, pct, fmt.Sprintf("\n\n🎯 触发: %s%s", reason, msg))
+		return
+	}
+	// 平仓未成功：状态保留，下次扫描自动重试；告警节流避免每 5s 刷屏
+	if am.passAlertCooldown(key) {
+		am.sendPnlAlert(acc, pos, pnl, pct, fmt.Sprintf("\n\n🎯 触发: %s%s\n⚠️ 下次扫描将重试平仓", reason, msg))
+	} else {
+		logrus.Warnf("[持仓监控] %s 平仓未成功且在告警冷却内，跳过重复告警（仍会重试平仓）", key)
+	}
+}
+
+// maybeLossAlert 普通亏损告警：ROI <= -loss_threshold 且过冷却才发（不平仓）。
+func (am *AccountMonitor) maybeLossAlert(acc trade.AccountConfig, pos utils.PositionInfo, pnl, pct decimal.Decimal, key string) {
+	if !pct.LessThan(am.pnlLossThreshold.Neg()) {
+		return
+	}
+	if !am.passAlertCooldown(key) {
+		return
+	}
+	eventlog.Log(eventlog.Event{Account: acc.Name, Variant: acc.Variant, InstId: pos.InstId, Event: eventlog.EvLossAlert,
+		Side: pos.PosSide, Size: absAtoi(pos.Pos), RoiPct: pct.InexactFloat64(), Pnl: pnl.InexactFloat64()})
+	am.sendPnlAlert(acc, pos, pnl, pct, "")
+}
+
+// gcTrailStates 清理某账户下已不存在（或 pos=0）的 trail 状态。
+func (am *AccountMonitor) gcTrailStates(accName string, liveKeys map[string]bool) {
+	prefix := accName + ":"
+	am.trailMu.Lock()
+	removed := 0
+	for k := range am.trailStates {
+		if strings.HasPrefix(k, prefix) && !liveKeys[k] {
+			delete(am.trailStates, k)
+			removed++
 		}
 	}
-	if normalizedSide := normalizeManualPositionSide(input.PositionSide); normalizedSide != "" {
-		acc.PositionSide = normalizedSide
+	am.trailMu.Unlock()
+	if removed > 0 {
+		am.markTrailDirty() // P4：仓位消失后快照须同步移除，避免重启复活死仓状态
 	}
-
-	currentPrice := currentBTCPrice(btcMarket)
-	metrics := calculateManualPositionMetrics(input, currentPrice, acc.PositionSide)
-	useMargin := optionalDecimalString(metrics.InitialMargin)
-	positionSize := optionalDecimalString(input.PositionSize)
-	leverage := optionalDecimalString(input.Leverage)
-	liqPrice := manualMetricString(metrics.LiqPrice, metrics.HasLiq)
-	unrealizedProfit := manualMetricString(metrics.UnrealizedProfit, metrics.HasCurrent)
-	decision, err := am.aiCloseDecider.Decide(PositionSnapshot{
-		AccountName:        acc.Name,
-		AccountUID:         acc.UID,
-		HasPosition:        true,
-		BTCMarket:          btcMarket,
-		PositionSummary:    buildManualPositionSummary(acc, input, currentPrice, metrics),
-		InstID:             "BTC-USDT-SWAP",
-		PositionSide:       acc.PositionSide,
-		PositionSize:       positionSize,
-		AvgPrice:           input.AvgPrice.String(),
-		LastPrice:          currentPrice,
-		LiqPrice:           liqPrice,
-		UseMargin:          useMargin,
-		UnrealizedProfit:   unrealizedProfit,
-		PnLPercent:         metrics.PnLPercent,
-		TriggerType:        "manual_avg_price",
-		AvailBal:           optionalDecimalString(input.Balance),
-		TotalBal:           optionalDecimalString(input.Balance),
-		LiqDistancePercent: computeLiqDistancePercent(currentPrice, liqPrice, acc.PositionSide),
-		CurrentPosition: CurrentPositionDetails{
-			InstType:         "SWAP",
-			InstID:           "BTC-USDT-SWAP",
-			PositionSide:     acc.PositionSide,
-			PositionSize:     positionSize,
-			AvgPrice:         input.AvgPrice.String(),
-			LastPrice:        currentPrice,
-			LiqPrice:         liqPrice,
-			UseMargin:        useMargin,
-			UnrealizedProfit: unrealizedProfit,
-			PnLPercent:       metrics.PnLPercent.StringFixed(2),
-			Leverage:         leverage,
-		},
-	})
-	if err != nil {
-		logrus.Errorf("[AI手工均价] AI建议失败: avg=%s, err=%v", input.AvgPrice.String(), err)
-		return fmt.Sprintf("⚠️ AI手工均价建议失败\n手工均价: %s\n原因: %v", input.AvgPrice.String(), err)
-	}
-	if decision == nil {
-		return fmt.Sprintf("⚠️ AI手工均价建议失败\n手工均价: %s\n原因: AI未返回结果", input.AvgPrice.String())
-	}
-
-	return fmt.Sprintf(
-		"🤖 AI平仓策略已执行（手工均价）\n"+
-			"⏰ %s\n\n"+
-			"手工均价: %s\n"+
-			"当前最新价: %s\n"+
-			"方向: %s\n"+
-			"余额: %s\n"+
-			"张数: %s\n"+
-			"仓位BTC: %s\n"+
-			"计算保证金: %s\n"+
-			"杠杆倍数: %s\n"+
-			"估算爆仓价: %s\n"+
-			"当前盈亏: %s\n"+
-			"估算收益率: %s%%\n"+
-			"说明: 未查询交易所当前仓位，仅按你发送的均价生成AI建议\n\n"+
-			"%s",
-		time.Now().Format("2006-01-02 15:04:05"),
-		input.AvgPrice.String(),
-		defaultString(currentPrice, "未获取到"),
-		defaultString(acc.PositionSide, "unknown"),
-		defaultString(optionalDecimalString(input.Balance), "未提供"),
-		defaultString(positionSize, "未提供"),
-		defaultString(optionalDecimalString(metrics.QuantityBTC), "未提供"),
-		defaultString(useMargin, "未提供"),
-		defaultString(leverage, "未提供"),
-		defaultString(liqPrice, "未提供"),
-		defaultString(unrealizedProfit, "未提供"),
-		metrics.PnLPercent.StringFixed(2),
-		formatAICloseDecision(decision),
-	)
 }
 
-// executeAICloseStrategy 返回 (告警文本列表, 是否需要推送Telegram, 下次巡检间隔)。
-// push=true 表示本轮存在「建议平仓或高风险」项，值得主动推送。
-func (am *AccountMonitor) executeAICloseStrategy(triggerType string) ([]string, bool, time.Duration) {
-	results := make([]string, 0)
-	var nextInterval time.Duration
-	push := false
-	if am.aiCloseDecider == nil || !trade.IsInitialized() {
-		return results, push, nextInterval
+// passAlertCooldown 同一持仓告警冷却：过冷却返回 true 并记录本次时间。
+func (am *AccountMonitor) passAlertCooldown(key string) bool {
+	return am.passCooldown(key, am.pnlAlertCooldown)
+}
+
+// marketClosePosition 市价全平 + 重置信号状态；返回告警文案与是否成功平仓。
+func (am *AccountMonitor) marketClosePosition(tm *trade.TradeManager, acc trade.AccountConfig, pos utils.PositionInfo, key string) (string, bool) {
+	primary, backup := tm.WebCloser(acc.Name), tm.NativeCloser(acc.Name)
+	if primary == nil && backup == nil {
+		// P3/R4：无任何通道=配置故障，立即升级告警（不进 3 次计数）
+		am.escalateCloseFail(acc, pos, key, "无平仓通道配置(web/native 均缺失, 配置故障)", 0, 0)
+		return "\n\n⚠️ 自动平仓: 跳过（无平仓通道配置）", false
+	}
+	if pos.PosId == "" {
+		am.escalateCloseFail(acc, pos, key, "无PositionID(数据故障)", 0, 0)
+		return "\n\n⚠️ 自动平仓: 跳过（无PositionID）", false
+	}
+
+	out := trade.CloseWithFallback(primary, backup, trade.ClosePosArgs{
+		InstId: pos.InstId, PosId: pos.PosId,
+		LastPx: parsePxOrZero(pos.LastPx), Size: absAtoi(pos.Pos), // 埋点用（快照价，非成交价）
+	})
+	if !out.OK() {
+		logrus.Errorf("[持仓监控] 市价全平失败: %s, err=%v", key, out.Err())
+		// 连败只在双通道都失败时累加：P3 告警语义是"安全网停摆"，
+		// 备用通道兜住时仓位已平，不算停摆（否则会刷出海量误报）
+		if count, since := am.closeFails.recordFail(key); count >= 3 {
+			am.escalateCloseFail(acc, pos, key, out.Err().Error(), count, since)
+		}
+		return closeResultMessage(out), false
+	}
+	am.closeFails.recordSuccess(key)
+	logrus.Infof("[持仓监控] 市价全平成功: %s, 通道=%s 降级=%v", key, out.Channel, out.Degraded)
+	trade.MarkBotClose(acc.Name, pos.InstId, pos.PosSide, pos.PosId) // P2-A：自家平仓打标，对账不误报 external
+	ResetSignalStateAfterClose(pos.InstId, pos.PosSide)
+	if out.Degraded {
+		am.alertChannelDegraded(acc, pos, out)
+	}
+	return closeResultMessage(out), true
+}
+
+// alertChannelDegraded 主通道失效但备用通道兜住时的独立告警（节流 30 分钟）。
+// 不紧急（仓位已平）但必须可见：开仓仍依赖 Web 会话，cookie 不修就会持续失败。
+func (am *AccountMonitor) alertChannelDegraded(acc trade.AccountConfig, pos utils.PositionInfo, out trade.CloseOutcome) {
+	if !am.passCooldown(acc.Name+"#channel_degraded", 30*time.Minute) {
+		return
+	}
+	msg := fmt.Sprintf("🟡 平仓通道降级告警\n⏰ %s\n\n账户: %s\n持仓: %s %s\n"+
+		"Web通道失败: %v\n已由原生API通道(%s)成功平仓，仓位安全。\n\n"+
+		"⚠️ 开仓仍走 Web 会话，请尽快更新 cookie/token",
+		time.Now().Format("2006-01-02 15:04:05"), acc.Name, pos.InstId, pos.PosSide, out.PrimaryErr, out.Channel)
+	logrus.Warn(msg)
+	if _, err := am.telegramClient.SendMessage(msg); err != nil {
+		logrus.Errorf("[降级告警] 发送失败: %v", err)
+	}
+}
+
+// recordManualClose TG 平仓成功后落 manual_close 事件 + 注册表打标（P2-A）。
+// 事件字段同 fixed_close（trail 若激活则附 peakPct）；状态清理交给下一轮 GC。
+func (am *AccountMonitor) recordManualClose(acc trade.AccountConfig, pos utils.PositionInfo, reason string) {
+	pnl, _ := normalizePositionPnl(pos)
+	pct := decimal.Zero
+	if margin, err := decimal.NewFromString(strings.TrimSpace(pos.UseMargin)); err == nil && margin.IsPositive() {
+		pct = pnl.Div(margin).Mul(decimal.NewFromInt(100))
+	}
+	key := fmt.Sprintf("%s:%s:%s", acc.Name, pos.InstId, pos.PosSide)
+	am.trailMu.RLock()
+	st := am.trailStates[key]
+	am.trailMu.RUnlock()
+	eventlog.Log(buildCloseEvent(acc, pos, eventlog.EvManualClose, pct, pnl, reason, st))
+	trade.MarkBotClose(acc.Name, pos.InstId, pos.PosSide, pos.PosId)
+}
+
+// sendPnlAlert 发送标准持仓盈亏告警（extra 追加自动平仓结果等）。
+func (am *AccountMonitor) sendPnlAlert(acc trade.AccountConfig, pos utils.PositionInfo, pnl, pct decimal.Decimal, extra string) {
+	accountDisplay := acc.Name
+	if acc.UID != "" {
+		accountDisplay = fmt.Sprintf("%s-%s", acc.Name, acc.UID)
+	}
+	directionEmoji := "🔵"
+	if pos.PosSide == "short" {
+		directionEmoji = "🔴"
+	}
+	now := time.Now().Format("2006-01-02 15:04:05")
+	alertMsg := fmt.Sprintf(
+		"🚨 持仓盈亏告警\n"+
+			"⏰ %s\n\n"+
+			"账户: %s\n"+
+			"%s %s  方向:%s\n"+
+			"持仓:%s张  开仓均价:%s\n"+
+			"最新价:%s  强平价:%s\n"+
+			"占用保证金:%s\n"+
+			"未实现盈亏: %s (%s%%)%s\n",
+		now, accountDisplay,
+		directionEmoji, pos.InstId, pos.PosSide,
+		pos.Pos, pos.AvgPx,
+		pos.LastPx, pos.LiqPx,
+		pos.UseMargin,
+		pnl.String(), signedPctStr(pct), extra,
+	)
+	if success, err := am.telegramClient.SendMessage(alertMsg); err != nil {
+		logrus.Errorf("[持仓监控] 发送告警消息失败: %v", err)
+	} else if success {
+		logrus.Infof("[持仓监控] 告警消息已发送")
+	}
+}
+
+// signedPctStr 把 ROI 百分比格式化为带符号、两位小数的字符串。
+func signedPctStr(pct decimal.Decimal) string {
+	s := pct.StringFixed(2)
+	if pct.IsPositive() {
+		s = "+" + s
+	}
+	return s
+}
+
+// absAtoi 解析张数字符串为非负整数（short 为负张数，取绝对值）。
+func absAtoi(s string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return 0
+	}
+	if n < 0 {
+		n = -n
+	}
+	return n
+}
+
+// ClosePositionsBySide 平仓指定方向的所有持仓
+func (am *AccountMonitor) ClosePositionsBySide(posSide string) string {
+	posSide = strings.ToLower(strings.TrimSpace(posSide))
+	if posSide != "long" && posSide != "short" {
+		return "⚠️ 平仓方向非法，仅支持 long 或 short"
+	}
+
+	if !trade.IsInitialized() {
+		return "⚠️ 交易管理器未初始化，无法执行平仓"
 	}
 
 	tm := trade.GetManager()
 	if tm == nil {
-		return results, push, nextInterval
+		return "⚠️ 无法获取交易管理器"
 	}
 
 	config := trade.GetConfig()
 	if config == nil || len(config.Accounts) == 0 {
-		return results, push, nextInterval
+		return "⚠️ 没有配置账户"
 	}
 
-	logrus.Infof("[AI平仓] 开始执行策略，trigger=%s, interval=%v", triggerType, am.aiCheckInterval)
-
-	var btcMarket *BTCAnalysisSnapshot
-	if snapshot, err := GetBTCAnalysisSnapshot(); err != nil {
-		logrus.Warnf("[AI平仓] 获取BTC市场快照失败: %v", err)
-	} else {
-		btcMarket = snapshot
-	}
+	now := time.Now().Format("2006-01-02 15:04:05")
+	message := fmt.Sprintf("🔄 %s方向平仓执行报告\n⏰ 时间: %s\n\n", posSide, now)
+	totalClosed := 0
+	totalFailed := 0
+	totalSkipped := 0
 
 	for i, acc := range config.Accounts {
 		client := tm.GetClient(acc.Name)
 		if client == nil {
-			logrus.Warnf("[AI平仓] 账户 %s 客户端不存在，跳过策略执行", acc.Name)
+			message += fmt.Sprintf("❌ 账户 %s: 客户端不存在\n\n", acc.Name)
 			continue
 		}
 
-		var posResp *utils.GetPositionsResponse
-		var err error
-		for attempt := 1; attempt <= 3; attempt++ {
-			posResp, err = client.GetPositionsTyped(&utils.GetPositionsRequest{
-				InstType: "SWAP",
-			})
-			if err == nil {
-				break
-			}
-			logrus.Warnf("[AI平仓] 账户 %s 查询持仓失败(第%d次): %v", acc.Name, attempt, err)
-			if attempt < 3 {
-				time.Sleep(2 * time.Second)
-			}
-		}
+		posResp, err := client.GetPositionsTyped(&utils.GetPositionsRequest{
+			InstType: "SWAP",
+		})
 		if err != nil {
-			logrus.Warnf("[AI平仓] 账户 %s 查询持仓失败，已重试3次，跳过: %v", acc.Name, err)
+			logrus.Errorf("[一键平仓] 账户 %s 查询持仓失败: %v", acc.Name, err)
+			message += fmt.Sprintf("❌ 账户 %s: 查询持仓失败: %v\n\n", acc.Name, err)
 			continue
 		}
 
-		logrus.Infof("[AI平仓] 账户 %s 持仓条数: %d", acc.Name, len(posResp.Data))
 		if len(posResp.Data) == 0 {
-			logrus.Infof("[AI平仓] 账户 %s 暂无持仓，执行AI空仓建议", acc.Name)
-			accountDisplay := acc.Name
-			if acc.UID != "" {
-				accountDisplay = fmt.Sprintf("%s-%s", acc.Name, acc.UID)
-			}
-			advice, next, p := am.evaluateNoPositionAdvice(acc, btcMarket)
-			nextInterval = minPositiveDuration(nextInterval, next)
-			push = push || p
-			results = append(results, fmt.Sprintf(
-				"账户: %s\n当前状态: 暂无持仓\n%s%s",
-				accountDisplay,
-				formatNoPositionCurrentPrice(btcMarket),
-				advice,
-			))
+			message += fmt.Sprintf("✅ 账户 %s: 暂无持仓\n\n", acc.Name)
 			continue
 		}
 
-		var availBal, totalBal string
-		am.mu.RLock()
-		for _, b := range am.lastBalances {
-			if b.AccountName == acc.Name && b.Error == "" {
-				availBal = b.AvailBal
-				totalBal = b.Bal
-				break
-			}
+		accountDisplay := acc.Name
+		if acc.UID != "" {
+			accountDisplay = fmt.Sprintf("%s-%s", acc.Name, acc.UID)
 		}
-		am.mu.RUnlock()
+		message += fmt.Sprintf("📋 账户 %s\n", accountDisplay)
 
+		matched := 0
 		for _, pos := range posResp.Data {
-			pct, pnl, ok, reason := calculatePositionPnLWithReason(pos)
-			if !ok {
-				logrus.Warnf(
-					"[AI平仓] 账户 %s 仓位不可评估，跳过: reason=%s instId=%s posSide=%s pos=%s avgPx=%s lastPx=%s useMargin=%s unrealizedProfit=%s posId=%s",
-					acc.Name,
-					reason,
-					pos.InstId,
-					pos.PosSide,
-					pos.Pos,
-					pos.AvgPx,
-					pos.LastPx,
-					pos.UseMargin,
-					pos.UnrealizedProfit,
-					pos.PosId,
-				)
+			if !strings.EqualFold(pos.PosSide, posSide) {
 				continue
 			}
-
-			alertKey := fmt.Sprintf("%s:%s:%s", acc.Name, pos.InstId, pos.PosSide)
-			closeResultMsg, next, p := am.evaluateAndMaybeClosePosition(acc, pos, alertKey, pct, triggerType, btcMarket, availBal, totalBal)
-			nextInterval = minPositiveDuration(nextInterval, next)
-			push = push || p
-
-			accountDisplay := acc.Name
-			if acc.UID != "" {
-				accountDisplay = fmt.Sprintf("%s-%s", acc.Name, acc.UID)
+			matched++
+			line, res := am.manualClosePosition(tm, acc, pos, "tg方向平仓")
+			message += line
+			switch res {
+			case manualClosed:
+				totalClosed++
+			case manualFailed:
+				totalFailed++
+			default:
+				totalSkipped++
 			}
-
-			directionEmoji := "🔵"
-			if pos.PosSide == "short" {
-				directionEmoji = "🔴"
-			}
-
-			pctStr := pct.StringFixed(2)
-			if pct.IsPositive() {
-				pctStr = "+" + pctStr
-			}
-
-			result := fmt.Sprintf(
-				"账户: %s\n"+
-					"%s %s  方向:%s\n"+
-					"持仓:%s张  开仓均价:%s\n"+
-					"最新价:%s  强平价:%s\n"+
-					"占用保证金:%s\n"+
-					"未实现盈亏: %s (%s%%)%s",
-				accountDisplay,
-				directionEmoji, pos.InstId, pos.PosSide,
-				pos.Pos, pos.AvgPx,
-				pos.LastPx, pos.LiqPx,
-				pos.UseMargin,
-				pnl.String(), pctStr,
-				closeResultMsg,
-			)
-			results = append(results, result)
 		}
+		if matched == 0 {
+			message += fmt.Sprintf("  ✅ 暂无%s持仓\n", posSide)
+		}
+		message += "\n"
 
 		if i < len(config.Accounts)-1 {
 			time.Sleep(500 * time.Millisecond)
 		}
 	}
-	return results, push, nextInterval
-}
 
-func formatNoPositionCurrentPrice(btcMarket *BTCAnalysisSnapshot) string {
-	symbol := "BTCUSDT"
-	price := currentBTCPrice(btcMarket)
-	if btcMarket != nil {
-		if strings.TrimSpace(btcMarket.Symbol) != "" {
-			symbol = btcMarket.Symbol
-		}
-	}
-	if price == "" {
-		return fmt.Sprintf("当前最新价: %s 未获取到", symbol)
-	}
-	return fmt.Sprintf("当前最新价: %s %s", symbol, price)
-}
+	message += "━━━━━━━━━━━━━━━━━━━━\n"
+	message += fmt.Sprintf("📊 汇总: 成功=%d, 失败=%d, 跳过=%d\n", totalClosed, totalFailed, totalSkipped)
 
-func currentBTCPrice(btcMarket *BTCAnalysisSnapshot) string {
-	if btcMarket == nil || btcMarket.TodayInfo == nil {
-		return ""
-	}
-	return strings.TrimSpace(btcMarket.TodayInfo.CurrentPrice)
-}
-
-func manualAvgPricePnLPercent(avgPrice decimal.Decimal, currentPrice, posSide string, leverage decimal.Decimal) decimal.Decimal {
-	current, err := decimal.NewFromString(strings.TrimSpace(currentPrice))
-	if err != nil || !avgPrice.IsPositive() || !current.IsPositive() {
-		return decimal.Zero
-	}
-	multiplier := decimal.NewFromInt(1)
-	if leverage.IsPositive() {
-		multiplier = leverage
-	}
-	var pct decimal.Decimal
-	switch strings.ToLower(strings.TrimSpace(posSide)) {
-	case "long":
-		pct = current.Sub(avgPrice).Div(avgPrice).Mul(decimal.NewFromInt(100))
-	case "short":
-		pct = avgPrice.Sub(current).Div(avgPrice).Mul(decimal.NewFromInt(100))
-	default:
-		return decimal.Zero
-	}
-	return pct.Mul(multiplier)
-}
-
-type manualPositionMetrics struct {
-	QuantityBTC      decimal.Decimal
-	InitialMargin    decimal.Decimal
-	LiqPrice         decimal.Decimal
-	UnrealizedProfit decimal.Decimal
-	PnLPercent       decimal.Decimal
-	HasCurrent       bool
-	HasLiq           bool
-}
-
-func calculateManualPositionMetrics(input manualAICloseInput, currentPrice, posSide string) manualPositionMetrics {
-	qtyBTC := input.PositionSize.Mul(decimal.NewFromFloat(0.001))
-	metrics := manualPositionMetrics{QuantityBTC: qtyBTC}
-	if input.AvgPrice.IsPositive() && qtyBTC.IsPositive() && input.Leverage.IsPositive() {
-		metrics.InitialMargin = input.AvgPrice.Mul(qtyBTC).Div(input.Leverage)
-	}
-	if input.AvgPrice.IsPositive() && qtyBTC.IsPositive() && input.Balance.IsPositive() {
-		switch strings.ToLower(strings.TrimSpace(posSide)) {
-		case "long":
-			metrics.LiqPrice = input.AvgPrice.Sub(input.Balance.Div(qtyBTC))
-			if metrics.LiqPrice.IsNegative() {
-				metrics.LiqPrice = decimal.Zero
-			}
-			metrics.HasLiq = true
-		case "short":
-			metrics.LiqPrice = input.AvgPrice.Add(input.Balance.Div(qtyBTC))
-			metrics.HasLiq = true
-		}
-	}
-
-	current, err := decimal.NewFromString(strings.TrimSpace(currentPrice))
-	if err != nil || !current.IsPositive() || !qtyBTC.IsPositive() {
-		return metrics
-	}
-	metrics.HasCurrent = true
-	switch strings.ToLower(strings.TrimSpace(posSide)) {
-	case "long":
-		metrics.UnrealizedProfit = current.Sub(input.AvgPrice).Mul(qtyBTC)
-	case "short":
-		metrics.UnrealizedProfit = input.AvgPrice.Sub(current).Mul(qtyBTC)
-	default:
-		return metrics
-	}
-	if metrics.InitialMargin.IsPositive() {
-		metrics.PnLPercent = metrics.UnrealizedProfit.Div(metrics.InitialMargin).Mul(decimal.NewFromInt(100))
-	}
-	return metrics
-}
-
-func manualMetricString(value decimal.Decimal, available bool) string {
-	if !available {
-		return ""
-	}
-	return value.StringFixed(4)
-}
-
-func normalizeManualPositionSide(side string) string {
-	switch strings.ToLower(strings.TrimSpace(side)) {
-	case "l", "long":
-		return "long"
-	case "s", "short":
-		return "short"
-	default:
-		return ""
-	}
-}
-
-func optionalDecimalString(value decimal.Decimal) string {
-	if !value.IsPositive() {
-		return ""
-	}
-	return value.String()
-}
-
-func buildManualPositionSummary(acc trade.AccountConfig, input manualAICloseInput, currentPrice string, metrics manualPositionMetrics) string {
-	account := acc.Name
-	if acc.UID != "" {
-		account = fmt.Sprintf("%s-%s", acc.Name, acc.UID)
-	}
-	return fmt.Sprintf(
-		"manual_input_position=true, source=telegram_ai_plus_price, account=%s, inst=BTC-USDT-SWAP, side=%s, avg=%s, last=%s, unrealized_profit=%sUSDT, pnl=%s%%, balance=%sUSDT, size=%s张, qty_btc=%sBTC, contract_value=1张=0.001BTC, calculated_margin=%sUSDT, leverage=%sx, estimated_cross_liq=%s, liq_model=全仓简化估算_忽略维持保证金和手续费, instruction=用户手工提供当前仓位均价、方向、余额、张数和杠杆倍数；禁止假设已查询交易所仓位；请基于本地计算出的爆仓价、盈亏、收益率、当前最新价和BTC市场快照给出是否继续持有/减仓/平仓的建议",
-		defaultString(account, "manual-input"),
-		defaultString(acc.PositionSide, "unknown"),
-		input.AvgPrice.String(),
-		defaultString(currentPrice, "unknown"),
-		defaultString(manualMetricString(metrics.UnrealizedProfit, metrics.HasCurrent), "unknown"),
-		metrics.PnLPercent.StringFixed(2),
-		defaultString(optionalDecimalString(input.Balance), "unknown"),
-		defaultString(optionalDecimalString(input.PositionSize), "unknown"),
-		defaultString(optionalDecimalString(metrics.QuantityBTC), "unknown"),
-		defaultString(optionalDecimalString(metrics.InitialMargin), "unknown"),
-		defaultString(optionalDecimalString(input.Leverage), "unknown"),
-		defaultString(manualMetricString(metrics.LiqPrice, metrics.HasLiq), "unknown"),
-	)
-}
-
-// evaluateNoPositionAdvice 返回 (建议文本, 下次巡检间隔, 是否需要推送)。空仓建议默认不推送。
-func (am *AccountMonitor) evaluateNoPositionAdvice(acc trade.AccountConfig, btcMarket *BTCAnalysisSnapshot) (string, time.Duration, bool) {
-	if am.aiCloseDecider == nil {
-		return "\n\n⚠️ AI空仓建议: 已禁用", 0, false
-	}
-
-	decision, err := am.aiCloseDecider.Decide(PositionSnapshot{
-		AccountName:     acc.Name,
-		AccountUID:      acc.UID,
-		HasPosition:     false,
-		BTCMarket:       btcMarket,
-		PositionSummary: "no_open_position=true",
-		TriggerType:     "no_position",
-	})
-	if err != nil {
-		logrus.Errorf("[AI空仓巡检] AI建议失败: account=%s, err=%v", acc.Name, err)
-		return fmt.Sprintf("\n\n⚠️ AI空仓建议: 决策失败\n原因: %v", err), 0, false
-	}
-	if decision == nil {
-		return "\n\n⚠️ AI空仓建议: 未返回结果", 0, false
-	}
-
-	decision.ShouldClose = false
-	if decision.FinalAction == "" || decision.FinalAction == "hold" || decision.FinalAction == "close" {
-		decision.FinalAction = "no_trade"
-	}
-	next, _ := parseNextCheckInterval(decision.NextCheckIn, am.aiCloseMinInterval, am.aiCloseMaxInterval)
-	logrus.Infof("[AI空仓巡检] account=%s action=%s side=%s reason=%s", acc.Name, decision.FinalAction, decision.ContinueSide, decision.Reason)
-	return fmt.Sprintf("\n\n🤖 AI空仓建议\n%s", formatAICloseDecision(decision)), next, false
-}
-
-func calculatePositionPnL(pos utils.PositionInfo) (decimal.Decimal, decimal.Decimal, bool) {
-	pct, pnl, ok, _ := calculatePositionPnLWithReason(pos)
-	return pct, pnl, ok
-}
-
-func calculatePositionPnLWithReason(pos utils.PositionInfo) (decimal.Decimal, decimal.Decimal, bool, string) {
-	if pos.UnrealizedProfit == "" || pos.UseMargin == "" {
-		return decimal.Zero, decimal.Zero, false, "missing_unrealized_profit_or_use_margin"
-	}
-
-	pnl, err := decimal.NewFromString(pos.UnrealizedProfit)
-	if err != nil {
-		return decimal.Zero, decimal.Zero, false, "invalid_unrealized_profit"
-	}
-	margin, err := decimal.NewFromString(pos.UseMargin)
-	if err != nil || !margin.IsPositive() {
-		if err != nil {
-			return decimal.Zero, decimal.Zero, false, "invalid_use_margin"
-		}
-		return decimal.Zero, decimal.Zero, false, "non_positive_use_margin"
-	}
-
-	return pnl.Div(margin).Mul(decimal.NewFromInt(100)), pnl, true, ""
-}
-
-func (am *AccountMonitor) formatThresholdAction(tm *trade.TradeManager, acc trade.AccountConfig, pos utils.PositionInfo, alertKey string, pct decimal.Decimal, triggerType string) string {
-	reason := fmt.Sprintf("threshold signal: %s, pnl=%s%%", triggerType, pct.StringFixed(2))
-	if triggerType == "profit" {
-		return am.closePositionBySignal(tm, acc, pos, alertKey, "threshold", reason)
-	}
-	return fmt.Sprintf("\n\n⚠️ 阈值警示: 仅发送告警，未自动平仓\n原因: %s\n提醒: 若仓位持续超过阈值，同仓位每5分钟提醒一次", reason)
-}
-
-// evaluateAndMaybeClosePosition 返回 (告警文本, 下次巡检间隔, 是否需要推送)。
-// push=true 当 AI 建议平仓或风险等级 high。
-func (am *AccountMonitor) evaluateAndMaybeClosePosition(acc trade.AccountConfig, pos utils.PositionInfo, alertKey string, pct decimal.Decimal, triggerType string, btcMarket *BTCAnalysisSnapshot, availBal, totalBal string) (string, time.Duration, bool) {
-	if am.aiCloseDecider == nil {
-		return "\n\n⚠️ AI平仓: 已禁用", 0, false
-	}
-
-	posDetails := CurrentPositionDetails{
-		InstType:         pos.InstType,
-		InstID:           pos.InstId,
-		PositionID:       pos.PosId,
-		PositionSide:     pos.PosSide,
-		PositionSize:     pos.Pos,
-		AvgPrice:         pos.AvgPx,
-		LastPrice:        pos.LastPx,
-		LiqPrice:         pos.LiqPx,
-		UseMargin:        pos.UseMargin,
-		UnrealizedProfit: pos.UnrealizedProfit,
-		PnLPercent:       pct.StringFixed(2),
-		Leverage:         pos.Lever,
-		MarginMode:       pos.MgnMode,
-		MarginPosition:   pos.MrgPosition,
-		Currency:         pos.Ccy,
-		CreateTime:       pos.CTime,
-		UpdateTime:       pos.UTime,
-	}
-
-	decision, err := am.aiCloseDecider.Decide(PositionSnapshot{
-		AccountName:        acc.Name,
-		AccountUID:         acc.UID,
-		HasPosition:        true,
-		CurrentPosition:    posDetails,
-		BTCMarket:          btcMarket,
-		PositionSummary:    buildPositionSummary(posDetails),
-		InstID:             pos.InstId,
-		PositionID:         pos.PosId,
-		PositionSide:       pos.PosSide,
-		PositionSize:       pos.Pos,
-		AvgPrice:           pos.AvgPx,
-		LastPrice:          pos.LastPx,
-		LiqPrice:           pos.LiqPx,
-		UseMargin:          pos.UseMargin,
-		UnrealizedProfit:   pos.UnrealizedProfit,
-		PnLPercent:         pct,
-		TriggerType:        triggerType,
-		AvailBal:           availBal,
-		TotalBal:           totalBal,
-		LiqDistancePercent: computeLiqDistancePercent(pos.LastPx, pos.LiqPx, pos.PosSide),
-	})
-	if err != nil {
-		logrus.Errorf("[持仓监控] AI平仓决策失败: %s, err=%v", alertKey, err)
-		// 决策失败本身值得推送提醒
-		return fmt.Sprintf("\n\n⚠️ AI平仓: 决策失败\n原因: %v", err), 0, true
-	}
-
-	if decision == nil {
-		return "\n\n⚠️ AI平仓: 未返回结果", 0, true
-	}
-
-	next, _ := parseNextCheckInterval(decision.NextCheckIn, am.aiCloseMinInterval, am.aiCloseMaxInterval)
-	riskHigh := strings.EqualFold(strings.TrimSpace(decision.RiskLevel), "high")
-
-	if !decision.ShouldClose {
-		decisionSummary := formatAICloseDecision(decision)
-		logrus.Infof("[持仓监控] AI决定继续持有: %s, provider=%s, risk=%s, reason=%s", alertKey, decision.Provider, decision.RiskLevel, decision.Reason)
-		// 继续持有时，仅高风险才推送；普通 hold 只记日志降噪。
-		return fmt.Sprintf("\n\n🤖 AI决策: 继续观察\n%s", decisionSummary), next, riskHigh
-	}
-
-	logrus.Infof("[持仓监控] AI建议平仓但仅通知: %s, provider=%s, reason=%s", alertKey, decision.Provider, decision.Reason)
-	return fmt.Sprintf("\n\n⚠️ AI决策: 建议平仓（仅通知，未创建审批，未执行平仓）\n%s", formatAICloseDecision(decision)), next, true
-}
-
-func (am *AccountMonitor) closePositionBySignal(tm *trade.TradeManager, acc trade.AccountConfig, pos utils.PositionInfo, alertKey, source, reason string) string {
-	webClient := tm.GetWebClient(acc.Name)
-	if webClient == nil {
-		return fmt.Sprintf("\n\n⚠️ 平仓信号: 已产生但跳过\n来源: %s\n原因: %s\n详情: 无Web客户端配置", source, reason)
-	}
-	if pos.PosId == "" {
-		return fmt.Sprintf("\n\n⚠️ 平仓信号: 已产生但跳过\n来源: %s\n原因: %s\n详情: 无PositionID", source, reason)
-	}
-
-	logrus.Infof("[持仓监控] 执行平仓信号: %s, source=%s, PositionID=%s", alertKey, source, pos.PosId)
-	closeResp, closeErr := webClient.ClosePosition(pos.PosId)
-	if closeErr != nil {
-		logrus.Errorf("[持仓监控] 平仓信号执行失败: %s, source=%s, err=%v", alertKey, source, closeErr)
-		return fmt.Sprintf("\n\n🔴 平仓信号执行: 失败\n来源: %s\n原因: %s\n错误: %v", source, reason, closeErr)
-	}
-
-	logrus.Infof("[持仓监控] 平仓信号执行成功: %s, source=%s, spend=%d", alertKey, source, closeResp.Data.Spend)
-	return fmt.Sprintf("\n\n🟢 平仓信号执行: 成功 (耗时%dms)\n来源: %s\n原因: %s", closeResp.Data.Spend, source, reason)
+	return message
 }
 
 // CloseAllPositions 一键平仓所有账户的所有持仓
@@ -1928,36 +1434,16 @@ func (am *AccountMonitor) CloseAllPositions() string {
 		}
 		message += fmt.Sprintf("📋 账户 %s (%d个持仓)\n", accountDisplay, len(posResp.Data))
 
-		webClient := tm.GetWebClient(acc.Name)
-
 		for _, pos := range posResp.Data {
-			directionEmoji := "🔵"
-			if pos.PosSide == "short" {
-				directionEmoji = "🔴"
-			}
-
-			if webClient == nil {
-				message += fmt.Sprintf("  %s %s %s: ⚠️ 无Web客户端，跳过\n", directionEmoji, pos.InstId, pos.PosSide)
-				totalSkipped++
-				continue
-			}
-
-			if pos.PosId == "" {
-				message += fmt.Sprintf("  %s %s %s: ⚠️ 无PosId，跳过\n", directionEmoji, pos.InstId, pos.PosSide)
-				totalSkipped++
-				continue
-			}
-
-			logrus.Infof("[一键平仓] 执行市价全平: 账户=%s, %s %s, PosId=%s", acc.Name, pos.InstId, pos.PosSide, pos.PosId)
-			closeResp, closeErr := webClient.ClosePosition(pos.PosId)
-			if closeErr != nil {
-				logrus.Errorf("[一键平仓] 平仓失败: 账户=%s, %s %s, err=%v", acc.Name, pos.InstId, pos.PosSide, closeErr)
-				message += fmt.Sprintf("  %s %s %s %s张: 🔴 失败 (%v)\n", directionEmoji, pos.InstId, pos.PosSide, pos.Pos, closeErr)
-				totalFailed++
-			} else {
-				logrus.Infof("[一键平仓] 平仓成功: 账户=%s, %s %s, spend=%d", acc.Name, pos.InstId, pos.PosSide, closeResp.Data.Spend)
-				message += fmt.Sprintf("  %s %s %s %s张: 🟢 成功 (耗时%dms)\n", directionEmoji, pos.InstId, pos.PosSide, pos.Pos, closeResp.Data.Spend)
+			line, res := am.manualClosePosition(tm, acc, pos, "tg一键平仓")
+			message += line
+			switch res {
+			case manualClosed:
 				totalClosed++
+			case manualFailed:
+				totalFailed++
+			default:
+				totalSkipped++
 			}
 		}
 		message += "\n"

@@ -6,7 +6,7 @@ require (
 	common v0.0.0
 	github.com/gin-gonic/gin v1.10.0
 	gorm.io/gorm v1.23.8
-	service v0.0.0-00010101000000-000000000000
+	service v0.0.0
 )
 
 require (
@@ -56,7 +56,6 @@ require (
 	golang.org/x/text v0.21.0 // indirect
 	google.golang.org/protobuf v1.34.1 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
-	gopkg.in/tomb.v1 v1.0.0-20141024135613-dd632973f1e7 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gorm.io/driver/mysql v1.3.6 // indirect

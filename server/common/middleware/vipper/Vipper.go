@@ -27,6 +27,11 @@ func Init() {
 // 	return nil
 // }
 
+// Set writes an in-memory configuration override. It is primarily used by tests.
+func Set(key string, value interface{}) {
+	viper.Set(key, value)
+}
+
 func GetString(key string) string {
 	return viper.GetString(key)
 }

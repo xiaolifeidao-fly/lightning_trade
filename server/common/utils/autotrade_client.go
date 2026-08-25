@@ -461,10 +461,10 @@ func (c *AutoTradeClient) ArbitrageTrade(req *ArbitrageTradeRequest) (*Arbitrage
 	closeMsg := "平仓成功"
 	if err != nil {
 		closeMsg = fmt.Sprintf("平仓失败: %v", err)
-		logrus.Errorf(closeMsg)
+		logrus.Error(closeMsg)
 	} else if !closeResp.IsSuccess() {
 		closeMsg = fmt.Sprintf("平仓部分失败: %d个错误", len(closeResp.Data.ErrorList))
-		logrus.Warnf(closeMsg)
+		logrus.Warn(closeMsg)
 	} else {
 		logrus.Infof("平仓成功")
 	}

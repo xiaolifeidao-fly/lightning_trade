@@ -90,8 +90,14 @@ func (s *TradeService) computeBacktest(run *tradeRepository.TradeBacktestRun) ([
 	// 同时落到每条逐笔(关键阻力/支撑)供回测详情与 K 线详情展示，故无论出场口径都加载。
 	pressures := s.loadBacktestPressures(run)
 
+	// 复合方向门槛(可选)：策略启用时，预拉 4h/12h/1d 预测供逐信号取最近方向做建仓过滤。
+	var htf map[string][]*tradeRepository.TradeAIPrediction
+	if params.RequireCompositeDir {
+		htf = s.loadCompositeTrends(run)
+	}
+
 	// 口径一：预测周期(现状)。入场/止盈止损均用预测周期区间，无 band 覆盖。
-	predTrades, predOrders, err := s.replayMode(runID, CalcModePrediction, preds, params, quotes, klines, pressures, nil)
+	predTrades, predOrders, err := s.replayMode(runID, CalcModePrediction, preds, params, quotes, klines, pressures, nil, htf)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -112,7 +118,7 @@ func (s *TradeService) computeBacktest(run *tradeRepository.TradeBacktestRun) ([
 		if err != nil {
 			return nil, nil, err
 		}
-		tradeTrades, tradeOrders, err := s.replayMode(runID, CalcModeTrading, preds, tp, quotes, klines, pressures, tpBand)
+		tradeTrades, tradeOrders, err := s.replayMode(runID, CalcModeTrading, preds, tp, quotes, klines, pressures, tpBand, htf)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -130,6 +136,7 @@ func (s *TradeService) replayMode(
 	runID int64, mode string, preds []*tradeRepository.TradeAIPrediction,
 	params strategy.Params, quotes []strategy.Quote, klines []*tradeRepository.TradeKline,
 	pressures []pressurePoint, tpBand []*tradeRepository.TradeAIPrediction,
+	htf map[string][]*tradeRepository.TradeAIPrediction,
 ) ([]*tradeRepository.TradeBacktestTrade, []*strategy.Order, error) {
 	var orders []*strategy.Order
 	var trades []*tradeRepository.TradeBacktestTrade
@@ -141,6 +148,10 @@ func (s *TradeService) replayMode(
 		}
 		if b := nearestPredByCreated(tpBand, signalAt); b != nil {
 			pr.TPBandHigh, pr.TPBandLow, pr.TPInvalidation = b.PredictHigh, b.PredictLow, b.Invalidation
+		}
+		// 复合方向门槛：注入信号时刻各更高周期(4h/12h/1d)最近一条(不晚于信号)的方向，供 Plan 判定。
+		if htf != nil {
+			pr.HigherTrends = compositeTrendsAt(htf, signalAt)
 		}
 		o, ok := strategy.Plan(pr, params, signalAt)
 		if !ok {
@@ -203,6 +214,54 @@ func pressureAt(points []pressurePoint, signalAt time.Time) (keyResistance, keyS
 		}
 	}
 	return 0, 0
+}
+
+// compositeIntervals 复合方向门槛参考的更高周期集合(与 K 线详情复合方向面板一致)。
+var compositeIntervals = []string{"4h", "12h", "1d"}
+
+// compositeLeftPad 预拉复合方向预测时的左侧富余：保证最早的信号也能取到"不晚于信号"的一条更高周期预测。
+const compositeLeftPad = 3 * 24 * time.Hour
+
+// loadCompositeTrends 预拉本次回测币种×平台在 [start-pad, end] 内的 4h/12h/1d 预测，供逐信号取最近方向。
+// best-effort：某周期查询失败仅告警并跳过(该周期方向记为空 → 复合门槛会因此忽略该信号)。
+func (s *TradeService) loadCompositeTrends(run *tradeRepository.TradeBacktestRun) map[string][]*tradeRepository.TradeAIPrediction {
+	out := make(map[string][]*tradeRepository.TradeAIPrediction, len(compositeIntervals))
+	for _, it := range compositeIntervals {
+		rows, err := s.tradeAIPredictionRepository.ListByCoinIntervalTimeRange(
+			run.PlatformCode, run.CoinCode, it, run.StartTime.Add(-compositeLeftPad), run.EndTime)
+		if err != nil {
+			logrus.Warnf("[backtest] run=%d 拉取复合方向(%s)失败: %v", run.Id, it, err)
+			continue
+		}
+		out[it] = rows
+	}
+	return out
+}
+
+// compositeTrendsAt 返回信号时刻各更高周期(4h/12h/1d)最近一条(不晚于信号)预测的方向，顺序与 compositeIntervals 一致。
+func compositeTrendsAt(htf map[string][]*tradeRepository.TradeAIPrediction, signalAt time.Time) []strategy.Direction {
+	out := make([]strategy.Direction, 0, len(compositeIntervals))
+	for _, it := range compositeIntervals {
+		out = append(out, strategy.Direction(nearestTrendBefore(htf[it], signalAt)))
+	}
+	return out
+}
+
+// nearestTrendBefore 取 preds 里发起时刻不晚于 signalAt 的最近一条的方向；无则返回 ""(避免用未来数据)。
+func nearestTrendBefore(preds []*tradeRepository.TradeAIPrediction, signalAt time.Time) string {
+	var best *tradeRepository.TradeAIPrediction
+	for _, p := range preds {
+		if p.CreatedTime.After(signalAt) {
+			continue
+		}
+		if best == nil || p.CreatedTime.After(best.CreatedTime) {
+			best = p
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	return best.Trend
 }
 
 // nearestPredByCreated 取 preds 里发起时刻最接近 signalAt(前后都算绝对值最近)的一条；空集返回 nil。
@@ -322,10 +381,11 @@ func (s *TradeService) CreateBacktestRun(dto tradeDTO.CreateBacktestRunDTO) (int
 	if variant == "" {
 		variant = "raw"
 	}
-	tradingPeriod := strings.TrimSpace(dto.TradingPeriod)
+	// 交易周期改由策略配置决定(不再由回测表单选择)：取策略上的 TradingPeriod。
+	tradingPeriod := strings.TrimSpace(st.TradingPeriod)
 	if tradingPeriod != "" {
 		if _, ok := intervalDuration(tradingPeriod); !ok {
-			return 0, fmt.Errorf("不支持的交易周期: %s", tradingPeriod)
+			return 0, fmt.Errorf("策略交易周期不支持: %s", tradingPeriod)
 		}
 	}
 
@@ -439,6 +499,7 @@ func (s *TradeService) markOpenBacktestTrades(run *tradeRepository.TradeBacktest
 		t.UnrealizedPnl = st.Pnl
 		t.UnrealizedPnlRate = st.PnlRate
 		t.UnrealizedNetPnl = st.NetPnl
+		t.UnrealizedNetPnlRate = st.NetPnlRate
 	}
 }
 
@@ -664,6 +725,7 @@ func backtestTradeToDTO(t *tradeRepository.TradeBacktestTrade) tradeDTO.Backtest
 		ClosedAt:           fmtTimePtr(t.ClosedAt),
 		Pnl:                t.Pnl,
 		PnlRate:            t.PnlRate,
+		NetPnlRate:         t.NetPnlRate,
 		NetPnl:             t.NetPnl,
 		Fee:                t.Fee,
 		Confidence:         t.Confidence,
@@ -679,31 +741,47 @@ func backtestTradeToDTO(t *tradeRepository.TradeBacktestTrade) tradeDTO.Backtest
 		PressureLow:        t.PressureLow,
 		MaxPriceDuringHold: t.MaxPriceDuringHold,
 		MinPriceDuringHold: t.MinPriceDuringHold,
+		FavPeakDeciles:     parseFavPeakDeciles(t.FavPeakDeciles),
 		Leverage:           t.Leverage,
 	}
 }
 
+// parseFavPeakDeciles 把落库的分时段峰值浮盈 JSON 解析成切片；空/非法返回 nil(前端据此判定不可筛)。
+func parseFavPeakDeciles(s string) []float64 {
+	if s == "" {
+		return nil
+	}
+	var out []float64
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
 func backtestMetricToDTO(m *tradeRepository.TradeBacktestMetric) tradeDTO.BacktestMetricDTO {
 	return tradeDTO.BacktestMetricDTO{
-		RunID:        m.RunID,
-		CalcMode:     m.CalcMode,
-		TradeCount:   m.TradeCount,
-		FillCount:    m.FillCount,
-		ExpiredCount: m.ExpiredCount,
-		FillRate:     m.FillRate,
-		WinCount:     m.WinCount,
-		WinRate:      m.WinRate,
-		GrossPnl:     m.GrossPnl,
-		FeeTotal:     m.FeeTotal,
-		NetPnl:       m.NetPnl,
-		Expectancy:   m.Expectancy,
-		ProfitFactor: m.ProfitFactor,
-		MaxDrawdown:  m.MaxDrawdown,
-		Sharpe:       m.Sharpe,
-		AvgHoldSecs:  m.AvgHoldSecs,
-		TpCount:      m.TpCount,
-		SlCount:      m.SlCount,
-		TimeoutCount: m.TimeoutCount,
+		RunID:             m.RunID,
+		CalcMode:          m.CalcMode,
+		TradeCount:        m.TradeCount,
+		FillCount:         m.FillCount,
+		ExpiredCount:      m.ExpiredCount,
+		FillRate:          m.FillRate,
+		WinCount:          m.WinCount,
+		WinRate:           m.WinRate,
+		GrossPnl:          m.GrossPnl,
+		FeeTotal:          m.FeeTotal,
+		NetPnl:            m.NetPnl,
+		Expectancy:        m.Expectancy,
+		ProfitFactor:      m.ProfitFactor,
+		MaxDrawdown:       m.MaxDrawdown,
+		Sharpe:            m.Sharpe,
+		AvgHoldSecs:       m.AvgHoldSecs,
+		TpCount:           m.TpCount,
+		SlCount:           m.SlCount,
+		TrailCount:        m.TrailCount,
+		EarlyCutCount:     m.EarlyCutCount,
+		EarlyAdverseCount: m.EarlyAdverseCount,
+		TimeoutCount:      m.TimeoutCount,
 	}
 }
 

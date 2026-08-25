@@ -463,20 +463,22 @@ type TradeStrategyBacktestCellDTO struct {
 // ─── Strategy Management DTOs ─────────────────────────────────────────────────
 
 type TradeStrategyDTO struct {
-	ID               int64   `json:"id"`
-	PlatformCode     string  `json:"platformCode"`
-	CoinCode         string  `json:"coinCode"`
-	Symbol           string  `json:"symbol"`
-	Interval         string  `json:"interval"`
-	Enabled          int8    `json:"enabled"`
-	MinConfidence    float64 `json:"minConfidence"`
-	MinMovePct       float64 `json:"minMovePct"`
-	TrendFilter      string  `json:"trendFilter"`
-	MaxOpenPositions int     `json:"maxOpenPositions"`
-	HoldDuration     int     `json:"holdDuration"`
-	MaxHoldDuration  int     `json:"maxHoldDuration"`
-	TakeProfitPct    float64 `json:"takeProfitPct"`
-	StopLossPct      float64 `json:"stopLossPct"`
+	ID                  int64   `json:"id"`
+	PlatformCode        string  `json:"platformCode"`
+	CoinCode            string  `json:"coinCode"`
+	Symbol              string  `json:"symbol"`
+	Interval            string  `json:"interval"`
+	Enabled             int8    `json:"enabled"`
+	MinConfidence       float64 `json:"minConfidence"`
+	MinMovePct          float64 `json:"minMovePct"`
+	TrendFilter         string  `json:"trendFilter"`
+	MaxOpenPositions    int     `json:"maxOpenPositions"`
+	RequireCompositeDir int8    `json:"requireCompositeDir"` // 复合方向门槛 1启用 0不启用
+	HoldDuration        int     `json:"holdDuration"`
+	MaxHoldDuration     int     `json:"maxHoldDuration"`
+	TradingPeriod       string  `json:"tradingPeriod"` // 交易周期 1h/4h/12h/1d/1w，空=不启用
+	TakeProfitPct       float64 `json:"takeProfitPct"`
+	StopLossPct         float64 `json:"stopLossPct"`
 	// 止盈止损来源(三选一)：percent/predict/pressure，及各来源对应的百分比
 	TakeProfitSource   string  `json:"takeProfitSource"`
 	StopLossSource     string  `json:"stopLossSource"`
@@ -484,10 +486,20 @@ type TradeStrategyDTO struct {
 	PressureBufferPct  float64 `json:"pressureBufferPct"`
 	TakeProfitFloorPct float64 `json:"takeProfitFloorPct"`
 	StopLossFloorPct   float64 `json:"stopLossFloorPct"`
-	Leverage           float64 `json:"leverage"`
-	Contracts          int     `json:"contracts"`
-	MakerFeeRate       float64 `json:"makerFeeRate"`
-	TakerFeeRate       float64 `json:"takerFeeRate"`
+	// 移动止盈(峰值回撤+时间收敛)：0=不启用，退回静态止盈
+	TrailActivatePct float64 `json:"trailActivatePct"`
+	TrailGiveback    float64 `json:"trailGiveback"`
+	TrailGivebackMin float64 `json:"trailGivebackMin"`
+	// 早段疲软离场
+	EarlyCutTimePct      float64 `json:"earlyCutTimePct"`
+	EarlyCutMinProfitPct float64 `json:"earlyCutMinProfitPct"`
+	// 早段逆行离场(MAE 软止损)
+	EarlyCutMaxAdversePct float64 `json:"earlyCutMaxAdversePct"`
+	EarlyCutArmProfitPct  float64 `json:"earlyCutArmProfitPct"`
+	Leverage              float64 `json:"leverage"`
+	Contracts             int     `json:"contracts"`
+	MakerFeeRate          float64 `json:"makerFeeRate"`
+	TakerFeeRate          float64 `json:"takerFeeRate"`
 	// 入场策略(状态机)
 	EntryMode         string  `json:"entryMode"`
 	EntryAlpha        float64 `json:"entryAlpha"`
@@ -506,19 +518,21 @@ type TradeStrategyListDTO struct {
 }
 
 type CreateTradeStrategyDTO struct {
-	PlatformCode     string  `json:"platformCode" binding:"required"`
-	CoinCode         string  `json:"coinCode" binding:"required"`
-	Symbol           string  `json:"symbol" binding:"required"`
-	Interval         string  `json:"interval" binding:"required"`
-	Enabled          *int8   `json:"enabled"`
-	MinConfidence    float64 `json:"minConfidence"`
-	MinMovePct       float64 `json:"minMovePct"`
-	TrendFilter      string  `json:"trendFilter"`
-	MaxOpenPositions int     `json:"maxOpenPositions"`
-	HoldDuration     string  `json:"holdDuration"`    // "4h"/"15m"/seconds
-	MaxHoldDuration  string  `json:"maxHoldDuration"` // "24h"/seconds
-	TakeProfitPct    float64 `json:"takeProfitPct"`
-	StopLossPct      float64 `json:"stopLossPct"`
+	PlatformCode        string  `json:"platformCode" binding:"required"`
+	CoinCode            string  `json:"coinCode" binding:"required"`
+	Symbol              string  `json:"symbol" binding:"required"`
+	Interval            string  `json:"interval" binding:"required"`
+	Enabled             *int8   `json:"enabled"`
+	MinConfidence       float64 `json:"minConfidence"`
+	MinMovePct          float64 `json:"minMovePct"`
+	TrendFilter         string  `json:"trendFilter"`
+	MaxOpenPositions    int     `json:"maxOpenPositions"`
+	RequireCompositeDir *int8   `json:"requireCompositeDir"` // 复合方向门槛 1启用 0不启用
+	HoldDuration        string  `json:"holdDuration"`        // "4h"/"15m"/seconds
+	MaxHoldDuration     string  `json:"maxHoldDuration"`     // "24h"/seconds
+	TradingPeriod       string  `json:"tradingPeriod"`       // 交易周期 1h/4h/12h/1d/1w，空=不启用
+	TakeProfitPct       float64 `json:"takeProfitPct"`
+	StopLossPct         float64 `json:"stopLossPct"`
 	// 止盈止损来源(三选一)：percent/predict/pressure，及各来源对应的百分比
 	TakeProfitSource   string  `json:"takeProfitSource"`
 	StopLossSource     string  `json:"stopLossSource"`
@@ -526,10 +540,20 @@ type CreateTradeStrategyDTO struct {
 	PressureBufferPct  float64 `json:"pressureBufferPct"`  // pressure止盈/止损缓冲%
 	TakeProfitFloorPct float64 `json:"takeProfitFloorPct"` // 兜底锁盈%，0=不约束
 	StopLossFloorPct   float64 `json:"stopLossFloorPct"`   // 兜底最小止损%，0=不约束
-	Leverage           float64 `json:"leverage"`
-	Contracts          int     `json:"contracts"`
-	MakerFeeRate       float64 `json:"makerFeeRate"`
-	TakerFeeRate       float64 `json:"takerFeeRate"`
+	// 移动止盈(峰值回撤+时间收敛)：0=不启用
+	TrailActivatePct float64 `json:"trailActivatePct"` // 激活阈值：浮盈ROI%(含杠杆)
+	TrailGiveback    float64 `json:"trailGiveback"`    // 峰值回撤比例r0(0~1)
+	TrailGivebackMin float64 `json:"trailGivebackMin"` // 周期末回撤比例(时间收敛)，<=0或≥r0=不收敛
+	// 早段疲软离场：前X%时间内峰值浮盈<Y%(含杠杆)则市价平仓。0=不启用。
+	EarlyCutTimePct      float64 `json:"earlyCutTimePct"`      // 触发时间点%(0~100)
+	EarlyCutMinProfitPct float64 `json:"earlyCutMinProfitPct"` // 利润门槛ROI%(含杠杆)
+	// 早段逆行离场(MAE 软止损)：从未走出浮盈且逆行浮亏达阈值时先于硬止损离场。0=不启用。
+	EarlyCutMaxAdversePct float64 `json:"earlyCutMaxAdversePct"` // 逆行止损阈值ROI%(含杠杆)
+	EarlyCutArmProfitPct  float64 `json:"earlyCutArmProfitPct"`  // 解除阈值ROI%(含杠杆)，<=0=始终武装
+	Leverage              float64 `json:"leverage"`
+	Contracts             int     `json:"contracts"`
+	MakerFeeRate          float64 `json:"makerFeeRate"`
+	TakerFeeRate          float64 `json:"takerFeeRate"`
 	// 入场策略(状态机)
 	EntryMode         string  `json:"entryMode"`         // market/pullback
 	EntryAlpha        float64 `json:"entryAlpha"`        // 入场分位 0~1
@@ -541,25 +565,34 @@ type CreateTradeStrategyDTO struct {
 }
 
 type UpdateTradeStrategyDTO struct {
-	Enabled            *int8    `json:"enabled"`
-	MinConfidence      *float64 `json:"minConfidence"`
-	MinMovePct         *float64 `json:"minMovePct"`
-	TrendFilter        *string  `json:"trendFilter"`
-	MaxOpenPositions   *int     `json:"maxOpenPositions"`
-	HoldDuration       *string  `json:"holdDuration"`
-	MaxHoldDuration    *string  `json:"maxHoldDuration"`
-	TakeProfitPct      *float64 `json:"takeProfitPct"`
-	StopLossPct        *float64 `json:"stopLossPct"`
-	TakeProfitSource   *string  `json:"takeProfitSource"`
-	StopLossSource     *string  `json:"stopLossSource"`
-	PredictSLBufferPct *float64 `json:"predictSlBufferPct"`
-	PressureBufferPct  *float64 `json:"pressureBufferPct"`
-	TakeProfitFloorPct *float64 `json:"takeProfitFloorPct"`
-	StopLossFloorPct   *float64 `json:"stopLossFloorPct"`
-	Leverage           *float64 `json:"leverage"`
-	Contracts          *int     `json:"contracts"`
-	MakerFeeRate       *float64 `json:"makerFeeRate"`
-	TakerFeeRate       *float64 `json:"takerFeeRate"`
+	Enabled               *int8    `json:"enabled"`
+	MinConfidence         *float64 `json:"minConfidence"`
+	MinMovePct            *float64 `json:"minMovePct"`
+	TrendFilter           *string  `json:"trendFilter"`
+	MaxOpenPositions      *int     `json:"maxOpenPositions"`
+	RequireCompositeDir   *int8    `json:"requireCompositeDir"`
+	HoldDuration          *string  `json:"holdDuration"`
+	MaxHoldDuration       *string  `json:"maxHoldDuration"`
+	TradingPeriod         *string  `json:"tradingPeriod"`
+	TakeProfitPct         *float64 `json:"takeProfitPct"`
+	StopLossPct           *float64 `json:"stopLossPct"`
+	TakeProfitSource      *string  `json:"takeProfitSource"`
+	StopLossSource        *string  `json:"stopLossSource"`
+	PredictSLBufferPct    *float64 `json:"predictSlBufferPct"`
+	PressureBufferPct     *float64 `json:"pressureBufferPct"`
+	TakeProfitFloorPct    *float64 `json:"takeProfitFloorPct"`
+	StopLossFloorPct      *float64 `json:"stopLossFloorPct"`
+	TrailActivatePct      *float64 `json:"trailActivatePct"`
+	TrailGiveback         *float64 `json:"trailGiveback"`
+	TrailGivebackMin      *float64 `json:"trailGivebackMin"`
+	EarlyCutTimePct       *float64 `json:"earlyCutTimePct"`
+	EarlyCutMinProfitPct  *float64 `json:"earlyCutMinProfitPct"`
+	EarlyCutMaxAdversePct *float64 `json:"earlyCutMaxAdversePct"`
+	EarlyCutArmProfitPct  *float64 `json:"earlyCutArmProfitPct"`
+	Leverage              *float64 `json:"leverage"`
+	Contracts             *int     `json:"contracts"`
+	MakerFeeRate          *float64 `json:"makerFeeRate"`
+	TakerFeeRate          *float64 `json:"takerFeeRate"`
 	// 入场策略(状态机)
 	EntryMode         *string  `json:"entryMode"`
 	EntryAlpha        *float64 `json:"entryAlpha"`
@@ -736,67 +769,73 @@ type BacktestRunListDTO struct {
 }
 
 type BacktestTradeDTO struct {
-	ID                 int64   `json:"id"`
-	PredictionID       int64   `json:"predictionId"`
-	CalcMode           string  `json:"calcMode"`
-	PredictTime        string  `json:"predictTime"` // 预测目标时刻(关联预测 predict_time)，与 requestedAt 框定预测周期
-	Direction          string  `json:"direction"`
-	EntryMode          string  `json:"entryMode"`
-	PlannedEntryPrice  float64 `json:"plannedEntryPrice"`
-	TakeProfitPrice    float64 `json:"takeProfitPrice"`
-	StopLossPrice      float64 `json:"stopLossPrice"`
-	Status             string  `json:"status"`
-	OpenPrice          float64 `json:"openPrice"`
-	ClosePrice         float64 `json:"closePrice"`
-	CloseReason        string  `json:"closeReason"`
-	RequestedAt        string  `json:"requestedAt"`
-	OpenedAt           string  `json:"openedAt"`
-	ClosedAt           string  `json:"closedAt"`
-	Pnl                float64 `json:"pnl"`
-	PnlRate            float64 `json:"pnlRate"` // 盈亏率%(含杠杆) = 价差/开仓价×杠杆×100
-	NetPnl             float64 `json:"netPnl"`
-	Fee                float64 `json:"fee"`
-	Confidence         float64 `json:"confidence"`
-	Efficiency         float64 `json:"efficiency"`
-	PredHigh           float64 `json:"predHigh"`           // 预测区间上沿
-	PredLow            float64 `json:"predLow"`            // 预测区间下沿
-	PredClose          float64 `json:"predClose"`          // 预测收盘价
-	WindowOpen         float64 `json:"windowOpen"`         // 信号后窗口实际开盘价
-	WindowClose        float64 `json:"windowClose"`        // 信号后窗口实际收盘价
-	WindowLow          float64 `json:"windowLow"`          // 信号后窗口最低价
-	WindowHigh         float64 `json:"windowHigh"`         // 信号后窗口最高价
-	PressureHigh       float64 `json:"pressureHigh"`       // 压力面最高价(关键阻力)
-	PressureLow        float64 `json:"pressureLow"`        // 压力面最低价(关键支撑)
-	MaxPriceDuringHold float64 `json:"maxPriceDuringHold"` // 持仓期间最高价(算最高浮盈用)
-	MinPriceDuringHold float64 `json:"minPriceDuringHold"` // 持仓期间最低价
-	Leverage           float64 `json:"leverage"`           // 杠杆倍数(算含杠杆浮盈用)
+	ID                 int64     `json:"id"`
+	PredictionID       int64     `json:"predictionId"`
+	CalcMode           string    `json:"calcMode"`
+	PredictTime        string    `json:"predictTime"` // 预测目标时刻(关联预测 predict_time)，与 requestedAt 框定预测周期
+	Direction          string    `json:"direction"`
+	EntryMode          string    `json:"entryMode"`
+	PlannedEntryPrice  float64   `json:"plannedEntryPrice"`
+	TakeProfitPrice    float64   `json:"takeProfitPrice"`
+	StopLossPrice      float64   `json:"stopLossPrice"`
+	Status             string    `json:"status"`
+	OpenPrice          float64   `json:"openPrice"`
+	ClosePrice         float64   `json:"closePrice"`
+	CloseReason        string    `json:"closeReason"`
+	RequestedAt        string    `json:"requestedAt"`
+	OpenedAt           string    `json:"openedAt"`
+	ClosedAt           string    `json:"closedAt"`
+	Pnl                float64   `json:"pnl"`
+	PnlRate            float64   `json:"pnlRate"`    // 盈亏率%(含杠杆，未扣费) = 价差/开仓价×杠杆×100
+	NetPnlRate         float64   `json:"netPnlRate"` // 净盈亏率%(含杠杆，已扣往返手续费)
+	NetPnl             float64   `json:"netPnl"`
+	Fee                float64   `json:"fee"`
+	Confidence         float64   `json:"confidence"`
+	Efficiency         float64   `json:"efficiency"`
+	PredHigh           float64   `json:"predHigh"`           // 预测区间上沿
+	PredLow            float64   `json:"predLow"`            // 预测区间下沿
+	PredClose          float64   `json:"predClose"`          // 预测收盘价
+	WindowOpen         float64   `json:"windowOpen"`         // 信号后窗口实际开盘价
+	WindowClose        float64   `json:"windowClose"`        // 信号后窗口实际收盘价
+	WindowLow          float64   `json:"windowLow"`          // 信号后窗口最低价
+	WindowHigh         float64   `json:"windowHigh"`         // 信号后窗口最高价
+	PressureHigh       float64   `json:"pressureHigh"`       // 压力面最高价(关键阻力)
+	PressureLow        float64   `json:"pressureLow"`        // 压力面最低价(关键支撑)
+	MaxPriceDuringHold float64   `json:"maxPriceDuringHold"` // 持仓期间最高价(算最高浮盈用)
+	MinPriceDuringHold float64   `json:"minPriceDuringHold"` // 持仓期间最低价
+	FavPeakDeciles     []float64 `json:"favPeakDeciles"`     // 分时段峰值浮盈[10]：第i项=前(i+1)×10%持仓时间内累积最高浮盈ROI%(含杠杆)
+	Leverage           float64   `json:"leverage"`           // 杠杆倍数(算含杠杆浮盈用)
 	// 持仓中(status=open)按当前最新价标记的浮动盈亏：回测窗口未走完生命周期的持仓，用最新一根 K 线收盘价标记。
-	MarkPrice         float64 `json:"markPrice"`         // 当前最新价(标记价)，仅持仓中有值
-	UnrealizedPnl     float64 `json:"unrealizedPnl"`     // 浮动毛盈亏 USDT
-	UnrealizedPnlRate float64 `json:"unrealizedPnlRate"` // 浮动盈亏率%(含杠杆)
-	UnrealizedNetPnl  float64 `json:"unrealizedNetPnl"`  // 浮动净盈亏 = 浮动盈亏 - 预估手续费
+	MarkPrice            float64 `json:"markPrice"`            // 当前最新价(标记价)，仅持仓中有值
+	UnrealizedPnl        float64 `json:"unrealizedPnl"`        // 浮动毛盈亏 USDT
+	UnrealizedPnlRate    float64 `json:"unrealizedPnlRate"`    // 浮动盈亏率%(含杠杆，未扣费)
+	UnrealizedNetPnl     float64 `json:"unrealizedNetPnl"`     // 浮动净盈亏 = 浮动盈亏 - 预估手续费
+	UnrealizedNetPnlRate float64 `json:"unrealizedNetPnlRate"` // 浮动净盈亏率%(含杠杆，已扣预估手续费)
 }
 
 type BacktestMetricDTO struct {
-	RunID        int64   `json:"runId"`
-	CalcMode     string  `json:"calcMode"`
-	TradeCount   int     `json:"tradeCount"`
-	FillCount    int     `json:"fillCount"`
-	ExpiredCount int     `json:"expiredCount"`
-	FillRate     float64 `json:"fillRate"`
-	WinCount     int     `json:"winCount"`
-	WinRate      float64 `json:"winRate"`
-	GrossPnl     float64 `json:"grossPnl"`
-	FeeTotal     float64 `json:"feeTotal"`
-	NetPnl       float64 `json:"netPnl"`
-	Expectancy   float64 `json:"expectancy"`
-	ProfitFactor float64 `json:"profitFactor"`
-	MaxDrawdown  float64 `json:"maxDrawdown"`
-	Sharpe       float64 `json:"sharpe"`
-	AvgHoldSecs  float64 `json:"avgHoldSecs"`
-	TpCount      int     `json:"tpCount"`
-	SlCount      int     `json:"slCount"`
-	TimeoutCount int     `json:"timeoutCount"`
+	RunID             int64   `json:"runId"`
+	CalcMode          string  `json:"calcMode"`
+	TradeCount        int     `json:"tradeCount"`
+	FillCount         int     `json:"fillCount"`
+	ExpiredCount      int     `json:"expiredCount"`
+	FillRate          float64 `json:"fillRate"`
+	WinCount          int     `json:"winCount"`
+	WinRate           float64 `json:"winRate"`
+	GrossPnl          float64 `json:"grossPnl"`
+	FeeTotal          float64 `json:"feeTotal"`
+	NetPnl            float64 `json:"netPnl"`
+	Expectancy        float64 `json:"expectancy"`
+	ProfitFactor      float64 `json:"profitFactor"`
+	MaxDrawdown       float64 `json:"maxDrawdown"`
+	Sharpe            float64 `json:"sharpe"`
+	AvgHoldSecs       float64 `json:"avgHoldSecs"`
+	TpCount           int     `json:"tpCount"`
+	SlCount           int     `json:"slCount"`
+	TrailCount        int     `json:"trailCount"`
+	EarlyCutCount     int     `json:"earlyCutCount"`
+	EarlyAdverseCount int     `json:"earlyAdverseCount"`
+	TimeoutCount      int     `json:"timeoutCount"`
 }
 
 // BacktestRunDetailDTO 单次回测详情：任务 + 汇总指标(可能两种口径) + 逐笔。
