@@ -5,6 +5,7 @@ import {
   BarChartOutlined,
   BellOutlined,
   CompassOutlined,
+  ControlOutlined,
   GlobalOutlined,
   LogoutOutlined,
   SafetyCertificateOutlined,
@@ -36,6 +37,7 @@ const pageTitleMap: Record<string, string> = {
   "/trade-strategy-backtest": "策略回测",
   "/trade-strategy": "策略管理",
   "/trade-backtest-runs": "回测对比",
+  "/argus-config": "Argus 配置与运行控制",
 };
 
 function getOpenKeys(pathname: string) {
@@ -44,6 +46,9 @@ function getOpenKeys(pathname: string) {
   }
   if (pathname.startsWith("/platform") || pathname.startsWith("/coin")) {
     return ["/exchange-group"];
+  }
+  if (pathname.startsWith("/argus-config")) {
+    return ["/argus-group"];
   }
   if (
     pathname.startsWith("/trade-orders") ||
@@ -143,6 +148,17 @@ export function ManagerShell({ children }: ManagerShellProps) {
           {
             key: "/coin",
             label: "币种管理",
+          },
+        ],
+      },
+      {
+        key: "/argus-group",
+        icon: <ControlOutlined />,
+        label: "Argus 管理",
+        children: [
+          {
+            key: "/argus-config",
+            label: "配置与运行控制",
           },
         ],
       },

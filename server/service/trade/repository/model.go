@@ -248,9 +248,13 @@ type TradeStrategy struct {
 	MinMovePct       float64 `gorm:"column:min_move_pct;type:decimal(10,4);default:0.5000" description:"最低预测幅度百分比，如 0.5 表示 0.5%"`
 	TrendFilter      string  `gorm:"column:trend_filter;type:varchar(8);default:'both'" description:"方向过滤 long/short/both"`
 	MaxOpenPositions int     `gorm:"column:max_open_positions;type:int;default:1" description:"同一策略最多同时持仓数"`
+	// 复合方向门槛：1=须信号时刻 4h/12h/1d 最近预测方向全部与本笔一致才建仓，否则忽略。0=不启用。
+	RequireCompositeDir int8 `gorm:"column:require_composite_dir;type:tinyint;default:0" description:"复合方向门槛 1启用 0不启用"`
 	// 持仓参数
-	HoldDuration    int `gorm:"column:hold_duration;type:int;default:14400" description:"持仓时长(秒)，即交易周期，默认 4h=14400"`
+	HoldDuration    int `gorm:"column:hold_duration;type:int;default:14400" description:"持仓时长(秒)，即预测周期口径的持仓上限，默认 4h=14400"`
 	MaxHoldDuration int `gorm:"column:max_hold_duration;type:int;default:86400" description:"最长持仓硬上限(秒)，防极端行情挂单，默认 24h=86400"`
+	// 交易周期(可选)：如 1d/1w。设了则回测额外按交易周期口径再算一套(持仓上限拉到该周期，TP/SL 用该周期预测区间)。空=只按预测周期。
+	TradingPeriod string `gorm:"column:trading_period;type:varchar(8);default:''" description:"交易周期 1h/4h/12h/1d/1w，空=不启用交易周期口径"`
 	// 止盈止损：0 = 使用 AI 给的建议价，非 0 = 使用此百分比覆盖
 	TakeProfitPct float64 `gorm:"column:take_profit_pct;type:decimal(10,4);default:0.0000" description:"止盈幅度百分比，0=跟 AI 建议"`
 	StopLossPct   float64 `gorm:"column:stop_loss_pct;type:decimal(10,4);default:0.0000" description:"止损幅度百分比，0=跟 AI 建议"`
@@ -261,6 +265,16 @@ type TradeStrategy struct {
 	PressureBufferPct  float64 `gorm:"column:pressure_buffer_pct;type:decimal(10,4);default:0.0000" description:"pressure止盈/止损：离关键结构位缓冲%"`
 	TakeProfitFloorPct float64 `gorm:"column:take_profit_floor_pct;type:decimal(10,4);default:0.0000" description:"兜底锁盈%：止盈目标比该值更远时提前到该%锁盈，0=不约束"`
 	StopLossFloorPct   float64 `gorm:"column:stop_loss_floor_pct;type:decimal(10,4);default:0.0000" description:"兜底最小止损%：止损隐含亏损<该值则放宽到该值，0=不约束"`
+	// 移动止盈(峰值回撤 + 时间收敛)：0=不启用，退回静态止盈。含杠杆 ROI% 口径。
+	TrailActivatePct float64 `gorm:"column:trail_activate_pct;type:decimal(12,4);default:0.0000" description:"移动止盈激活阈值：浮盈ROI%(含杠杆)达此值才启动，0=不启用"`
+	TrailGiveback    float64 `gorm:"column:trail_giveback;type:decimal(6,4);default:0.0000" description:"峰值回撤比例r0(0~1)：从峰值ROI回撤此比例即平仓，退出线=peak×(1-r)"`
+	TrailGivebackMin float64 `gorm:"column:trail_giveback_min;type:decimal(6,4);default:0.0000" description:"周期末回撤比例(时间收敛)：随持仓推进r从trail_giveback线性收敛到此值，<=0或≥trail_giveback=不收敛"`
+	// 早段疲软离场：持仓过 early_cut_time_pct% 时，若峰值浮盈ROI%(含杠杆)仍<early_cut_min_profit_pct，按当时价市价平仓。0=不启用。
+	EarlyCutTimePct      float64 `gorm:"column:early_cut_time_pct;type:decimal(6,2);default:0.00" description:"早段疲软触发时间点：持仓已过交易周期的百分比(0~100，0=不启用)"`
+	EarlyCutMinProfitPct float64 `gorm:"column:early_cut_min_profit_pct;type:decimal(12,4);default:0.0000" description:"早段疲软利润门槛：该时点前峰值浮盈ROI%(含杠杆)低于此值则离场"`
+	// 早段逆行离场(MAE 软止损)：本笔从未走出浮盈且逆行浮亏ROI%(含杠杆)达阈值时，先于硬止损减损离场。0=不启用。
+	EarlyCutMaxAdversePct float64 `gorm:"column:early_cut_max_adverse_pct;type:decimal(12,4);default:0.0000" description:"早段逆行止损阈值：逆行浮亏ROI%(含杠杆)达此值即离场，0=不启用"`
+	EarlyCutArmProfitPct  float64 `gorm:"column:early_cut_arm_profit_pct;type:decimal(12,4);default:0.0000" description:"逆行止损解除阈值：峰值浮盈ROI%(含杠杆)达此值则解除软止损放行扛单，<=0=始终武装"`
 	// 仓位参数
 	Leverage     float64 `gorm:"column:leverage;type:decimal(6,2);default:10.00" description:"杠杆倍数"`
 	Contracts    int     `gorm:"column:contracts;type:int;default:1" description:"开仓张数，1张=0.001BTC"`
@@ -378,11 +392,14 @@ type TradeBacktestTrade struct {
 	OpenedAt    *time.Time `gorm:"column:opened_at;type:datetime" description:"成交时刻(仿真)"`
 	ClosedAt    *time.Time `gorm:"column:closed_at;type:datetime" description:"收尾时刻(仿真)"`
 	// 结算
-	Pnl      float64 `gorm:"column:pnl;type:decimal(36,18);default:0" description:"盈亏金额 USDT"`
-	PnlRate  float64 `gorm:"column:pnl_rate;type:decimal(18,8);default:0" description:"盈亏率%(含杠杆)"`
-	Fee      float64 `gorm:"column:fee;type:decimal(36,18);default:0" description:"往返手续费 USDT"`
-	NetPnl   float64 `gorm:"column:net_pnl;type:decimal(36,18);default:0" description:"净盈亏 = pnl - fee"`
-	Leverage float64 `gorm:"column:leverage;type:decimal(6,2);default:1" description:"杠杆倍数(展示含杠杆浮盈用)"`
+	Pnl        float64 `gorm:"column:pnl;type:decimal(36,18);default:0" description:"盈亏金额 USDT"`
+	PnlRate    float64 `gorm:"column:pnl_rate;type:decimal(18,8);default:0" description:"盈亏率%(含杠杆，未扣费)"`
+	Fee        float64 `gorm:"column:fee;type:decimal(36,18);default:0" description:"往返手续费 USDT"`
+	NetPnl     float64 `gorm:"column:net_pnl;type:decimal(36,18);default:0" description:"净盈亏 = pnl - fee"`
+	NetPnlRate float64 `gorm:"column:net_pnl_rate;type:decimal(18,8);default:0" description:"净盈亏率%(含杠杆，已扣往返手续费)"`
+	Leverage   float64 `gorm:"column:leverage;type:decimal(6,2);default:1" description:"杠杆倍数(展示含杠杆浮盈用)"`
+	// 分时段峰值浮盈：JSON 数组[10]，第 i 项=前(i+1)×10%持仓时间内累积最高浮盈ROI%(含杠杆)，供"前X%时间内最大利润<Y%"筛选。
+	FavPeakDeciles string `gorm:"column:fav_peak_deciles;type:varchar(255)" description:"分时段峰值浮盈十分位JSON[10](含杠杆ROI%)"`
 	// 预测特征冗余（便于事后切片分析：按置信度/效率分组看哪类预测赚钱）
 	Confidence       float64 `gorm:"column:confidence;type:decimal(6,4);default:0" description:"预测置信度"`
 	PredictedMovePct float64 `gorm:"column:predicted_move_pct;type:decimal(10,4);default:0" description:"预测幅度%"`
@@ -430,9 +447,12 @@ type TradeBacktestMetric struct {
 	Sharpe       float64 `gorm:"column:sharpe;type:decimal(18,8);default:0" description:"夏普比率"`
 	AvgHoldSecs  float64 `gorm:"column:avg_hold_secs;type:decimal(18,4);default:0" description:"平均持仓秒数"`
 	// 出口分布
-	TpCount      int `gorm:"column:tp_count;type:int;default:0" description:"止盈笔数"`
-	SlCount      int `gorm:"column:sl_count;type:int;default:0" description:"止损笔数"`
-	TimeoutCount int `gorm:"column:timeout_count;type:int;default:0" description:"超时平仓笔数"`
+	TpCount           int `gorm:"column:tp_count;type:int;default:0" description:"止盈笔数"`
+	SlCount           int `gorm:"column:sl_count;type:int;default:0" description:"止损笔数"`
+	TrailCount        int `gorm:"column:trail_count;type:int;default:0" description:"移动止盈平仓笔数"`
+	EarlyCutCount     int `gorm:"column:early_cut_count;type:int;default:0" description:"早段疲软离场笔数"`
+	EarlyAdverseCount int `gorm:"column:early_adverse_count;type:int;default:0" description:"早段逆行离场笔数"`
+	TimeoutCount      int `gorm:"column:timeout_count;type:int;default:0" description:"超时平仓笔数"`
 }
 
 func (m *TradeBacktestMetric) TableName() string { return "trade_backtest_metric" }

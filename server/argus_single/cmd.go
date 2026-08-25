@@ -5,6 +5,7 @@ import (
 	"log"
 
 	"argus_single/initialization"
+	"argus_single/routers"
 	pcweb "common/utils/pc_trade/web"
 )
 
@@ -15,5 +16,8 @@ func main() {
 	}
 	log.Println("✅ WASM 签名器初始化成功")
 
-	initialization.Init()
+	if err := initialization.Init(); err != nil {
+		log.Fatalf("❌ Argus 初始化失败: %v", err)
+	}
+	routers.Run()
 }

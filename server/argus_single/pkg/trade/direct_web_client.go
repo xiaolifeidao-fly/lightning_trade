@@ -44,15 +44,30 @@ func convertOrderResponse(src *pcweb.OrderResponse) (*utils.WebOrderResponse, er
 	return &dst, nil
 }
 
-// ClosePosition 市价全平指定持仓。
-func (c *DirectWebClient) ClosePosition(positionID string) (*pcweb.ClosePosResponse, error) {
+// ClosePosition 市价全平指定持仓，并补发网页同款埋点。
+// instId/lastPx/size 仅用于埋点（de_tradepair_name / trade_quote / de_deal_size）——
+// 平仓请求本身只需 positionID。lastPx 取调用方内存快照（≤5s 旧，非成交价）。
+// 埋点在平仓成功后异步发送，失败只记日志，绝不影响平仓结果。
+func (c *DirectWebClient) ClosePosition(positionID, instId string, lastPx float64, size int) (*pcweb.ClosePosResponse, error) {
 	u, err := c.resolveUser(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("获取 Web 用户凭证失败: %w", err)
 	}
-	return pcweb.SendClosePos(u, &pcweb.ClosePosRequest{
+	resp, err := pcweb.SendClosePos(u, &pcweb.ClosePosRequest{
 		PositionID: positionID,
 	})
+	if err != nil {
+		return nil, err
+	}
+	if mark, mErr := json.Marshal(resp); mErr == nil {
+		go pcweb.SendClosePosTrack(u, &pcweb.ClosePosTrackRequest{
+			PositionID: positionID,
+			TradePair:  pcweb.TradePairName(instId),
+			TradeQuote: lastPx,
+			DealSize:   size,
+		}, string(mark))
+	}
+	return resp, nil
 }
 
 // MarketBuyLongWithRisk 直接市价做多开仓并异步发送风控。

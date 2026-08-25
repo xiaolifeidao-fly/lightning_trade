@@ -1888,37 +1888,78 @@ func (s *TradeService) CreateStrategy(dto tradeDTO.CreateTradeStrategyDTO) (*tra
 	if tpFloor < 0 {
 		tpFloor = 0
 	}
+	// 移动止盈：激活阈值<0 视为不启用(0)；回撤比例夹到 [0,1]。
+	trailActivate := dto.TrailActivatePct
+	if trailActivate < 0 {
+		trailActivate = 0
+	}
+	trailGiveback := clamp01(dto.TrailGiveback)
+	trailGivebackMin := clamp01(dto.TrailGivebackMin)
+	// 早段疲软离场：触发时间点夹到 [0,100](0=不启用)；利润门槛为含杠杆 ROI%，可正可负照原样存。
+	earlyCutTimePct := dto.EarlyCutTimePct
+	if earlyCutTimePct < 0 {
+		earlyCutTimePct = 0
+	}
+	if earlyCutTimePct > 100 {
+		earlyCutTimePct = 100
+	}
+	// 早段逆行离场：逆行阈值<0 视为不启用(0)；解除阈值可正可负照原样存(<=0=始终武装)。
+	earlyCutMaxAdverse := dto.EarlyCutMaxAdversePct
+	if earlyCutMaxAdverse < 0 {
+		earlyCutMaxAdverse = 0
+	}
+	// 交易周期(可选)：设了则回测额外按交易周期口径再算一套。校验为受支持的周期。
+	tradingPeriod := strings.TrimSpace(dto.TradingPeriod)
+	if tradingPeriod != "" {
+		if _, ok := intervalDuration(tradingPeriod); !ok {
+			return nil, fmt.Errorf("不支持的交易周期: %s", tradingPeriod)
+		}
+	}
+	// 复合方向门槛：默认不启用。
+	requireComposite := int8(0)
+	if dto.RequireCompositeDir != nil {
+		requireComposite = *dto.RequireCompositeDir
+	}
 	entity := &tradeRepository.TradeStrategy{
-		PlatformCode:       dto.PlatformCode,
-		CoinCode:           dto.CoinCode,
-		Symbol:             strings.ToUpper(dto.Symbol),
-		Interval:           dto.Interval,
-		Enabled:            enabled,
-		MinConfidence:      dto.MinConfidence,
-		MinMovePct:         dto.MinMovePct,
-		TrendFilter:        trendFilter,
-		MaxOpenPositions:   maxOpen,
-		HoldDuration:       holdSec,
-		MaxHoldDuration:    maxHoldSec,
-		TakeProfitPct:      dto.TakeProfitPct,
-		StopLossPct:        dto.StopLossPct,
-		TakeProfitSource:   tpSource,
-		StopLossSource:     slSource,
-		PredictSLBufferPct: predictSLBuf,
-		PressureBufferPct:  pressureBuf,
-		TakeProfitFloorPct: tpFloor,
-		StopLossFloorPct:   slFloor,
-		Leverage:           leverage,
-		Contracts:          contracts,
-		MakerFeeRate:       dto.MakerFeeRate,
-		TakerFeeRate:       dto.TakerFeeRate,
-		EntryMode:          entryMode,
-		EntryAlpha:         entryAlpha,
-		ExitGamma:          exitGamma,
-		EntryTTL:           entryTTL,
-		EfficiencyRoute:    dto.EfficiencyRoute,
-		PredictionVariant:  variant,
-		Remark:             dto.Remark,
+		PlatformCode:          dto.PlatformCode,
+		CoinCode:              dto.CoinCode,
+		Symbol:                strings.ToUpper(dto.Symbol),
+		Interval:              dto.Interval,
+		Enabled:               enabled,
+		MinConfidence:         dto.MinConfidence,
+		MinMovePct:            dto.MinMovePct,
+		TrendFilter:           trendFilter,
+		MaxOpenPositions:      maxOpen,
+		RequireCompositeDir:   requireComposite,
+		HoldDuration:          holdSec,
+		MaxHoldDuration:       maxHoldSec,
+		TradingPeriod:         tradingPeriod,
+		TakeProfitPct:         dto.TakeProfitPct,
+		StopLossPct:           dto.StopLossPct,
+		TakeProfitSource:      tpSource,
+		StopLossSource:        slSource,
+		PredictSLBufferPct:    predictSLBuf,
+		PressureBufferPct:     pressureBuf,
+		TakeProfitFloorPct:    tpFloor,
+		StopLossFloorPct:      slFloor,
+		TrailActivatePct:      trailActivate,
+		TrailGiveback:         trailGiveback,
+		TrailGivebackMin:      trailGivebackMin,
+		EarlyCutTimePct:       earlyCutTimePct,
+		EarlyCutMinProfitPct:  dto.EarlyCutMinProfitPct,
+		EarlyCutMaxAdversePct: earlyCutMaxAdverse,
+		EarlyCutArmProfitPct:  dto.EarlyCutArmProfitPct,
+		Leverage:              leverage,
+		Contracts:             contracts,
+		MakerFeeRate:          dto.MakerFeeRate,
+		TakerFeeRate:          dto.TakerFeeRate,
+		EntryMode:             entryMode,
+		EntryAlpha:            entryAlpha,
+		ExitGamma:             exitGamma,
+		EntryTTL:              entryTTL,
+		EfficiencyRoute:       dto.EfficiencyRoute,
+		PredictionVariant:     variant,
+		Remark:                dto.Remark,
 	}
 	if err := s.tradeStrategyRepository.CreateStrategy(entity); err != nil {
 		return nil, err
@@ -1951,6 +1992,9 @@ func (s *TradeService) UpdateStrategy(id int64, dto tradeDTO.UpdateTradeStrategy
 		}
 		updates["max_open_positions"] = *dto.MaxOpenPositions
 	}
+	if dto.RequireCompositeDir != nil {
+		updates["require_composite_dir"] = *dto.RequireCompositeDir
+	}
 	if dto.HoldDuration != nil {
 		sec, err := parseDurationStr(*dto.HoldDuration, 0)
 		if err != nil || sec <= 0 {
@@ -1964,6 +2008,15 @@ func (s *TradeService) UpdateStrategy(id int64, dto tradeDTO.UpdateTradeStrategy
 			return fmt.Errorf("maxHoldDuration: %w", err)
 		}
 		updates["max_hold_duration"] = sec
+	}
+	if dto.TradingPeriod != nil {
+		tp := strings.TrimSpace(*dto.TradingPeriod)
+		if tp != "" {
+			if _, ok := intervalDuration(tp); !ok {
+				return fmt.Errorf("不支持的交易周期: %s", tp)
+			}
+		}
+		updates["trading_period"] = tp
 	}
 	if dto.TakeProfitPct != nil {
 		updates["take_profit_pct"] = *dto.TakeProfitPct
@@ -2000,6 +2053,43 @@ func (s *TradeService) UpdateStrategy(id int64, dto tradeDTO.UpdateTradeStrategy
 			return fmt.Errorf("takeProfitFloorPct must be >= 0")
 		}
 		updates["take_profit_floor_pct"] = *dto.TakeProfitFloorPct
+	}
+	if dto.TrailActivatePct != nil {
+		if *dto.TrailActivatePct < 0 {
+			return fmt.Errorf("trailActivatePct must be >= 0")
+		}
+		updates["trail_activate_pct"] = *dto.TrailActivatePct
+	}
+	if dto.TrailGiveback != nil {
+		if *dto.TrailGiveback < 0 || *dto.TrailGiveback > 1 {
+			return fmt.Errorf("trailGiveback must be between 0 and 1")
+		}
+		updates["trail_giveback"] = *dto.TrailGiveback
+	}
+	if dto.TrailGivebackMin != nil {
+		if *dto.TrailGivebackMin < 0 || *dto.TrailGivebackMin > 1 {
+			return fmt.Errorf("trailGivebackMin must be between 0 and 1")
+		}
+		updates["trail_giveback_min"] = *dto.TrailGivebackMin
+	}
+	if dto.EarlyCutTimePct != nil {
+		if *dto.EarlyCutTimePct < 0 || *dto.EarlyCutTimePct > 100 {
+			return fmt.Errorf("earlyCutTimePct must be between 0 and 100")
+		}
+		updates["early_cut_time_pct"] = *dto.EarlyCutTimePct
+	}
+	if dto.EarlyCutMinProfitPct != nil {
+		updates["early_cut_min_profit_pct"] = *dto.EarlyCutMinProfitPct
+	}
+	if dto.EarlyCutMaxAdversePct != nil {
+		v := *dto.EarlyCutMaxAdversePct
+		if v < 0 {
+			v = 0
+		}
+		updates["early_cut_max_adverse_pct"] = v
+	}
+	if dto.EarlyCutArmProfitPct != nil {
+		updates["early_cut_arm_profit_pct"] = *dto.EarlyCutArmProfitPct
 	}
 	if dto.Leverage != nil {
 		if *dto.Leverage < 1 || *dto.Leverage > 125 {
@@ -2190,41 +2280,61 @@ func normalizeExitSource(v string) string {
 	}
 }
 
+// clamp01 把比例参数夹到 [0,1]，用于移动止盈的峰值回撤比例。
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
 func strategyToDTO(r *tradeRepository.TradeStrategy) tradeDTO.TradeStrategyDTO {
 	return tradeDTO.TradeStrategyDTO{
-		ID:                 int64(r.Id),
-		PlatformCode:       r.PlatformCode,
-		CoinCode:           r.CoinCode,
-		Symbol:             r.Symbol,
-		Interval:           r.Interval,
-		Enabled:            r.Enabled,
-		MinConfidence:      r.MinConfidence,
-		MinMovePct:         r.MinMovePct,
-		TrendFilter:        r.TrendFilter,
-		MaxOpenPositions:   r.MaxOpenPositions,
-		HoldDuration:       r.HoldDuration,
-		MaxHoldDuration:    r.MaxHoldDuration,
-		TakeProfitPct:      r.TakeProfitPct,
-		StopLossPct:        r.StopLossPct,
-		TakeProfitSource:   r.TakeProfitSource,
-		StopLossSource:     r.StopLossSource,
-		PredictSLBufferPct: r.PredictSLBufferPct,
-		PressureBufferPct:  r.PressureBufferPct,
-		TakeProfitFloorPct: r.TakeProfitFloorPct,
-		StopLossFloorPct:   r.StopLossFloorPct,
-		Leverage:           r.Leverage,
-		Contracts:          r.Contracts,
-		MakerFeeRate:       r.MakerFeeRate,
-		TakerFeeRate:       r.TakerFeeRate,
-		EntryMode:          r.EntryMode,
-		EntryAlpha:         r.EntryAlpha,
-		ExitGamma:          r.ExitGamma,
-		EntryTTL:           r.EntryTTL,
-		EfficiencyRoute:    r.EfficiencyRoute,
-		PredictionVariant:  r.PredictionVariant,
-		Remark:             r.Remark,
-		CreatedTime:        r.CreatedTime.UTC().Format(time.RFC3339),
-		UpdatedTime:        r.UpdatedTime.UTC().Format(time.RFC3339),
+		ID:                    int64(r.Id),
+		PlatformCode:          r.PlatformCode,
+		CoinCode:              r.CoinCode,
+		Symbol:                r.Symbol,
+		Interval:              r.Interval,
+		Enabled:               r.Enabled,
+		MinConfidence:         r.MinConfidence,
+		MinMovePct:            r.MinMovePct,
+		TrendFilter:           r.TrendFilter,
+		MaxOpenPositions:      r.MaxOpenPositions,
+		RequireCompositeDir:   r.RequireCompositeDir,
+		HoldDuration:          r.HoldDuration,
+		MaxHoldDuration:       r.MaxHoldDuration,
+		TradingPeriod:         r.TradingPeriod,
+		TakeProfitPct:         r.TakeProfitPct,
+		StopLossPct:           r.StopLossPct,
+		TakeProfitSource:      r.TakeProfitSource,
+		StopLossSource:        r.StopLossSource,
+		PredictSLBufferPct:    r.PredictSLBufferPct,
+		PressureBufferPct:     r.PressureBufferPct,
+		TakeProfitFloorPct:    r.TakeProfitFloorPct,
+		StopLossFloorPct:      r.StopLossFloorPct,
+		TrailActivatePct:      r.TrailActivatePct,
+		TrailGiveback:         r.TrailGiveback,
+		TrailGivebackMin:      r.TrailGivebackMin,
+		EarlyCutTimePct:       r.EarlyCutTimePct,
+		EarlyCutMinProfitPct:  r.EarlyCutMinProfitPct,
+		EarlyCutMaxAdversePct: r.EarlyCutMaxAdversePct,
+		EarlyCutArmProfitPct:  r.EarlyCutArmProfitPct,
+		Leverage:              r.Leverage,
+		Contracts:             r.Contracts,
+		MakerFeeRate:          r.MakerFeeRate,
+		TakerFeeRate:          r.TakerFeeRate,
+		EntryMode:             r.EntryMode,
+		EntryAlpha:            r.EntryAlpha,
+		ExitGamma:             r.ExitGamma,
+		EntryTTL:              r.EntryTTL,
+		EfficiencyRoute:       r.EfficiencyRoute,
+		PredictionVariant:     r.PredictionVariant,
+		Remark:                r.Remark,
+		CreatedTime:           r.CreatedTime.UTC().Format(time.RFC3339),
+		UpdatedTime:           r.UpdatedTime.UTC().Format(time.RFC3339),
 	}
 }
 

@@ -13,7 +13,6 @@ import (
 	"common/cookies"
 	"common/utils"
 	pcweb "common/utils/pc_trade/web"
-
 	"github.com/sirupsen/logrus"
 )
 

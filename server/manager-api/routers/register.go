@@ -3,6 +3,8 @@ package routers
 import (
 	"common/middleware/routers"
 	"log"
+	"manager-api/pkg/argus_config"
+	"manager-api/pkg/argus_runtime"
 	"manager-api/pkg/coin"
 	"manager-api/pkg/coin_platform"
 	"manager-api/pkg/coin_user"
@@ -26,6 +28,8 @@ func registerHandler() []routers.Handler {
 	}
 
 	return []routers.Handler{
+		build("argus_config", func() routers.Handler { return argus_config.NewArgusConfigHandler() }),
+		build("argus_runtime", func() routers.Handler { return argus_runtime.NewArgusRuntimeHandler() }),
 		build("login", func() routers.Handler { return login.NewLoginHandler() }),
 		build("permission", func() routers.Handler { return permission.NewPermissionHandler() }),
 		build("user", func() routers.Handler { return user.NewUserHandler() }),

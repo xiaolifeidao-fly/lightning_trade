@@ -100,6 +100,14 @@ type tradeRiskData struct {
 	FlushTime   int64             `json:"_flush_time"`
 }
 
+// trackEndpoint 神策埋点上报端点。
+//
+// 2026-07-31 修正：原值 https://ubt.deepcoin.pro/save.gif 已 NXDOMAIN 下线，
+// 每次上报都在静默失败——发送失败只 Warnf 不阻断下单，故长期无人察觉
+// （表征：神策侧再无脚本上报，只剩人工在网页操作产生的记录）。
+// 新值由浏览器抓包实测确认；两侧 payload 结构本就一致，仅域名有别。
+const trackEndpoint = "https://net-api.deepcoin.com/save.gif"
+
 // SendTradeRiskRequest 发送下单风控请求
 // user: 用户信息（包含cookie等）
 // req: 请求参数
@@ -116,67 +124,11 @@ func SendTradeRiskRequest(u *user.User, req *TradeRiskRequest) error {
 	// 3. 构造请求数据
 	data := buildTradeRiskData(cookieData, req)
 
-	// 4. 将数据转为JSON并base64编码
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return fmt.Errorf("序列化数据失败: %w", err)
+	// 4~11. 统一走 postTrack（base64+crc+浏览器请求头+状态码校验）
+	if err := postTrack(data, req.LoginID); err != nil {
+		notifyTrackFailure("开仓埋点", err)
+		return err
 	}
-	encodedData := base64.StdEncoding.EncodeToString(jsonData)
-
-	// 5. 计算ext参数
-	ext := utils.GetExt(encodedData)
-
-	// 6. 构造完整URL
-	baseURL := "https://ubt.deepcoin.pro/save.gif"
-	params := url.Values{}
-	params.Add("project", "production")
-	params.Add("data", encodedData)
-	params.Add("ext", fmt.Sprintf("crc=%d", ext))
-	fullURL := fmt.Sprintf("%s?%s", baseURL, params.Encode())
-
-	// 7. 发送HTTP请求
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
-
-	httpReq, err := http.NewRequest("GET", fullURL, nil)
-	if err != nil {
-		return fmt.Errorf("创建请求失败: %w", err)
-	}
-
-	// 8. 设置请求头
-	httpReq.Header.Set("accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
-	httpReq.Header.Set("accept-language", "zh-CN,zh;q=0.9,en;q=0.8")
-	httpReq.Header.Set("loginuser", req.LoginID)
-	httpReq.Header.Set("referer", "https://www.deepcoin.com/")
-	httpReq.Header.Set("sec-ch-ua", `"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"`)
-	httpReq.Header.Set("sec-ch-ua-mobile", "?0")
-	httpReq.Header.Set("sec-ch-ua-platform", `"macOS"`)
-	httpReq.Header.Set("sec-fetch-dest", "image")
-	httpReq.Header.Set("sec-fetch-mode", "no-cors")
-	httpReq.Header.Set("sec-fetch-site", "cross-site")
-	httpReq.Header.Set("sec-fetch-storage-access", "active")
-	httpReq.Header.Set("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36")
-	httpReq.Header.Set("x-forwarded-for", "4.2.2.2")
-
-	// 9. 发送请求
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("发送请求失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// 10. 读取响应
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("读取响应失败: %w", err)
-	}
-
-	// 11. 检查响应状态
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("请求失败，状态码: %d, 响应: %s", resp.StatusCode, string(body))
-	}
-
 	return nil
 }
 
@@ -403,7 +355,7 @@ func SendTPSLRiskRequest(u *user.User, req *TPSLRiskRequest) error {
 	ext := utils.GetExt(encodedData)
 
 	// 6. 构造完整URL
-	baseURL := "https://ubt.deepcoin.pro/save.gif"
+	baseURL := trackEndpoint
 	params := url.Values{}
 	params.Add("project", "production")
 	params.Add("data", encodedData)

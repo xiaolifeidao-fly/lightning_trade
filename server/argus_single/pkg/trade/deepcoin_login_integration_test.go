@@ -2,6 +2,7 @@ package trade
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +12,10 @@ import (
 )
 
 func TestDeepCoinLoginAndSaveSession(t *testing.T) {
+	if os.Getenv("ARGUS_RUN_DEEPCOIN_INTEGRATION") != "1" {
+		t.Skip("set ARGUS_RUN_DEEPCOIN_INTEGRATION=1 with configs/session.json to run the DeepCoin login integration test")
+	}
+
 	initManualLoginTestConfig(t)
 
 	sessionPath := filepath.Clean("../../configs/session.json")

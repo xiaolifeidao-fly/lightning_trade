@@ -1272,3 +1272,754 @@ select {
 .ant-checkbox-wrapper {
   color: var(--manager-text-soft);
 }
+
+/* ============================================================
+   Argus 配置与运行控制
+   ============================================================ */
+
+.manager-argus {
+  --argus-ink: #EAECEF;
+  --argus-muted: #B7BDC6;
+  --argus-faint: #848E9C;
+  padding-bottom: 8px;
+}
+
+.manager-argus-hero {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 24px;
+  align-items: center;
+  padding: 24px 28px;
+  border-radius: 16px;
+  border: 1px solid rgba(240, 185, 11, 0.2);
+  background:
+    radial-gradient(680px 260px at 92% 120%, rgba(77, 126, 255, 0.2), transparent 62%),
+    radial-gradient(560px 220px at 0% -30%, rgba(240, 185, 11, 0.18), transparent 62%),
+    linear-gradient(135deg, #14171D 0%, #1E2329 100%);
+  box-shadow: 0 22px 52px rgba(0, 0, 0, 0.46), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+}
+
+.manager-argus-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(240, 185, 11, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(240, 185, 11, 0.05) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.55));
+  pointer-events: none;
+}
+
+.manager-argus-hero > * {
+  position: relative;
+  z-index: 1;
+}
+
+.manager-argus-hero .manager-section-label {
+  color: rgba(240, 185, 11, 0.85);
+  font-weight: 700;
+}
+
+.manager-argus-hero__title.ant-typography {
+  margin: 10px 0 6px;
+  color: #FFFFFF;
+  font-size: clamp(22px, 2.1vw, 28px);
+  font-weight: 800;
+}
+
+.manager-argus-hero__desc.ant-typography {
+  display: block;
+  max-width: 720px;
+  color: rgba(255, 255, 255, 0.68);
+  line-height: 1.7;
+}
+
+.manager-argus-hero__aside {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+/* ---- 状态灯 ---- */
+
+.manager-argus-beacon {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px 9px 13px;
+  border-radius: 999px;
+  border: 1px solid var(--manager-border);
+  background: rgba(11, 14, 17, 0.72);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--argus-muted);
+  white-space: nowrap;
+}
+
+.manager-argus-beacon__dot {
+  position: relative;
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--manager-text-faint);
+}
+
+.manager-argus-beacon--online {
+  border-color: rgba(14, 203, 129, 0.38);
+  background: rgba(14, 203, 129, 0.1);
+  color: #6FE7BB;
+}
+
+.manager-argus-beacon--online .manager-argus-beacon__dot {
+  background: var(--manager-green);
+}
+
+.manager-argus-beacon--online .manager-argus-beacon__dot::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1px solid rgba(14, 203, 129, 0.6);
+  animation: argus-pulse 1.9s ease-out infinite;
+}
+
+.manager-argus-beacon--offline {
+  border-color: rgba(246, 70, 93, 0.32);
+  background: rgba(246, 70, 93, 0.08);
+  color: #FF8D9C;
+}
+
+.manager-argus-beacon--offline .manager-argus-beacon__dot {
+  background: var(--manager-danger);
+}
+
+@keyframes argus-pulse {
+  0% { transform: scale(0.7); opacity: 0.9; }
+  70% { transform: scale(1.9); opacity: 0; }
+  100% { transform: scale(1.9); opacity: 0; }
+}
+
+/* ---- 运行控制台 ---- */
+
+.manager-argus-console {
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
+}
+
+.manager-argus-panel {
+  position: relative;
+  padding: 20px 22px;
+  border-radius: 14px;
+  border: 1px solid var(--manager-border);
+  background: var(--manager-surface);
+  box-shadow: var(--manager-shadow-soft);
+  transition: border-color 180ms ease;
+}
+
+.manager-argus-panel:hover {
+  border-color: var(--manager-border-strong);
+}
+
+.manager-argus-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.manager-argus-panel__title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--argus-ink);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.manager-argus-panel__icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--manager-primary);
+  background: rgba(240, 185, 11, 0.12);
+  font-size: 16px;
+}
+
+.manager-argus-status {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background:
+    radial-gradient(240px 140px at 100% 0%, rgba(240, 185, 11, 0.08), transparent 70%),
+    linear-gradient(180deg, #1E2329 0%, #14171D 100%);
+}
+
+.manager-argus-status__headline {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  color: #FFFFFF;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.manager-argus-status__headline small {
+  color: var(--argus-faint);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.manager-argus-status__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.manager-argus-status__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--argus-faint);
+}
+
+.manager-argus-status__row b {
+  color: var(--argus-ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 62%;
+}
+
+.manager-argus-mono {
+  font-family: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+  letter-spacing: 0.02em;
+}
+
+/* ---- 指标瓦片 ---- */
+
+.manager-argus-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.manager-argus-tile {
+  position: relative;
+  padding: 16px 18px;
+  border-radius: 12px;
+  border: 1px solid var(--manager-border);
+  background: linear-gradient(180deg, #1E2329 0%, #14171D 100%);
+  overflow: hidden;
+  transition: border-color 180ms ease, transform 180ms ease;
+}
+
+.manager-argus-tile:hover {
+  transform: translateY(-2px);
+  border-color: rgba(240, 185, 11, 0.32);
+}
+
+.manager-argus-tile__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--argus-faint);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.manager-argus-tile__value {
+  margin-top: 10px;
+  color: var(--argus-ink);
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.manager-argus-tile__value--sm {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.manager-argus-tile__hint {
+  display: block;
+  margin-top: 6px;
+  color: var(--argus-faint);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.manager-argus-tile--drift {
+  border-color: rgba(240, 185, 11, 0.42);
+  background: linear-gradient(180deg, rgba(240, 185, 11, 0.1) 0%, #14171D 100%);
+}
+
+/* ---- 控制条 ---- */
+
+.manager-argus-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--manager-border);
+}
+
+.manager-argus-controls__spacer {
+  flex: 1 1 auto;
+}
+
+.manager-argus-log {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--manager-border);
+  background: #0B0E11;
+  color: var(--argus-muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+  max-height: 132px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.manager-argus-log--error {
+  border-color: rgba(246, 70, 93, 0.4);
+  color: #FF8D9C;
+}
+
+.manager-argus-log__tag {
+  flex: 0 0 auto;
+  color: var(--manager-primary);
+  font-weight: 700;
+}
+
+/* ---- 发布记录条 ---- */
+
+.manager-argus-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 22px;
+  padding: 14px 20px;
+  border-radius: 12px;
+  border: 1px solid var(--manager-border);
+  background: var(--manager-panel-strong);
+}
+
+.manager-argus-meta__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--argus-faint);
+}
+
+.manager-argus-meta__item b {
+  color: var(--argus-ink);
+  font-weight: 600;
+}
+
+.manager-argus-meta__spacer {
+  flex: 1 1 auto;
+}
+
+/* ---- 配置编辑器 ---- */
+
+.manager-argus-editor {
+  border-radius: 14px;
+  border: 1px solid var(--manager-border);
+  background: var(--manager-surface);
+  box-shadow: var(--manager-shadow-soft);
+  overflow: hidden;
+}
+
+.manager-argus-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--manager-border);
+  background: rgba(20, 23, 29, 0.94);
+  backdrop-filter: blur(10px);
+}
+
+.manager-argus-toolbar__title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--argus-ink);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.manager-argus-toolbar__desc {
+  display: block;
+  margin-top: 3px;
+  color: var(--argus-faint);
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+.manager-argus-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.manager-argus-dirty {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(240, 185, 11, 0.4);
+  background: rgba(240, 185, 11, 0.1);
+  color: var(--manager-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.manager-argus-body {
+  padding: 8px 0 22px;
+}
+
+.manager-argus-tabs .ant-tabs-nav {
+  min-width: 196px;
+  padding: 14px 8px 14px 14px;
+  margin: 0;
+}
+
+.manager-argus-tabs .ant-tabs-tab {
+  margin: 0 0 4px !important;
+  padding: 10px 14px !important;
+  border-radius: 10px;
+  color: var(--argus-muted) !important;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.manager-argus-tabs .ant-tabs-tab:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--argus-ink) !important;
+}
+
+.manager-argus-tabs .ant-tabs-tab.ant-tabs-tab-active {
+  background: rgba(240, 185, 11, 0.12);
+}
+
+.manager-argus-tabs .ant-tabs-tab.ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: var(--manager-primary) !important;
+  font-weight: 600;
+}
+
+.manager-argus-tabs .ant-tabs-ink-bar {
+  background: var(--manager-primary);
+}
+
+.manager-argus-tabs > .ant-tabs-content-holder {
+  padding: 14px 22px 0;
+  border-left: 1px solid var(--manager-border);
+}
+
+.manager-argus-tab-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.manager-argus-tab-label__count {
+  min-width: 22px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--argus-faint);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+
+.manager-argus-tab-label__count--on {
+  background: rgba(240, 185, 11, 0.18);
+  color: var(--manager-primary);
+}
+
+/* ---- 分组 ---- */
+
+.manager-argus-section + .manager-argus-section {
+  margin-top: 18px;
+}
+
+.manager-argus-section__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--manager-border);
+}
+
+.manager-argus-section__bar {
+  width: 3px;
+  height: 15px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--manager-primary-strong), var(--manager-primary));
+}
+
+.manager-argus-section__title {
+  color: var(--argus-ink);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.manager-argus-section__desc {
+  color: var(--argus-faint);
+  font-size: 12.5px;
+}
+
+.manager-argus-item {
+  position: relative;
+  margin-bottom: 14px;
+  padding: 16px 18px;
+  border-radius: 12px;
+  border: 1px solid var(--manager-border);
+  background: var(--manager-panel-strong);
+  transition: border-color 160ms ease;
+}
+
+.manager-argus-item:hover {
+  border-color: var(--manager-border-strong);
+}
+
+.manager-argus-item__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.manager-argus-item__index {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 8px;
+  background: rgba(240, 185, 11, 0.14);
+  color: var(--manager-primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.manager-argus-item__title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.manager-argus-item__title .ant-input {
+  padding-left: 0;
+  font-size: 14px;
+  font-weight: 700;
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.manager-argus-item__title .ant-input:hover,
+.manager-argus-item__title .ant-input:focus {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border-color: var(--manager-border) !important;
+  padding-left: 11px;
+}
+
+.manager-argus-empty {
+  padding: 26px;
+  border-radius: 12px;
+  border: 1px dashed var(--manager-border);
+  background: rgba(11, 14, 17, 0.4);
+  text-align: center;
+}
+
+.manager-argus-hint {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(77, 126, 255, 0.28);
+  background: rgba(77, 126, 255, 0.08);
+  color: var(--argus-muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.manager-argus-hint .anticon {
+  margin-top: 3px;
+  color: var(--manager-accent-strong);
+}
+
+.manager-argus .ant-form-item {
+  margin-bottom: 16px;
+}
+
+.manager-argus .ant-form-item-label > label {
+  color: var(--argus-muted);
+  font-size: 12.5px;
+}
+
+.manager-argus .ant-divider {
+  border-color: var(--manager-border);
+}
+
+@media (max-width: 1200px) {
+  .manager-argus-console {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .manager-argus-hero {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 20px;
+  }
+
+  .manager-argus-hero__aside {
+    align-items: flex-start;
+  }
+
+  .manager-argus-tiles {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .manager-argus-tabs .ant-tabs-nav {
+    min-width: 0;
+    padding: 12px;
+  }
+
+  .manager-argus-tabs > .ant-tabs-content-holder {
+    padding: 12px 16px 0;
+    border-left: none;
+  }
+}
+
+.manager-argus-alert.ant-alert {
+  border-color: rgba(240, 185, 11, 0.35);
+  background: rgba(240, 185, 11, 0.09);
+}
+
+.manager-argus-alert .ant-alert-message {
+  color: var(--manager-primary);
+  font-weight: 600;
+}
+
+.manager-argus-alert .ant-alert-description {
+  color: var(--manager-text-soft);
+  line-height: 1.7;
+}
+
+.manager-argus-alert .ant-alert-icon {
+  color: var(--manager-primary);
+}
+
+.manager-argus-maintabs > .ant-tabs-nav {
+  margin: 0 0 16px;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid var(--manager-border);
+  background: var(--manager-panel-strong);
+}
+
+.manager-argus-maintabs > .ant-tabs-nav::before {
+  display: none;
+}
+
+.manager-argus-maintabs > .ant-tabs-nav .ant-tabs-ink-bar {
+  display: none;
+}
+
+.manager-argus-maintabs > .ant-tabs-nav .ant-tabs-tab {
+  margin: 0 6px 0 0 !important;
+  padding: 9px 18px !important;
+  border-radius: 9px;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.manager-argus-maintabs > .ant-tabs-nav .ant-tabs-tab .ant-tabs-tab-btn {
+  color: var(--manager-text-soft) !important;
+  font-weight: 600;
+}
+
+.manager-argus-maintabs > .ant-tabs-nav .ant-tabs-tab:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.manager-argus-maintabs > .ant-tabs-nav .ant-tabs-tab-active {
+  background: linear-gradient(135deg, rgba(252, 213, 53, 0.18), rgba(240, 185, 11, 0.12));
+  box-shadow: inset 0 0 0 1px rgba(240, 185, 11, 0.35);
+}
+
+.manager-argus-maintabs > .ant-tabs-nav .ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: var(--manager-primary) !important;
+}
+
+.manager-argus-maintab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.manager-argus-maintab__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--manager-danger);
+  box-shadow: 0 0 8px rgba(246, 70, 93, 0.6);
+}
+
+.manager-argus-maintab__dot--on {
+  background: var(--manager-green);
+  box-shadow: 0 0 8px rgba(14, 203, 129, 0.6);
+}
+
+.manager-argus-maintab__badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(240, 185, 11, 0.4);
+  background: rgba(240, 185, 11, 0.12);
+  color: var(--manager-primary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.manager-argus-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}

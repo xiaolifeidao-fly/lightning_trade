@@ -68,6 +68,16 @@ func (g *GinRouter) Include(opts ...Option) {
 	g.options = append(g.options, opts...)
 }
 
+// GetEngine returns the underlying Gin engine for modules that manage their own HTTP server lifecycle.
+func (g *GinRouter) GetEngine() *gin.Engine {
+	return g.engine
+}
+
+// GetOptions returns the registered route options in registration order.
+func (g *GinRouter) GetOptions() []Option {
+	return g.options
+}
+
 func (g *GinRouter) Run(addr ...string) error {
 	routerGroup := g.engine.Group(viper.GetString("request.path"))
 	for _, opt := range g.options {
