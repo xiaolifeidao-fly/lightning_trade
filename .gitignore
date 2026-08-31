@@ -35,3 +35,7 @@ old_client_code
 client/pl_instance/configs
 client/pl_instance/dist
 client/pl_instance/node_modules
+
+# item-n466643：从 BADelay500W 迁入的 argus_single 研究资料，仅本地留存，不入库
+/docs/argus_single/
+/logs/argus_single/

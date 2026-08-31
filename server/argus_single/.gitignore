@@ -4,4 +4,6 @@ argus_single.pid
 server.log
 logs/
 data/
-configs/session*.json
+# item-n466643：属性文件含明文交易所凭证与 Telegram Token，仅本地留存
+configs/*
+!configs/application_dev.properties

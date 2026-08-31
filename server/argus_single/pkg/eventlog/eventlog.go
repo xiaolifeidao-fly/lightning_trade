@@ -42,6 +42,19 @@ type Event struct {
 	SigLast float64 `json:"sigLast,omitempty"`
 	SigMark float64 `json:"sigMark,omitempty"`
 	GapBp   float64 `json:"gapBp,omitempty"`
+	// 无条件偏离采样（dev_sample 事件，阶段①）：不经 signal_threshold 过滤的
+	// last-vs-mark 偏离分布。P7 的 GapBp 只在信号触发时落盘，被 5bp 阈值结构性
+	// 截断（实测 min=5.01bp），看不到分布主体，无法回答"阈值降到 θ 后 λ 是多少"。
+	//
+	// DevTicks 同时是已知性标记：它非零即表示采样器在工作，此时 DevCross/DevOver
+	// 的缺失就是真零而非字段未上线（omitempty 会省略零值 map，与 EquityKnown 同类处理）。
+	DevTicks  int            `json:"devTicks,omitempty"`
+	DevCross  map[string]int `json:"devCross,omitempty"`  // 各候选阈值(bp)的穿越次数 → λ(θ)
+	DevOver   map[string]int `json:"devOver,omitempty"`   // 各候选阈值(bp)的超阈 tick 数 → P(|dev|>θ)
+	DevMaxBp  float64        `json:"devMaxBp,omitempty"`  // 窗口内 |dev| 极值
+	DevMeanBp float64        `json:"devMeanBp,omitempty"` // 窗口内 |dev| 均值
+	// 趋势闸（trend_skip 事件，8/21 事故补丁）：拦截时刻的窗口动量（%，带符号）。
+	TrendMomPct float64 `json:"trendMomPct,omitempty"`
 }
 
 // 事件类型常量
@@ -56,6 +69,8 @@ const (
 	EvBalance         = "balance"
 	EvExternalClose   = "external_close" // 非本机器人平仓（快照对账识别，P2-A）
 	EvManualClose     = "manual_close"   // TG 一键/方向平仓（P2-A）
+	EvDevSample       = "dev_sample"     // 无条件偏离采样（市场侧，与账户无关，阶段①）
+	EvTrendSkip       = "trend_skip"     // 趋势闸拦截逆势开/加仓（8/21 事故补丁）
 )
 
 // Marshal 把事件序列化为一行 JSONL（含换行）。纯函数，可测。
@@ -180,4 +195,3 @@ func Log(e Event) {
 		l.Log(e)
 	}
 }
-

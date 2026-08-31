@@ -27,13 +27,15 @@ type TradeManager struct {
 	lastTrade                     time.Time
 	tradeCooldown                 time.Duration
 	stopShuffle                   chan struct{} // 用于停止shuffle goroutine
-	stopOnce                      sync.Once
 	telegramClient                *utils.TelegramClient
 	loginScheduler                *LoginScheduler
 	capGuard                      *PositionCapGuard  // 仓位上限守卫（仅 trailing 账户使用）
 	reverseGateMinProfitByAccount map[string]float64 // 账户级反向减仓最小盈利 ROI%
 	riskEquityByAccount           map[string]float64 // 风险基数（cap 公式唯一输入, P5 三拆）
+	stopOnce                      sync.Once
+	trendGateThresholdByAccount   map[string]float64 // 趋势闸阈值%（0=关闭；8/21 事故补丁）
 }
+
 
 func (tm *TradeManager) Config() *TradingSystemConfig {
 	tm.mu.RLock()
@@ -51,10 +53,16 @@ func NewTradeManager(config *TradingSystemConfig) *TradeManager {
 	capByAccount := make(map[string]CapParams)
 	gateMinByAccount := make(map[string]float64)
 	riskEquityByAccount := make(map[string]float64)
+	trendGateByAccount := make(map[string]float64)
 	for _, acc := range config.Accounts {
 		capByAccount[acc.Name] = resolveCapParams(acc)
 		gateMinByAccount[acc.Name] = resolveReverseGateMinProfit(acc)
 		riskEquityByAccount[acc.Name] = ResolveRiskEquity(acc)
+		trendGateByAccount[acc.Name] = resolveTrendGateThreshold(acc)
+		if th := trendGateByAccount[acc.Name]; th > 0 {
+			logrus.Infof("[趋势闸] 账户 %s 启用: 窗口=%.0fh 阈值=%.1f%% (动量超阈禁逆势开/加仓)",
+				acc.Name, vipper.GetFloat64("trade.trend_gate.window_hours"), th)
+		}
 		// P5：启动校验（fail-fast）+ 静态参数打印（动态行在 cap guard 首次初始化时打）
 		if acc.IsTrailingTP() {
 			view := resolveRiskParamsView(acc, config.Trade.OrderSize)
@@ -75,6 +83,7 @@ func NewTradeManager(config *TradingSystemConfig) *TradeManager {
 		capGuard:                      NewPositionCapGuard(loadCapParams(), capByAccount),
 		reverseGateMinProfitByAccount: gateMinByAccount,
 		riskEquityByAccount:           riskEquityByAccount,
+		trendGateThresholdByAccount:   trendGateByAccount,
 	}
 
 	// 为每个账户创建客户端
@@ -538,10 +547,12 @@ func (tm *TradeManager) executeSignalTrades_From_WEB(accounts []AccountConfig, i
 				return
 			}
 
-			// 持仓门控：cap(加仓) / reverse_gate(反向减仓)，共用一次净仓查询；无法核验时 fail-closed
+			// 持仓门控：cap(加仓) / reverse_gate(反向减仓) / trend_gate(逆势开加)，
+			// 共用一次净仓查询；无法核验时 fail-closed
+			trendTh := tm.trendGateThresholdByAccount[acc.Name]
 			var net NetPosition
 			netOK := false
-			if acc.IsTrailingTP() || acc.IsReverseGate() {
+			if acc.IsTrailingTP() || acc.IsReverseGate() || trendTh > 0 {
 				net, netOK = tm.currentNetPosition(acc.Name, instId)
 				if !netOK {
 					logrus.Warnf("  ⚠️  %s [持仓门控] 查询净仓失败，fail-closed 跳过开%s", acc.Name, posSide)
@@ -549,7 +560,7 @@ func (tm *TradeManager) executeSignalTrades_From_WEB(accounts []AccountConfig, i
 					return
 				}
 				if isReduction(posSide, net.Side, net.Size) {
-					// 反向减仓 → reverse_gate（盈利且不翻转才放行）
+					// 反向减仓 → reverse_gate（盈利且不翻转才放行）；趋势闸不拦减仓
 					if acc.IsReverseGate() {
 						dec := EvaluateReverseGate(net.Side, net.AvgPx, net.LastPx, SignalLeverage, tm.reverseGateMinProfitByAccount[acc.Name], accSize, net.Size)
 						if !dec.Allow {
@@ -560,15 +571,27 @@ func (tm *TradeManager) executeSignalTrades_From_WEB(accounts []AccountConfig, i
 							return
 						}
 					}
-				} else if acc.IsTrailingTP() && tm.capGuard != nil {
-					// 全新开仓 / 加仓 → 仓位上限
-					if tm.capGuard.WouldExceedCap(acc.Name, tm.riskEquityByAccount[acc.Name], net.Size, accSize, price) {
-						nmax, _ := tm.capGuard.MaxContracts(acc.Name)
-						logrus.Warnf("  ⛔ %s [仓位上限] 当前%d张 + %d张 > 上限%d，跳过开%s", acc.Name, net.Size, accSize, nmax, posSide)
-						eventlog.Log(applySignalQuote(eventlog.Event{Account: acc.Name, Variant: acc.Variant, InstId: instId, Event: eventlog.EvCapSkip,
-							Side: posSide, Size: net.Size, OrderSize: accSize, Reason: fmt.Sprintf("当前%d+%d>上限%d", net.Size, accSize, nmax)}, q))
-						resultCh <- result{skipped: true, skipMsg: fmt.Sprintf("⛔上限 %s 当前%d张+%d>上限%d", acc.Name, net.Size, accSize, nmax)}
-						return
+				} else {
+					// 全新开仓 / 加仓：先趋势闸（8/21 事故补丁——单边行情里逆势书
+					// 是 gate 棘轮下的必死仓，回测 24h/5% 三窗口全部 ≥ baseline），
+					// 再仓位上限。
+					if trendTh > 0 {
+						if dec := EvaluateTrendGate(posSide, q.TrendMomPct, q.TrendOK, trendTh); dec.Block {
+							logrus.Warnf("  🌊 %s [趋势闸] %s", acc.Name, dec.Reason)
+							eventlog.Log(buildTrendSkipEvent(acc, instId, posSide, net, accSize, dec, q))
+							resultCh <- result{skipped: true, skipMsg: fmt.Sprintf("🌊趋势闸 %s %s", acc.Name, dec.Reason)}
+							return
+						}
+					}
+					if acc.IsTrailingTP() && tm.capGuard != nil {
+						if tm.capGuard.WouldExceedCap(acc.Name, tm.riskEquityByAccount[acc.Name], net.Size, accSize, price) {
+							nmax, _ := tm.capGuard.MaxContracts(acc.Name)
+							logrus.Warnf("  ⛔ %s [仓位上限] 当前%d张 + %d张 > 上限%d，跳过开%s", acc.Name, net.Size, accSize, nmax, posSide)
+							eventlog.Log(applySignalQuote(eventlog.Event{Account: acc.Name, Variant: acc.Variant, InstId: instId, Event: eventlog.EvCapSkip,
+								Side: posSide, Size: net.Size, OrderSize: accSize, Reason: fmt.Sprintf("当前%d+%d>上限%d", net.Size, accSize, nmax)}, q))
+							resultCh <- result{skipped: true, skipMsg: fmt.Sprintf("⛔上限 %s 当前%d张+%d>上限%d", acc.Name, net.Size, accSize, nmax)}
+							return
+						}
 					}
 				}
 			}
