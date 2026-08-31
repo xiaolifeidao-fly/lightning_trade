@@ -290,3 +290,72 @@ func TestAggregateEquityUnknownTail(t *testing.T) {
 	}
 }
 
+// dev_sample 是市场侧事件（无账户），不得在按账户聚合里生成条目——否则 12h 报告
+// 会多出一个账户名为空、指标全零的行。
+func TestAggregateSkipsMarketSideEvents(t *testing.T) {
+	got := Aggregate([]Event{
+		{Account: "账户A", Event: EvOpen, Size: 3},
+		{Event: EvDevSample, InstId: "BTCUSDT", DevTicks: 60, DevCross: map[string]int{"5": 2}},
+		{Account: "账户A", Event: EvTrailingClose, RoiPct: 42},
+	})
+
+	if _, ok := got[""]; ok {
+		t.Error("空账户名不应出现在聚合结果里")
+	}
+	if len(got) != 1 {
+		t.Errorf("应只有 1 个账户条目，got %d", len(got))
+	}
+	if am := got["账户A"]; am == nil || am.Opens != 1 || am.TrailingCloses != 1 {
+		t.Errorf("账户A 的指标应不受影响，got %+v", am)
+	}
+}
+
+// dev_sample 的 map 字段与 devTicks 已知性标记必须能往返；零穿越时 devCross 省略，
+// 但 devTicks 仍在——这正是"真零 vs 字段未上线"的区分依据。
+func TestDevSampleRoundTripAndOmitempty(t *testing.T) {
+	line := Marshal(Event{Event: EvDevSample, InstId: "BTCUSDT", DevTicks: 58, DevMeanBp: 1.2})
+	if strings.Contains(line, "devCross") || strings.Contains(line, "devOver") {
+		t.Errorf("零穿越时不应出现 devCross/devOver: %s", line)
+	}
+	if !strings.Contains(line, `"devTicks":58`) {
+		t.Errorf("devTicks 必须保留作为已知性标记: %s", line)
+	}
+
+	var back Event
+	if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &back); err != nil {
+		t.Fatalf("反序列化失败: %v", err)
+	}
+	if back.DevTicks != 58 || back.DevCross != nil {
+		t.Errorf("往返不一致: %+v", back)
+	}
+}
+
+// trend_skip（趋势闸拦截，8/21 事故补丁）计入独立计数器；trendMomPct 往返保真。
+func TestAggregateCountsTrendSkips(t *testing.T) {
+	got := Aggregate([]Event{
+		{Account: "账户A", Event: EvTrendSkip, TrendMomPct: 5.3},
+		{Account: "账户A", Event: EvTrendSkip, TrendMomPct: -6.1},
+		{Account: "账户A", Event: EvOpen, Size: 1},
+	})
+	am := got["账户A"]
+	if am == nil || am.TrendSkips != 2 {
+		t.Fatalf("TrendSkips 应为 2, got %+v", am)
+	}
+	if am.Opens != 1 {
+		t.Errorf("其他计数不受影响, got %+v", am)
+	}
+}
+
+func TestTrendSkipEventRoundTrip(t *testing.T) {
+	line := Marshal(Event{Event: EvTrendSkip, Account: "a", TrendMomPct: 5.31, Reason: "趋势闸"})
+	var back Event
+	if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &back); err != nil {
+		t.Fatalf("反序列化失败: %v", err)
+	}
+	if back.TrendMomPct != 5.31 || back.Event != EvTrendSkip {
+		t.Errorf("往返不一致: %+v", back)
+	}
+	if strings.Contains(Marshal(Event{Event: EvOpen}), "trendMomPct") {
+		t.Error("零值应被 omitempty 省略")
+	}
+}

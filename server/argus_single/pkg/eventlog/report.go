@@ -3,7 +3,7 @@ package eventlog
 // AccountMetrics 单账户在一段事件上的聚合指标（对比报告用）。
 type AccountMetrics struct {
 	Account, Variant                                          string
-	Opens, CapSkips, GateBlocks                               int
+	Opens, CapSkips, GateBlocks, TrendSkips                   int
 	TrailingCloses, CatastropheStops, LossAlerts, FixedCloses int
 	ExternalCloses, ManualCloses                              int // 非策略平仓：展示但不进胜率/ROI（P2-E）
 	MaxSize                                                   int
@@ -55,6 +55,9 @@ func Aggregate(events []Event) map[string]*AccountMetrics {
 	peak := map[string]float64{}    // 权益口径峰（仅权益已知样本）
 	peakBal := map[string]float64{} // 已实现余额口径峰（全样本）
 	for _, e := range events {
+		if e.Event == EvDevSample {
+			continue // 市场侧事件（无账户），否则会聚出一个空账户名的空条目
+		}
 		am := out[e.Account]
 		if am == nil {
 			am = &AccountMetrics{Account: e.Account}
@@ -71,6 +74,8 @@ func Aggregate(events []Event) map[string]*AccountMetrics {
 			am.Opens++
 		case EvCapSkip:
 			am.CapSkips++
+		case EvTrendSkip:
+			am.TrendSkips++
 		case EvGateBlock:
 			am.GateBlocks++
 		case EvLossAlert:
@@ -143,4 +148,3 @@ func Aggregate(events []Event) map[string]*AccountMetrics {
 	}
 	return out
 }
-

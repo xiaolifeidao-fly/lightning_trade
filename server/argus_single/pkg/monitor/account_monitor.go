@@ -300,14 +300,14 @@ func formatComparisonReport(metrics map[string]*eventlog.AccountMetrics, since, 
 				"收益率: %+.2f%%  %s\n"+
 				"余额: %.2f → %.2f  当前权益: %s\n"+
 				"最大张数: %d\n"+
-				"开仓:%d  上限跳过:%d  门控拦截:%d  亏损告警:%d\n"+
+				"开仓:%d  上限跳过:%d  门控拦截:%d  趋势闸:%d  亏损告警:%d\n"+
 				"平仓: 移动止盈%d / 兜底%d / 固定%d  胜率%.0f%%  (外部%d/手动%d不计)\n"+
 				"平仓ROI: 均%.1f%% [%.1f%%~%.1f%%]  锁利合计:%.4f\n",
 			m.Account, m.Variant,
 			m.PnLPct(), ddStr,
 			m.FirstBalance, m.LastBalance, eqStr,
 			m.MaxSize,
-			m.Opens, m.CapSkips, m.GateBlocks, m.LossAlerts,
+			m.Opens, m.CapSkips, m.GateBlocks, m.TrendSkips, m.LossAlerts,
 			m.TrailingCloses, m.CatastropheStops, m.FixedCloses, m.CloseWinRate()*100,
 			m.ExternalCloses, m.ManualCloses,
 			m.CloseAvgRoi(), m.CloseRoiMin, m.CloseRoiMax, m.ClosePnlSum,

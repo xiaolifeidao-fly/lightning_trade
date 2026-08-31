@@ -14,6 +14,11 @@ type SignalQuote struct {
 	Last  float64 // 信号时刻 DeepCoin last
 	Mark  float64 // 信号时刻 DeepCoin mark
 	GapBp float64 // (last-mark)/mark × 10000，带符号：>0 对应 UP，<0 对应 DOWN
+	// 趋势闸（8/21 事故补丁）：信号时刻的窗口动量。随快照显式传递的理由同上
+	// ——5s 延迟期间动量可能刷新，判定必须用信号时刻的值。TrendOK=false 表示
+	// 历史不足一个窗口（重启后未回填），判定层放行。零值安全（不启用闸）。
+	TrendMomPct float64
+	TrendOK     bool
 }
 
 // NewSignalQuote 由 last/mark 构造快照并算出 gap（基点）。
@@ -37,4 +42,3 @@ func applySignalQuote(e eventlog.Event, q SignalQuote) eventlog.Event {
 	e.SigLast, e.SigMark, e.GapBp = q.Last, q.Mark, q.GapBp
 	return e
 }
-

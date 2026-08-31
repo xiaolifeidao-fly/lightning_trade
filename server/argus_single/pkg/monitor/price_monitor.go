@@ -15,6 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 
+	"argus_single/pkg/eventlog"
 	"argus_single/pkg/trade"
 )
 
@@ -28,14 +29,14 @@ type SymbolConfig struct {
 
 // PriceMonitor 价格监控器
 type PriceMonitor struct {
-	symbolConfigs      map[string]SymbolConfig // 币种配置
-	binancePrices      map[string]float64      // 币安价格
-	deepcoinPrices     map[string]float64      // DeepCoin价格
-	binancePriceTimes  map[string]time.Time    // 币安价格更新时间
-	deepcoinPriceTimes map[string]time.Time    // DeepCoin价格更新时间
-	telegramClient     *utils.TelegramClient   // Telegram客户端
-	mu                 sync.RWMutex            // 价格读写锁
-	stopChan           chan struct{}           // 停止信号
+	symbolConfigs      map[string]SymbolConfig    // 币种配置
+	binancePrices      map[string]float64         // 币安价格
+	deepcoinPrices     map[string]float64         // DeepCoin价格
+	binancePriceTimes  map[string]time.Time       // 币安价格更新时间
+	deepcoinPriceTimes map[string]time.Time       // DeepCoin价格更新时间
+	telegramClient     *utils.TelegramClient      // Telegram客户端
+	mu                 sync.RWMutex               // 价格读写锁
+	stopChan           chan struct{}              // 停止信号
 	stopOnce           sync.Once
 	wg                 sync.WaitGroup             // 等待组
 	lastAlertTime      map[string]time.Time       // 上次告警时间（防重复）
@@ -46,6 +47,10 @@ type PriceMonitor struct {
 	signalMu           sync.Mutex                 // 盘口信号派发锁
 	lastDerivedSignal  map[string]SignalDirection // 上次由行情偏离推导出的信号方向
 	lastSpread         map[string]float64         // 上次有方向价差（Binance-DeepCoin）/DeepCoin
+	devSamplers        map[string]*DevSampler     // 无条件偏离采样器（阶段①，受 signalMu 保护）
+	lastDevFlush       map[string]time.Time       // 上次 dev_sample 落盘时间（受 signalMu 保护）
+	trendTrackers      map[string]*TrendTracker   // 趋势闸动量源（8/21 补丁，受 signalMu 保护）
+	trendWindow        time.Duration              // 趋势闸窗口（trade.trend_gate.window_hours，默认 24h）
 }
 
 // NewPriceMonitor 创建价格监控器
@@ -53,6 +58,10 @@ func NewPriceMonitor(symbolConfigs map[string]SymbolConfig) *PriceMonitor {
 	signalDelaySeconds := vipper.GetInt("trade.signal.delay_seconds")
 	if signalDelaySeconds <= 0 {
 		signalDelaySeconds = 5
+	}
+	trendWindowHours := vipper.GetFloat64("trade.trend_gate.window_hours")
+	if trendWindowHours <= 0 {
+		trendWindowHours = 24
 	}
 
 	return &PriceMonitor{
@@ -68,12 +77,19 @@ func NewPriceMonitor(symbolConfigs map[string]SymbolConfig) *PriceMonitor {
 		signalScheduler:    NewSignalScheduler(time.Duration(signalDelaySeconds) * time.Second),
 		lastDerivedSignal:  make(map[string]SignalDirection),
 		lastSpread:         make(map[string]float64),
+		devSamplers:        make(map[string]*DevSampler),
+		lastDevFlush:       make(map[string]time.Time),
+		trendTrackers:      make(map[string]*TrendTracker),
+		trendWindow:        time.Duration(trendWindowHours * float64(time.Hour)),
 	}
 }
 
 // Start 启动监控
 func (pm *PriceMonitor) Start() {
 	logrus.Info("启动价格监控...")
+
+	// 趋势闸历史回填（8/21 补丁）：异步拉 1m K线，失败只降级不阻塞
+	go pm.backfillTrendHistory()
 
 	for symbol := range pm.symbolConfigs {
 		pm.binancePrices[symbol] = 0
@@ -1041,35 +1057,33 @@ func (pm *PriceMonitor) handleOrderBookSignal(symbol string, dataField map[strin
 		return
 	}
 
-	threshold := config.SignalThreshold
-	if threshold <= 0 {
-		threshold = 0.0005
-	}
+	threshold := ResolveSignalThreshold(config.SignalThreshold)
 	deviation := (lastPrice - markedPrice) / markedPrice
-	if math.Abs(deviation) < threshold {
-		pm.signalMu.Lock()
-		pm.lastDerivedSignal[symbol] = ""
-		pm.signalMu.Unlock()
-		return
-	}
 
-	direction := SignalDirectionUp
-	if deviation < 0 {
-		direction = SignalDirectionDown
-	}
-
+	now := time.Now()
 	pm.signalMu.Lock()
-	if pm.lastDerivedSignal[symbol] == direction {
-		pm.signalMu.Unlock()
+	direction, fire := EvaluateDeviationSignal(deviation, threshold, pm.lastDerivedSignal[symbol])
+	pm.lastDerivedSignal[symbol] = direction
+	// 阶段①无条件偏离采样：在信号判定之后、同一临界区内纯累加，绝不影响派发。
+	devEvent, devReady := pm.observeDeviationLocked(now, symbol, config, lastPrice, markedPrice)
+	// 趋势闸动量（8/21 补丁）：同一临界区内分钟级采样；判定用信号时刻的快照值。
+	trendMom, trendOK := pm.observeTrendLocked(now, symbol, lastPrice)
+	pm.signalMu.Unlock()
+
+	if devReady {
+		eventlog.Log(devEvent) // 锁外落盘：Log 内部写盘失败只记 error，不影响交易
+	}
+
+	if !fire {
 		return
 	}
-	pm.lastDerivedSignal[symbol] = direction
-	pm.signalMu.Unlock()
 
 	source := fmt.Sprintf("LastPrice/MarkedPrice %.4f%%", deviation*100)
 	logrus.Infof("[%s] 由盘口价格偏离生成信号: signal=%s, LastPrice=%.8f, MarkedPrice=%.8f, deviation=%.4f%%, threshold=%.4f%%",
 		symbol, direction, lastPrice, markedPrice, deviation*100, threshold*100)
-	pm.signalScheduler.OnSignal(symbol, config, direction, lastPrice, source, trade.NewSignalQuote(lastPrice, markedPrice))
+	q := trade.NewSignalQuote(lastPrice, markedPrice)
+	q.TrendMomPct, q.TrendOK = trendMom, trendOK
+	pm.signalScheduler.OnSignal(symbol, config, direction, lastPrice, source, q)
 }
 
 func getSpreadMaxPriceAge() time.Duration {
