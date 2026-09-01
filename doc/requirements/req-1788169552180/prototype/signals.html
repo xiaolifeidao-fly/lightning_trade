@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>信号复盘与持仓生命周期 · 闪电量化管理端原型</title>
+<link rel="stylesheet" href="assets/shell.css">
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script src="assets/chart.js"></script>
+<script>
+const page = renderShell('signals');
+const INST = currentInstance();   // null = 全部实例
+
+/* ---------- 数据 ---------- */
+const DAY = Date.UTC(2026, 7, 31, 8, 0, 0);
+const candles = genCandles({ seed: 7, count: 600, start: DAY, stepMs: 60000, base: 78050 });
+const dev = genDeviation(candles, 33);
+const allSignals = genSignals(candles, dev, 51);
+
+/* 用户给的那条真实 TG 消息，作为第一条样本钉进列表 */
+const REAL = {
+  id: 'sig-4207', t: Date.UTC(2026, 7, 31, 17, 13, 48), price: 78608.50,
+  dir: 'UP', side: 'long', kind: 'open', reason: '', gate: null, gapBp: 6.42,
+  account: ACCOUNTS[1], size: 1, net: 4, configVersion: 37,
+  accounts: [
+    { acc: ACCOUNTS[1], result: 'open', size: 1, avg: 78618.09, fill: 78618.10 },
+    { acc: ACCOUNTS[0], result: 'gate_block', gate: { name: '盈利不足', actual: 'ROI=-108.7%', op: '<', threshold: '8%' } },
+  ],
+};
+const signals = [REAL, ...allSignals.filter(s => s.t < REAL.t)].sort((a, b) => b.t - a.t);
+
+const EPISODES = [
+  { id: 'ep-881', acc: ACCOUNTS[0], side: 'long', open: Date.UTC(2026,7,31,9,12,4), close: Date.UTC(2026,7,31,11,48,22),
+    size: 14, avg: 77942.31, exit: 'trailing_close', exitLabel: '移动止盈', peak: 186.4, roi: 128.7, pnl: 612.4, adds: 13, variant: 'champion/S400_cap26_gate8', ver: 36 },
+  { id: 'ep-882', acc: ACCOUNTS[1], side: 'long', open: Date.UTC(2026,7,31,10,3,51), close: Date.UTC(2026,7,31,12,20,9),
+    size: 8, avg: 78011.02, exit: 'trailing_close', exitLabel: '移动止盈', peak: 96.2, roi: 71.4, pnl: 188.6, adds: 7, variant: 'challenger/S400_cap8', ver: 36 },
+  { id: 'ep-883', acc: ACCOUNTS[0], side: 'short', open: Date.UTC(2026,7,31,13,26,18), close: Date.UTC(2026,7,31,14,2,40),
+    size: 6, avg: 78402.77, exit: 'catastrophe_stop', exitLabel: '兜底止损', peak: 12.8, roi: -302.4, pnl: -418.9, adds: 5, variant: 'champion/S400_cap26_gate8', ver: 36 },
+  { id: 'ep-884', acc: ACCOUNTS[1], side: 'long', open: Date.UTC(2026,7,31,15,41,2), close: Date.UTC(2026,7,31,16,30,55),
+    size: 5, avg: 78512.10, exit: 'external_close', exitLabel: '交易所侧平仓', peak: 44.0, roi: 21.3, pnl: 56.1, adds: 4, variant: 'challenger/S400_cap8', ver: 37 },
+  { id: 'ep-885', acc: ACCOUNTS[1], side: 'long', open: Date.UTC(2026,7,31,17,13,48), close: null,
+    size: 4, avg: 78618.09, exit: null, exitLabel: '持仓中', peak: 18.6, roi: 12.4, pnl: 31.8, adds: 3, variant: 'challenger/S400_cap8', ver: 37 },
+];
+
+const EXIT_KINDS = {
+  trailing_close:  { label: '移动止盈',     chip: 'ok' },
+  fixed_close:     { label: '固定止盈',     chip: 'ok' },
+  catastrophe_stop:{ label: '兜底止损',     chip: 'err' },
+  external_close:  { label: '交易所侧平仓', chip: 'mute' },
+  manual_close:    { label: '人工平仓',     chip: 'mute' },
+  null:            { label: '持仓中',       chip: 'warn' },
+};
+
+const F = { view: 'signal', account: 'all', kind: 'all', strength: 'all', ver: 'all' };
+
+/* ---------- 统计 ---------- */
+function stats(list) {
+  const s = { open: 0, gate_block: 0, cap_skip: 0, trend_skip: 0 };
+  list.forEach(x => s[x.kind]++);
+  return s;
+}
+const S = stats(signals);
+const blocked = S.gate_block + S.cap_skip + S.trend_skip;
+const STRENGTH = [
+  { key: 'w', label: '弱 5–7 bp',   test: s => Math.abs(s.gapBp) < 7, color: '#5E6673' },
+  { key: 'm', label: '中 7–9 bp',   test: s => Math.abs(s.gapBp) >= 7 && Math.abs(s.gapBp) < 9, color: '#F0B90B' },
+  { key: 's', label: '强 ≥ 9 bp',   test: s => Math.abs(s.gapBp) >= 9, color: '#0ECB81' },
+];
+
+page.innerHTML = `
+  ${INST ? '' : `<div class="note warn">
+    当前是<b>全部实例</b>视图。三个实例的账户不重名但会重号——
+    实例1 的 <span class="mono">account1</span> 是 1394537246@qq.com，实例3 的 <span class="mono">account1</span> 是 uid 9564268。
+    因此 <span class="mono">strategy_event</span> 必须带 <span class="mono">instance_key</span>，
+    账户唯一性用 <b>(instance_key, account)</b> 归集，只按账户名会串实例。
+  </div>`}
+
+  <div class="grid g4">
+    <div class="card kpi"><div class="label">信号总数</div><div class="value">${signals.length}</div><div class="meta">2026-08-31 · BTCUSDT</div></div>
+    <div class="card kpi"><div class="label">成功开仓 / 成交率</div><div class="value up">${S.open} <span style="font-size:16px;color:var(--manager-text-faint)">/ ${(S.open/signals.length*100).toFixed(0)}%</span></div><div class="meta">其余 ${blocked} 条被条件挡住</div></div>
+    <div class="card kpi"><div class="label">完成的持仓 episode</div><div class="value blue">${EPISODES.filter(e=>e.close).length}</div><div class="meta">另有 ${EPISODES.filter(e=>!e.close).length} 笔持仓中</div></div>
+    <div class="card kpi"><div class="label">今日净盈亏</div><div class="value up">${signed(EPISODES.reduce((s,e)=>s+e.pnl,0),1,' U')}</div><div class="meta">交易所侧平仓不计入策略胜率</div></div>
+  </div>
+
+  <div class="grid g2">
+    <div class="card">
+      <div class="card-head"><h3>拦截原因分布</h3><span class="sub">结构化字段：门控类型 + 阈值 + 实测值</span></div>
+      <div class="card-body">
+        ${[['反向门控 · 盈利不足', S.gate_block, '#A78BFA', 'ROI < 8%'],
+           ['仓位上限 · 已达上限', S.cap_skip, '#FF9F43', '净仓 ≥ 26 张'],
+           ['趋势闸 · 逆势拦截', S.trend_skip, '#4D7EFF', '24h 动量 < −5%']]
+          .map(([n, v, c, th]) => `
+          <div class="bar-row">
+            <div><div style="font-size:12.5px">${n.split(' · ')[0]}</div><div style="color:var(--manager-text-dim);font-size:11px" class="mono">${th}</div></div>
+            <div class="bar-track"><div class="bar-fill" style="width:${v / Math.max(blocked,1) * 100}%;background:${c}"></div></div>
+            <span class="mono" style="text-align:right">${v} 次</span>
+          </div>`).join('')}
+        <div class="note" style="margin-top:12px">
+          原来只有一句自由文本 <span class="mono">"盈利不足 ROI=-108.7% < 8%"</span>，无法聚合。
+          落库时拆成 <b>gate_kind / threshold / actual</b> 后，才能回答「今天最常被什么挡住」。
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>信号强度分级</h3><span class="sub">按 gapBp 绝对值分档，用于观察「强信号是不是更赚」</span></div>
+      <div class="card-body">
+        ${STRENGTH.map(g => {
+          const list = signals.filter(g.test);
+          const ok = list.filter(s => s.kind === 'open').length;
+          return `<div class="bar-row">
+            <div><div style="font-size:12.5px">${g.label}</div><div style="color:var(--manager-text-dim);font-size:11px">开仓 ${ok} / ${list.length}</div></div>
+            <div class="bar-track"><div class="bar-fill" style="width:${list.length / signals.length * 100}%;background:${g.color}"></div></div>
+            <span class="mono" style="text-align:right">${list.length} 条</span>
+          </div>`;
+        }).join('')}
+        <div class="note warn" style="margin-top:12px">
+          gapBp 被 5bp 阈值结构性截断（实测 min=5.01bp），分布主体看不到。
+          <b>dev_sample</b> 无条件采样事件同样落库，可在回测页看完整分布。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div class="seg" id="viewSeg">
+        <button data-v="signal" class="on">信号视角</button>
+        <button data-v="episode">持仓 episode 视角</button>
+      </div>
+      <div class="right row">
+        <select class="input sm" id="fInst" style="width:180px" onchange="setInstance(this.value)">
+          <option value="all" ${INST ? '' : 'selected'}>全部实例</option>
+          ${INSTANCES.map(i => `<option value="${i.key}" ${INST && INST.key === i.key ? 'selected' : ''}>${i.name}</option>`).join('')}
+        </select>
+        <select class="input sm" id="fAccount" style="width:150px">
+          <option value="all">全部账户</option>
+          ${ACCOUNTS.map(a => `<option value="${a.short}">${a.short}</option>`).join('')}
+        </select>
+        <select class="input sm" id="fKind" style="width:150px">
+          <option value="all">全部结果</option>
+          ${Object.entries(GATE_KINDS).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}
+        </select>
+        <select class="input sm" id="fStrength" style="width:140px">
+          <option value="all">全部强度</option>
+          ${STRENGTH.map(g => `<option value="${g.key}">${g.label}</option>`).join('')}
+        </select>
+        <select class="input sm" id="fVer" style="width:140px">
+          <option value="all">全部参数版本</option>
+          <option value="37">v37（当前）</option>
+          <option value="36">v36</option>
+        </select>
+        <button class="btn sm" onclick="toast('已导出筛选结果 CSV')">导出</button>
+      </div>
+    </div>
+    <div class="card-body flush"><div id="list"></div></div>
+  </div>
+
+  <div class="drawer" id="detail">
+    <div class="drawer-head">
+      <h3 id="dTitle">持仓生命周期</h3>
+      <span class="chip info" id="dId"></span>
+      <div class="spacer"><button class="icon-btn" onclick="closeOverlays()">✕</button></div>
+    </div>
+    <div class="drawer-body" id="dBody"></div>
+  </div>
+`;
+
+/* ---------- 列表渲染 ---------- */
+function filtered() {
+  return signals.filter(s =>
+    (F.account === 'all' || s.account.short === F.account) &&
+    (F.kind === 'all' || s.kind === F.kind) &&
+    (F.strength === 'all' || STRENGTH.find(g => g.key === F.strength).test(s)) &&
+    (F.ver === 'all' || String(s.configVersion) === F.ver));
+}
+
+function renderList() {
+  const host = document.getElementById('list');
+  if (F.view === 'episode') {
+    host.innerHTML = `<table class="tbl">
+      <thead><tr><th>Episode</th><th>账户 / 变体</th><th>方向</th><th class="num">峰值张数</th><th class="num">均价</th>
+      <th class="num">峰值浮盈</th><th class="num">出场 ROI</th><th class="num">净盈亏</th><th>出场方式</th><th>持续</th><th></th></tr></thead>
+      <tbody>${EPISODES.slice().reverse().map(e => {
+        const k = EXIT_KINDS[e.exit];
+        const dur = e.close ? Math.round((e.close - e.open) / 60000) : Math.round((REAL.t + 3600000 - e.open) / 60000);
+        return `<tr class="clickable" onclick="openEpisode('${e.id}')">
+          <td class="mono">${e.id}</td>
+          <td><div style="font-size:12.5px">${e.acc.short}</div><div class="mono" style="color:var(--manager-text-dim);font-size:11px">${e.variant}</div></td>
+          <td><span class="chip ${e.side === 'long' ? 'ok' : 'err'}">${e.side}</span></td>
+          <td class="num mono">${e.size}</td>
+          <td class="num mono">${fmtPx(e.avg)}</td>
+          <td class="num mono gold">${signed(e.peak, 1, '%')}</td>
+          <td class="num mono ${e.roi >= 0 ? 'up' : 'down'}">${signed(e.roi, 1, '%')}</td>
+          <td class="num mono ${e.pnl >= 0 ? 'up' : 'down'}">${signed(e.pnl, 1)}</td>
+          <td><span class="chip ${k.chip}">${k.label}</span></td>
+          <td class="mono" style="color:var(--manager-text-faint)">${dur} 分钟</td>
+          <td><button class="btn sm">生命周期</button></td>
+        </tr>`;
+      }).join('')}</tbody></table>`;
+    return;
+  }
+
+  const list = filtered();
+  if (!list.length) {
+    host.innerHTML = `<div class="state"><span class="ico">🔍</span><h4>没有匹配的信号</h4>
+      <p>当前筛选组合下没有记录。清空筛选后可以看到全部 ${signals.length} 条。</p>
+      <button class="btn" onclick="resetFilter()">清空筛选</button></div>`;
+    return;
+  }
+  host.innerHTML = `<div class="tbl-scroll" style="max-height:640px"><table class="tbl">
+    <thead><tr><th>时间</th>${INST ? '' : '<th>实例</th>'}<th>账户</th><th>信号</th><th class="num">参考价</th><th class="num">偏离</th>
+    <th>结果</th><th>门控 / 成交明细</th><th>参数版本</th><th></th></tr></thead>
+    <tbody>${list.map(s => {
+      const g = GATE_KINDS[s.kind];
+      return `<tr class="clickable" onclick="openSignal('${s.id}')">
+        <td class="mono">${fmtTime(s.t, true).slice(5)}</td>
+        ${INST ? '' : `<td class="mono" style="font-size:11.5px;color:var(--manager-text-faint);white-space:nowrap">${INSTANCES[s.t % INSTANCES.length].key}</td>`}
+        <td style="color:var(--manager-text-soft);white-space:nowrap">${s.account.short}</td>
+        <td><span class="chip ${s.dir === 'UP' ? 'ok' : 'err'}">${s.dir} → ${s.side}</span></td>
+        <td class="num mono">${fmtPx(s.price)}</td>
+        <td class="num mono ${s.gapBp > 0 ? 'up' : 'down'}">${signed(s.gapBp, 2)}</td>
+        <td><span class="chip ${g.chip}">${g.label}</span></td>
+        <td style="color:var(--manager-text-soft);font-size:12.5px">${
+          s.kind === 'open' ? `${s.size} 张 · 均价 ${fmtPx(s.price + 9.6)}` :
+          `<span class="mono" style="color:var(--manager-text-faint)">${s.gate.name}</span> ${s.gate.actual} ${s.gate.op} ${s.gate.threshold}`}</td>
+        <td class="mono" style="color:var(--manager-text-dim)">v${s.configVersion}</td>
+        <td><button class="btn sm">详情</button></td>
+      </tr>`;
+    }).join('')}</tbody></table></div>`;
+}
+
+function resetFilter() {
+  Object.assign(F, { account: 'all', kind: 'all', strength: 'all', ver: 'all' });
+  ['fAccount', 'fKind', 'fStrength', 'fVer'].forEach(id => document.getElementById(id).value = 'all');
+  renderList();
+}
+
+/* ---------- 信号详情（含多账户逐条结果，对齐 TG 消息结构） ---------- */
+function openSignal(id) {
+  const s = signals.find(x => x.id === id);
+  const g = GATE_KINDS[s.kind];
+  document.getElementById('dTitle').textContent = '盘口信号详情';
+  document.getElementById('dId').textContent = s.id;
+  const perAccount = s.accounts || [{ acc: s.account, result: s.kind, size: s.size, avg: s.price + 9.59, fill: s.price + 9.6, gate: s.gate }];
+  document.getElementById('dBody').innerHTML = `
+    <div class="row">
+      <span class="chip ${g.chip}">${g.label}</span>
+      <span class="chip ${s.dir === 'UP' ? 'ok' : 'err'}">${s.dir} → ${s.side}</span>
+      <span class="chip mute">v${s.configVersion}</span>
+      <span class="chip mute mono">${fmtTime(s.t, true)}</span>
+    </div>
+    <div class="grid g4">
+      <div class="card kpi"><div class="label">参考价</div><div class="value" style="font-size:19px">${fmtPx(s.price)}</div></div>
+      <div class="card kpi"><div class="label">偏离 gapBp</div><div class="value ${s.gapBp > 0 ? 'up' : 'down'}" style="font-size:19px">${signed(s.gapBp, 2)}</div></div>
+      <div class="card kpi"><div class="label">成功账户</div><div class="value up" style="font-size:19px">${perAccount.filter(a => a.result === 'open').length}</div></div>
+      <div class="card kpi"><div class="label">被拦截</div><div class="value gold" style="font-size:19px">${perAccount.filter(a => a.result !== 'open').length}</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>逐账户判定</h3><span class="sub">对应 TG 消息里的 [n] / [跳过n] 明细行</span></div>
+      <div class="card-body flush"><table class="tbl">
+        <thead><tr><th>账户</th><th>结果</th><th class="num">张数</th><th class="num">均价</th><th class="num">成交</th><th>说明</th></tr></thead>
+        <tbody>${perAccount.map(a => `<tr>
+          <td>${a.acc.short}<div class="mono" style="color:var(--manager-text-dim);font-size:11px">${a.acc.name}</div></td>
+          <td><span class="chip ${GATE_KINDS[a.result].chip}">${GATE_KINDS[a.result].label}</span></td>
+          <td class="num mono">${a.size ?? '—'}</td>
+          <td class="num mono">${a.avg ? fmtPx(a.avg) : '—'}</td>
+          <td class="num mono">${a.fill ? fmtPx(a.fill) : '—'}</td>
+          <td style="font-size:12.5px;color:var(--manager-text-soft)">${a.gate ? `<span class="mono">${a.gate.name}</span> ${a.gate.actual} ${a.gate.op} ${a.gate.threshold}` : '正常成交'}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </div>
+    <div class="note">
+      这一屏取代原先「导出 TG 历史消息 → 交给 AI 读」的流程：同样的信息全部来自 <span class="mono">strategy_event</span> 表，可筛选、可聚合、可回测。
+      <div style="margin-top:8px"><a class="btn sm" href="market.html">在行情图上定位 →</a></div>
+    </div>
+  `;
+  openOverlay('detail');
+}
+
+/* ---------- Episode 生命周期详情 ---------- */
+function openEpisode(id) {
+  const e = EPISODES.find(x => x.id === id);
+  const k = EXIT_KINDS[e.exit];
+  document.getElementById('dTitle').textContent = '持仓生命周期（Episode）';
+  document.getElementById('dId').textContent = e.id;
+  const giveback = e.peak > 0 ? ((e.peak - e.roi) / e.peak * 100) : 0;
+
+  const r = rng(e.open % 99991);
+  const n = 60;
+  const roiCurve = [];
+  for (let i = 0; i < n; i++) {
+    const prog = i / (n - 1);
+    const shape = Math.sin(prog * Math.PI) * e.peak * (0.7 + r() * 0.35);
+    roiCurve.push({ t: e.open + (i / (n - 1)) * ((e.close || e.open + 5400000) - e.open), v: i === n - 1 ? e.roi : shape });
+  }
+
+  document.getElementById('dBody').innerHTML = `
+    <div class="row">
+      <span class="chip ${e.side === 'long' ? 'ok' : 'err'}">${e.side}</span>
+      <span class="chip ${k.chip}">${k.label}</span>
+      <span class="chip mute">${e.acc.short}</span>
+      <span class="chip mute mono">${e.variant}</span>
+      <span class="chip mute">参数 v${e.ver}</span>
+    </div>
+    <div class="grid g4">
+      <div class="card kpi"><div class="label">峰值张数</div><div class="value" style="font-size:19px">${e.size}</div><div class="meta">含 ${e.adds} 次加仓</div></div>
+      <div class="card kpi"><div class="label">峰值浮盈</div><div class="value gold" style="font-size:19px">${signed(e.peak, 1, '%')}</div><div class="meta">trail 激活后记录</div></div>
+      <div class="card kpi"><div class="label">出场 ROI</div><div class="value ${e.roi >= 0 ? 'up' : 'down'}" style="font-size:19px">${signed(e.roi, 1, '%')}</div><div class="meta">回吐 ${giveback.toFixed(0)}%</div></div>
+      <div class="card kpi"><div class="label">净盈亏</div><div class="value ${e.pnl >= 0 ? 'up' : 'down'}" style="font-size:19px">${signed(e.pnl, 1)} U</div><div class="meta">已扣往返手续费</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>浮盈 ROI 轨迹</h3><span class="sub">峰值与回吐比例 = (peakPct − roiPct) / peakPct</span></div>
+      <div class="card-body"><div id="roiChart"></div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>事件时间轴</h3><span class="sub">由 strategy_event 按 episode 状态机切分</span></div>
+      <div class="card-body">
+        <div class="timeline">
+          <div class="tl-item green">
+            <div class="t mono">${fmtTime(e.open, true)}</div>
+            <div class="h">开仓 · 1 张</div>
+            <div class="d">盘口信号 ${e.side === 'long' ? 'UP → long' : 'DOWN → short'}，均价 ${fmtPx(e.avg)}，净仓 1 张</div>
+          </div>
+          <div class="tl-item">
+            <div class="t mono">${fmtTime(e.open + 900000, true)}</div>
+            <div class="h">连续加仓 × ${e.adds}</div>
+            <div class="d">同向信号每次 +1 张，累加至 ${e.size} 张${e.size >= e.acc.cap ? `，触及上限 ${e.acc.cap} 张后开始 cap_skip` : ''}</div>
+          </div>
+          <div class="tl-item blue">
+            <div class="t mono">${fmtTime(e.open + 1800000, true)}</div>
+            <div class="h">移动止盈激活</div>
+            <div class="d">浮盈达 ${e.peak >= 150 ? '150%（小仓档）' : e.peak >= 90 ? '90%（中仓档）' : '40%（大仓档）'}，进入回撤保护，峰值 ${e.peak.toFixed(1)}%</div>
+          </div>
+          ${e.close ? `<div class="tl-item ${e.roi >= 0 ? 'green' : 'red'}">
+            <div class="t mono">${fmtTime(e.close, true)}</div>
+            <div class="h">${k.label} · 全部平仓</div>
+            <div class="d">${e.exit === 'catastrophe_stop' ? '触发 −300% 兜底止损' :
+              e.exit === 'external_close' ? '交易所侧/人工操作平仓，<b>不计入策略胜率</b>' :
+              `回吐至 ${e.roi.toFixed(1)}%，触发分档回撤线`}，净盈亏 ${signed(e.pnl, 1)} U</div>
+          </div>` : `<div class="tl-item">
+            <div class="t mono">进行中</div>
+            <div class="h">持仓中</div>
+            <div class="d">当前浮盈 ${e.roi.toFixed(1)}%，峰值 ${e.peak.toFixed(1)}%</div>
+          </div>`}
+        </div>
+      </div>
+    </div>
+
+    ${e.exit === 'external_close' ? `<div class="note warn">
+      <b>归因口径护栏：</b>external_close / manual_close 属于交易所侧或人工操作，<b>不计入策略胜率</b>，
+      否则会把非策略行为算成策略成绩。
+    </div>` : ''}
+  `;
+  openOverlay('detail');
+  requestAnimationFrame(() => {
+    crosshairBus.subs.length = 0;
+    new LineChart(document.getElementById('roiChart'), {
+      height: 190, zeroBase: true,
+      fmt: v => v.toFixed(0) + '%',
+      series: [{ name: '浮盈 ROI', color: e.roi >= 0 ? '#0ECB81' : '#F6465D', fill: e.roi >= 0 ? 'rgba(14,203,129,.22)' : 'rgba(246,70,93,.2)', points: roiCurve }],
+    });
+  });
+}
+
+/* ---------- 绑定 ---------- */
+document.getElementById('viewSeg').onclick = ev => {
+  const b = ev.target.closest('button'); if (!b) return;
+  F.view = b.dataset.v;
+  document.querySelectorAll('#viewSeg button').forEach(x => x.classList.toggle('on', x === b));
+  renderList();
+};
+['fAccount:account', 'fKind:kind', 'fStrength:strength', 'fVer:ver'].forEach(pair => {
+  const [id, key] = pair.split(':');
+  document.getElementById(id).onchange = e => { F[key] = e.target.value; renderList(); };
+});
+
+renderList();
+</script>
+</body>
+</html>

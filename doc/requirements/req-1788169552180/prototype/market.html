@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>历史行情与触发点 · 闪电量化管理端原型</title>
+<link rel="stylesheet" href="assets/shell.css">
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script src="assets/chart.js"></script>
+<script>
+const page = renderShell('market');
+const INST = currentInstance();   // null = 全部实例
+
+const STATE = {
+  symbol: 'BTCUSDT',
+  interval: '1m',
+  source: 'both',      // binance | deepcoin | both
+  range: 'today',
+  kinds: { open: true, gate_block: true, cap_skip: true, trend_skip: true },
+  selected: null,
+};
+
+const INTERVALS = { '1m': 60000, '5m': 300000, '1h': 3600000, '1d': 86400000 };
+const RANGES = {
+  today:  { label: '今日',                start: Date.UTC(2026, 7, 31, 8, 0), bars: { '1m': 240, '5m': 120, '1h': 10, '1d': 1 } },
+  d3:     { label: '近 3 天',             start: Date.UTC(2026, 7, 29, 0, 0), bars: { '1m': 240, '5m': 288, '1h': 72, '1d': 3 } },
+  surge:  { label: '8.18–8.21 剧烈上涨',  start: Date.UTC(2026, 7, 18, 0, 0), bars: { '1m': 240, '5m': 288, '1h': 96, '1d': 4 } },
+  m1:     { label: '近 30 天',            start: Date.UTC(2026, 7, 1, 0, 0),  bars: { '1m': 240, '5m': 300, '1h': 360, '1d': 30 } },
+};
+
+page.innerHTML = `
+  <div class="card">
+    <div class="card-body tight">
+      <div class="row" style="gap:14px">
+        <div class="field" style="width:150px">
+          <label>币种</label>
+          <select class="input sm" id="symbol">
+            <option value="BTCUSDT">BTCUSDT</option>
+            <option value="ETHUSDT" disabled>ETHUSDT（未接入）</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>周期</label>
+          <div class="seg" id="intervalSeg">
+            ${Object.keys(INTERVALS).map(k => `<button data-v="${k}" class="${k === STATE.interval ? 'on' : ''}">${k}</button>`).join('')}
+          </div>
+        </div>
+        <div class="field">
+          <label>数据源</label>
+          <div class="seg" id="sourceSeg">
+            <button data-v="binance">币安</button>
+            <button data-v="deepcoin">DeepCoin</button>
+            <button data-v="both" class="on">双源对比</button>
+          </div>
+        </div>
+        <div class="field" style="width:210px">
+          <label>时间范围</label>
+          <select class="input sm" id="range">
+            ${Object.entries(RANGES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field" style="flex:1;min-width:280px">
+          <label>触发点类型</label>
+          <div class="row" id="kindFilter" style="gap:6px">
+            ${Object.entries(GATE_KINDS).map(([k, v]) => `
+              <button class="chip ${v.chip}" data-k="${k}" style="cursor:pointer;border-style:solid">
+                <i class="dot"></i>${v.label}<b class="mono" data-cnt="${k}"></b>
+              </button>`).join('')}
+          </div>
+        </div>
+        <div class="field" style="margin-left:auto">
+          <label>&nbsp;</label>
+          <div class="row">
+            ${INST ? `<span class="chip ok"><i class="dot"></i>${INST.name} · 阈值 ${INST.threshold}bp</span>`
+                   : `<span class="chip warn"><i class="dot"></i>全部实例 · 阈值不一致</span>`}
+            <button class="btn sm" onclick="toast('已导出当前视图 CSV（含触发点与偏离序列）')">导出</button>
+            <button class="btn sm" id="backfillBtn">回填缺口</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="chartCard">
+    <div class="card-head">
+      <h3 id="chartTitle"></h3>
+      <span class="sub" id="chartSub"></span>
+      <div class="right legend">
+        <span><i style="background:#0ECB81"></i>币安 K 线</span>
+        <span id="lg2"><i style="background:#4D7EFF"></i>DeepCoin 收盘（对比线）</span>
+        <span><span class="tri" style="border-bottom:8px solid #0ECB81"></span>成功开仓</span>
+        <span><span class="tri" style="border-top:8px solid #A78BFA"></span>反向门控</span>
+        <span><span class="tri" style="border-top:8px solid #FF9F43"></span>上限跳过</span>
+        <span><span class="tri" style="border-top:8px solid #4D7EFF"></span>趋势闸</span>
+      </div>
+    </div>
+    <div class="card-body" id="chartBody">
+      <div id="main"></div>
+      <div style="margin-top:6px;padding-top:10px;border-top:1px solid #1F242C">
+        <div class="row" style="margin-bottom:2px">
+          <span style="font-size:12px;color:var(--manager-text-faint);font-weight:600">last-vs-mark 偏离（bp，带符号；&gt;0 = UP）</span>
+          <span class="chip warn spacer">信号阈值 ±${INST ? INST.threshold.toFixed(1) : "5.0 / 3.0（各实例不同）"} bp</span>
+        </div>
+        <div id="devPane"></div>
+      </div>
+      <div style="margin-top:6px;padding-top:10px;border-top:1px solid #1F242C">
+        <div class="row" style="margin-bottom:2px">
+          <span style="font-size:12px;color:var(--manager-text-faint);font-weight:600">净持仓（账户A）</span>
+        </div>
+        <div id="posPane"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid" style="grid-template-columns:minmax(0,1fr) 330px">
+    <div class="card">
+      <div class="card-head">
+        <h3>当前视图内的触发点</h3>
+        <span class="sub">点击任意一行可在图上定位，并下钻到触发瞬间的秒级切片</span>
+        <div class="right"><a class="btn sm" href="signals.html">进入信号复盘 →</a></div>
+      </div>
+      <div class="card-body flush">
+        <div class="tbl-scroll">
+          <table class="tbl">
+            <thead><tr><th>时间</th><th>账户</th><th>信号</th><th class="num">参考价</th><th class="num">偏离</th><th>结果</th><th>原因</th><th></th></tr></thead>
+            <tbody id="sigRows"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>存储口径</h3></div>
+      <div class="card-body" style="display:flex;flex-direction:column;gap:12px">
+        <div class="note">
+          <b>不落全时段秒级行情。</b>单币双源按行存 1s 约 <b>18 GB/年</b>，已否决。
+        </div>
+        <dl class="kv">
+          <dt>常驻周期</dt><dd>1m / 5m / 1h / 1d（双源）</dd>
+          <dt>年增量</dt><dd class="mono">≈ 0.4 GB / 年 · 币种</dd>
+          <dt>秒级切片</dt><dd>仅信号前后 ±1min</dd>
+          <dt>切片存法</dt><dd>一条信号一行 + JSON 价格序列</dd>
+          <dt>切片年增量</dt><dd class="mono">≈ 0.44 GB / 年</dd>
+          <dt>切片保留期</dt><dd>90 天滚动</dd>
+        </dl>
+        <div class="note warn">
+          历史 1m/5m/1h/1d 两家都能通过公开接口批量回填：币安 <span class="mono">/fapi/v1/klines</span>、DeepCoin <span class="mono">/deepcoin/market/candles</span>。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 秒级切片抽屉 -->
+  <div class="drawer" id="sliceDrawer">
+    <div class="drawer-head">
+      <h3>触发瞬间秒级切片</h3>
+      <span class="chip info" id="sliceId"></span>
+      <div class="spacer"><button class="icon-btn" onclick="closeOverlays()">✕</button></div>
+    </div>
+    <div class="drawer-body" id="sliceBody"></div>
+  </div>
+`;
+
+/* ---------- 数据构建 ---------- */
+let candles, second, dev, signals, markers, mainChart, devChart, posChart;
+
+function build() {
+  const r = RANGES[STATE.range];
+  const step = INTERVALS[STATE.interval];
+  const count = r.bars[STATE.interval];
+  const seedBase = { today: 7, d3: 17, surge: 88, m1: 41 }[STATE.range];
+  candles = genCandles({ seed: seedBase, count, start: r.start, stepMs: step, base: STATE.range === 'surge' ? 71500 : 78050 });
+  if (STATE.range === 'surge') candles.forEach((k, i) => { const lift = i * (candles.length > 100 ? 6 : 900); k.o += lift; k.c += lift; k.h += lift; k.l += lift; });
+  second = deriveSecondSource(candles, seedBase + 14);
+  dev = genDeviation(candles, seedBase + 26);
+  signals = genSignals(candles, dev, seedBase + 44);
+
+  // 视图起点通常已带有上一段行情累积的持仓，从 0 开始不符合实际
+  let net = 11;
+  const posPoints = candles.map((k, i) => {
+    const s = signals.find(s => s.t === k.t);
+    if (s && s.kind === 'open') net = Math.min(26, net + 1);
+    if (i % 61 === 60) net = Math.max(0, net - 4);   // 移动止盈分档减仓
+    return { t: k.t, v: net };
+  });
+  return posPoints;
+}
+
+function activeSignals() { return signals.filter(s => STATE.kinds[s.kind]); }
+
+function buildMarkers() {
+  const idx = new Map(candles.map((k, i) => [k.t, i]));
+  return activeSignals().map(s => {
+    const g = GATE_KINDS[s.kind];
+    return {
+      i: idx.get(s.t), color: g.tri, pos: s.kind === 'open' ? 'below' : 'above',
+      label: g.label, detail: s.kind === 'open' ? `${s.size} 张 · ${signed(s.gapBp, 2)}bp` : s.reason,
+      selected: STATE.selected === s.id, sig: s,
+    };
+  }).filter(m => m.i != null);
+}
+
+function render() {
+  const posPoints = build();
+  const emptyCase = STATE.source === 'deepcoin' && STATE.interval === '1d' && STATE.range === 'm1';
+
+  document.getElementById('chartTitle').textContent = `${STATE.symbol} · ${STATE.interval}`;
+  document.getElementById('chartSub').textContent =
+    `${RANGES[STATE.range].label} · ${candles.length} 根 · 触发点 ${activeSignals().length} / ${signals.length}`;
+  document.getElementById('lg2').style.display = STATE.source === 'both' ? '' : 'none';
+
+  Object.keys(GATE_KINDS).forEach(k => {
+    const el = document.querySelector(`[data-cnt="${k}"]`);
+    if (el) el.textContent = ' ' + signals.filter(s => s.kind === k).length;
+    const btn = document.querySelector(`#kindFilter [data-k="${k}"]`);
+    btn.style.opacity = STATE.kinds[k] ? 1 : .34;
+  });
+
+  const body = document.getElementById('chartBody');
+  if (emptyCase) {
+    body.innerHTML = `<div class="state">
+      <span class="ico">🗂</span>
+      <h4>该数据源在此周期暂无落库数据</h4>
+      <p>DeepCoin 1d 在近 30 天区间缺少 12 根。历史可通过 <span class="mono">/deepcoin/market/candles</span> 批量回填。</p>
+      <button class="btn primary" onclick="doBackfill()">立即回填缺口（12 根）</button>
+    </div>`;
+    document.getElementById('sigRows').innerHTML =
+      `<tr><td colspan="8"><div class="state" style="padding:30px"><span class="ico">🗂</span>
+        <h4>行情缺口未补齐，暂不展示触发点</h4>
+        <p>先回填该周期的 K 线，触发点才能对齐到时间轴上。</p></div></td></tr>`;
+    return;
+  }
+  body.innerHTML = `
+    <div id="main"></div>
+    <div style="margin-top:6px;padding-top:10px;border-top:1px solid #1F242C">
+      <div class="row" style="margin-bottom:2px">
+        <span style="font-size:12px;color:var(--manager-text-faint);font-weight:600">last-vs-mark 偏离（bp，带符号；&gt;0 = UP）</span>
+        <span class="chip warn spacer">信号阈值 ±${INST ? INST.threshold.toFixed(1) : "5.0 / 3.0（各实例不同）"} bp</span>
+      </div>
+      <div id="devPane"></div>
+    </div>
+    <div style="margin-top:6px;padding-top:10px;border-top:1px solid #1F242C">
+      <div class="row" style="margin-bottom:2px">
+        <span style="font-size:12px;color:var(--manager-text-faint);font-weight:600">净持仓（${INST ? INST.accounts[0].short + " · 上限 " + INST.cap : "账户A · 上限 26"} 张）</span>
+      </div>
+      <div id="posPane"></div>
+    </div>`;
+
+  crosshairBus.subs.length = 0;
+  markers = buildMarkers();
+  const spansDays = (candles[candles.length - 1].t - candles[0].t) > 26 * 3600000;
+  mainChart = new CandleChart(document.getElementById('main'), {
+    height: 330,
+    candles: STATE.source === 'deepcoin' ? second : candles,
+    second: STATE.source === 'both' ? second : null,
+    xFmt: spansDays ? fmtDayHour : undefined,
+    markers,
+  });
+  mainChart.canvas.style.cursor = 'crosshair';
+  mainChart.canvas.addEventListener('click', e => {
+    const r = mainChart.canvas.getBoundingClientRect();
+    const i = mainChart.iOf(e.clientX - r.left, candles.length);
+    const m = markers.reduce((best, m) => Math.abs(m.i - i) < Math.abs((best ? best.i : 1e9) - i) ? m : best, null);
+    if (m && Math.abs(m.i - i) <= 3) openSlice(m.sig);
+  });
+  devChart = new DeviationChart(document.getElementById('devPane'), { height: 128, points: dev, threshold: INST ? INST.threshold : 5 });
+  posChart = new StepChart(document.getElementById('posPane'), { height: 92, points: posPoints, cap: INST ? INST.cap : 26 });
+
+  document.getElementById('sigRows').innerHTML = activeSignals().slice().reverse().map(s => {
+    const g = GATE_KINDS[s.kind];
+    return `<tr class="clickable ${STATE.selected === s.id ? 'sel' : ''}" onclick="selectSignal('${s.id}')">
+      <td class="mono">${fmtTime(s.t, true).slice(5)}</td>
+      <td style="color:var(--manager-text-soft)">${s.account.short}</td>
+      <td><span class="chip ${s.dir === 'UP' ? 'ok' : 'err'}">${s.dir} → ${s.side}</span></td>
+      <td class="num mono">${fmtPx(s.price)}</td>
+      <td class="num mono ${s.gapBp > 0 ? 'up' : 'down'}">${signed(s.gapBp, 2)}</td>
+      <td><span class="chip ${g.chip}">${g.label}</span></td>
+      <td style="color:var(--manager-text-soft);font-size:12.5px">${s.kind === 'open' ? `${s.size} 张 · 均价 ${fmtPx(s.price + 9.6)}` : s.reason}</td>
+      <td><button class="btn sm" onclick="event.stopPropagation();openSlice(findSig('${s.id}'))">秒级切片</button></td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="8"><div class="state"><span class="ico">🎯</span><h4>没有符合筛选条件的触发点</h4><p>试试放开上方的「触发点类型」筛选，或换一个时间范围。</p></div></td></tr>`;
+}
+
+function findSig(id) { return signals.find(s => s.id === id); }
+function selectSignal(id) { STATE.selected = STATE.selected === id ? null : id; render(); }
+
+/* ---------- 秒级切片抽屉 ---------- */
+/* 信号源 = DeepCoin last 相对 mark 的偏离（同一交易所内），币安只作参照。
+   偏离在 T0 前数秒张开、T0 触发、随后回落，不是单点跳变。 */
+function genSlice(sig) {
+  const r = rng(sig.t % 100000);
+  const out = [];
+  let mark = sig.price - 14;
+  for (let i = 0; i <= 120; i++) {
+    mark += (r() - 0.5) * 3.2;
+    const bin = mark + (r() - 0.5) * 2.4;
+    let ramp = 0;
+    if (i > 52 && i <= 60) ramp = (i - 52) / 8;              // 张开
+    else if (i > 60 && i < 78) ramp = 1 - (i - 60) / 18;     // 回归
+    const dcLast = mark + (sig.gapBp / 10000) * mark * ramp + (r() - 0.5) * 1.6;
+    out.push({ bin, dcMark: mark, dcLast });
+  }
+  return out;
+}
+
+function openSlice(sig) {
+  if (!sig) return;
+  STATE.selected = sig.id;
+  const g = GATE_KINDS[sig.kind];
+  const slice = genSlice(sig);
+  document.getElementById('sliceId').textContent = sig.id;
+  document.getElementById('sliceBody').innerHTML = `
+    <div class="row">
+      <span class="chip ${g.chip}">${g.label}</span>
+      <span class="chip ${sig.dir === 'UP' ? 'ok' : 'err'}">${sig.dir} → ${sig.side}</span>
+      <span class="chip mute">参数版本 v${sig.configVersion}</span>
+      <span class="chip mute">${sig.account.short}</span>
+    </div>
+    <div>
+      <div class="row" style="margin-bottom:8px">
+        <b style="font-size:13px">触发前后 ±60 秒 · 逐秒价格</b>
+        <div class="legend spacer">
+          <span><i style="background:#F0B90B"></i>DC last（信号源）</span>
+          <span><i style="background:#4D7EFF"></i>DC mark</span>
+          <span><i style="background:#848E9C"></i>币安（参照）</span>
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas id="sliceCanvas"></canvas></div>
+      <div class="hint" style="color:var(--manager-text-dim);font-size:11.5px;margin-top:6px">
+        信号源是 <b>DeepCoin last 相对 mark 的偏离</b>（同一交易所内），币安价格只作对照。
+        存储形态：一条信号一行，价格序列存 JSON 数组（本切片 121 点 × 3 序列 ≈ 6 KB）。
+      </div>
+    </div>
+    <div class="grid g2">
+      <div>
+        <div style="font-size:13px;font-weight:700;margin-bottom:10px">信号快照</div>
+        <dl class="kv">
+          <dt>触发时刻</dt><dd class="mono">${fmtTime(sig.t, true)}</dd>
+          <dt>参考价</dt><dd class="mono">${fmtPx(sig.price)}</dd>
+          <dt>sigLast</dt><dd class="mono">${fmtPx(sig.price * (1 + sig.gapBp / 10000))}</dd>
+          <dt>sigMark</dt><dd class="mono">${fmtPx(sig.price)}</dd>
+          <dt>gapBp</dt><dd class="mono ${sig.gapBp > 0 ? 'up' : 'down'}">${signed(sig.gapBp, 2)} bp</dd>
+          <dt>越阈幅度</dt><dd class="mono">${(Math.abs(sig.gapBp) - 5).toFixed(2)} bp</dd>
+        </dl>
+      </div>
+      <div>
+        <div style="font-size:13px;font-weight:700;margin-bottom:10px">判定结果</div>
+        ${sig.kind === 'open' ? `
+          <dl class="kv">
+            <dt>结果</dt><dd class="up">成功开仓</dd>
+            <dt>下单张数</dt><dd class="mono">${sig.size} 张</dd>
+            <dt>均价 / 成交</dt><dd class="mono">${fmtPx(sig.price + 9.59)} / ${fmtPx(sig.price + 9.6)}</dd>
+            <dt>滑点</dt><dd class="mono">${signed(9.6, 2)} (${(9.6 / sig.price * 10000).toFixed(1)} bp)</dd>
+            <dt>开仓后净仓</dt><dd class="mono">${sig.net} 张</dd>
+          </dl>` : `
+          <div class="note err" style="margin:0">
+            <b>被 ${sig.gate.name} 拦截</b><br>
+            实测值 <span class="mono">${sig.gate.actual}</span> ${sig.gate.op} 阈值 <span class="mono">${sig.gate.threshold}</span>
+          </div>
+          <dl class="kv" style="margin-top:12px">
+            <dt>门控类型</dt><dd>${sig.gate.name}</dd>
+            <dt>阈值来源</dt><dd class="mono">参数 v${sig.configVersion}</dd>
+            <dt>原始文本</dt><dd style="color:var(--manager-text-faint);font-size:12px">${sig.reason}</dd>
+          </dl>`}
+      </div>
+    </div>
+    <div class="note">
+      想知道「把这个阈值改一下会怎样」？ <a href="backtest.html" style="color:var(--manager-primary);font-weight:700">带这段区间去回测 →</a>
+    </div>
+  `;
+  openOverlay('sliceDrawer');
+  requestAnimationFrame(() => drawSliceChart(document.getElementById('sliceCanvas'), slice, 60));
+  render();
+}
+
+function doBackfill() {
+  toast('已提交回填任务：DeepCoin 1d × 12 根', 'ok');
+  setTimeout(() => { STATE.range = 'surge'; document.getElementById('range').value = 'surge'; render(); toast('回填完成，已刷新视图'); }, 900);
+}
+
+/* ---------- 交互绑定 ---------- */
+document.getElementById('intervalSeg').onclick = e => {
+  const b = e.target.closest('button'); if (!b) return;
+  STATE.interval = b.dataset.v;
+  document.querySelectorAll('#intervalSeg button').forEach(x => x.classList.toggle('on', x === b));
+  render();
+};
+document.getElementById('sourceSeg').onclick = e => {
+  const b = e.target.closest('button'); if (!b) return;
+  STATE.source = b.dataset.v;
+  document.querySelectorAll('#sourceSeg button').forEach(x => x.classList.toggle('on', x === b));
+  render();
+};
+document.getElementById('range').onchange = e => { STATE.range = e.target.value; STATE.selected = null; render(); };
+document.getElementById('kindFilter').onclick = e => {
+  const b = e.target.closest('[data-k]'); if (!b) return;
+  STATE.kinds[b.dataset.k] = !STATE.kinds[b.dataset.k];
+  render();
+};
+document.getElementById('backfillBtn').onclick = doBackfill;
+document.getElementById('symbol').onchange = () => toast('目前只接入 BTCUSDT，表结构与页面已按多币种设计', 'warn');
+
+render();
+</script>
+</body>
+</html>

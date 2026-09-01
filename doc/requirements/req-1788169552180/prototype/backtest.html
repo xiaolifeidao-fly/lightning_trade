@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>盘口信号回测 · 闪电量化管理端原型</title>
+<link rel="stylesheet" href="assets/shell.css">
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script src="assets/chart.js"></script>
+<script>
+const page = renderShell('backtest');
+const INST = currentInstance();   // null = 全部实例
+
+/* ---------- 参数面（取自 argus_single 真实参数键） ---------- */
+const PARAM_GROUPS = [
+  { name: '信号', icon: '📡', params: [
+    { k: 'signal_threshold', label: '信号阈值', unit: 'bp', v: 5.0, step: 0.5, src: 'argus_monitor_symbol.signal_threshold' },
+    { k: 'delay_seconds', label: '信号延迟确认', unit: 's', v: 5, step: 1, src: 'trade.signal.delay_seconds' },
+    { k: 'max_price_age_ms', label: '报价最大陈旧度', unit: 'ms', v: 500, step: 50, src: 'monitor.spread.max_price_age_ms' },
+  ]},
+  { name: '仓位与风险', icon: '⚖️', params: [
+    { k: 'budget_pct', label: '风险预算 f', unit: '%', v: 20, step: 1, src: 'argus_account_risk.risk_budget' },
+    { k: 'catastrophe_stop_pct', label: '兜底止损 S', unit: '%', v: 300, step: 25, src: 'argus_account_risk.catastrophic_stop_loss' },
+    { k: 'max_contracts_ceiling', label: '仓位上限', unit: '张', v: 26, step: 1, src: 'argus_account_risk.max_contracts' },
+    { k: 'contract_face', label: '合约面值', unit: 'BTC', v: 0.001, step: 0.001, src: 'position.risk.contract_face' },
+  ]},
+  { name: '移动止盈分档', icon: '📉', params: [
+    { k: 'small_activate', label: '小仓 激活', unit: '%', v: 150, step: 10, src: 'trailing_stop_tiers_json.small_activate' },
+    { k: 'small_giveback', label: '小仓 回吐', unit: '', v: 0.35, step: 0.01, src: 'trailing_stop_tiers_json.small_giveback' },
+    { k: 'medium_activate', label: '中仓 激活', unit: '%', v: 90, step: 10, src: 'trailing_stop_tiers_json.medium_activate' },
+    { k: 'medium_giveback', label: '中仓 回吐', unit: '', v: 0.28, step: 0.01, src: 'trailing_stop_tiers_json.medium_giveback' },
+    { k: 'large_activate', label: '大仓 激活', unit: '%', v: 40, step: 5, src: 'trailing_stop_tiers_json.large_activate' },
+    { k: 'large_giveback', label: '大仓 回吐', unit: '', v: 0.20, step: 0.01, src: 'trailing_stop_tiers_json.large_giveback' },
+    { k: 'tier_small_ratio', label: '小仓档比例', unit: '', v: 0.30, step: 0.05, src: 'trailing_stop_tiers_json.tier_small_ratio' },
+    { k: 'tier_large_ratio', label: '大仓档比例', unit: '', v: 0.65, step: 0.05, src: 'trailing_stop_tiers_json.tier_large_ratio' },
+  ]},
+  { name: '反向门控', icon: '🚦', params: [
+    { k: 'reverse_gate', label: '反向门控开关', unit: '', v: 1, type: 'switch', src: 'argus_account_risk.reverse_gate_enabled' },
+    { k: 'reverse_gate_min_profit_pct', label: '最低盈利要求', unit: '%', v: 8, step: 1, src: 'position.risk.reverse_gate_min_profit_pct' },
+  ]},
+  { name: '趋势闸', icon: '🧭', params: [
+    { k: 'trend_window_hours', label: '动量窗口', unit: 'h', v: 24, step: 1, src: 'trade.trend_gate.window_hours' },
+    { k: 'trend_threshold_pct', label: '逆势阈值', unit: '%', v: 5, step: 0.5, src: 'trade.trend_gate.threshold_pct' },
+  ]},
+];
+
+const BASE = {};
+PARAM_GROUPS.forEach(g => g.params.forEach(p => BASE[p.k] = p.v));
+if (INST) Object.assign(BASE, {
+  signal_threshold: INST.threshold,
+  max_contracts_ceiling: INST.cap,
+  budget_pct: INST.budget,
+  catastrophe_stop_pct: INST.stop,
+});
+
+/* 已有的参数组（扫描队列） */
+let RUNS = [
+  { id: 'run-1', name: INST ? `${INST.name} 生产基线 v${INST.version}` : '通用基线', color: '#F0B90B', params: { ...BASE }, status: 'done' },
+  { id: 'run-2', name: `阈值收紧 ${(BASE.signal_threshold + 1).toFixed(1)}bp`, color: '#0ECB81', params: { ...BASE, signal_threshold: BASE.signal_threshold + 1 }, status: 'done' },
+  { id: 'run-3', name: '大仓档更早保护', color: '#4D7EFF', params: { ...BASE, large_activate: 30, large_giveback: 0.16 }, status: 'done' },
+  { id: 'run-4', name: '关闭趋势闸', color: '#A78BFA', params: { ...BASE, trend_threshold_pct: 0 }, status: 'done' },
+];
+
+/* 指标：确定性地由参数派生，保证每次打开一致 */
+function metrics(run) {
+  const r = rng(run.id.split('-')[1] * 977 + Math.round(run.params.signal_threshold * 100));
+  const th = run.params.signal_threshold;
+  const trades = Math.round(412 * (5 / th) ** 1.35);
+  const fill = Math.round(trades * (0.84 + r() * 0.08));
+  const win = Math.round(fill * (0.52 + (run.params.large_giveback < 0.2 ? 0.05 : 0) + r() * 0.06));
+  const gross = 1000 + (win / fill - 0.5) * 9000 + (r() - 0.5) * 800;
+  const fee = fill * 1.42;
+  const net = gross - fee;
+  return {
+    trades, fill, expired: trades - fill, fillRate: fill / trades,
+    win, winRate: win / fill,
+    gross, fee, net,
+    expectancy: net / fill,
+    pf: 1.1 + (win / fill - 0.5) * 4 + r() * .2,
+    dd: -(420 + r() * 620),
+    sharpe: 0.6 + (win / fill - 0.5) * 6 + r() * .3,
+    hold: Math.round(2400 + r() * 3600),
+    tp: Math.round(win * 0.24), trail: Math.round(win * 0.76),
+    sl: Math.round((fill - win) * 0.62), timeout: Math.round((fill - win) * 0.38),
+  };
+}
+
+/* 净值曲线 */
+function equityCurve(run, m) {
+  const r = rng(run.id.length * 31 + Math.round(run.params.signal_threshold * 77));
+  const n = 96, pts = []; let v = 0;
+  for (let i = 0; i < n; i++) {
+    v += (r() - 0.5) * Math.abs(m.net) / 7;
+    if (i > 38 && i < 52) v -= Math.abs(m.net) / 34;   // 中段回撤，避免看上去只会单调上行
+    pts.push({ t: Date.UTC(2026, 7, 18) + i * 3600000, v });
+  }
+  // 整体线性校正到目标净盈亏，末点自然收敛，不做突兀的强制赋值
+  const drift = (m.net - pts[n - 1].v) / (n - 1);
+  pts.forEach((p, i) => p.v += drift * i);
+  return pts;
+}
+
+const CFG = { start: '2026-08-18', end: '2026-08-21', source: 'binance', interval: '1m', account: 'A' };
+let editing = { ...BASE };
+let selected = 'run-1';
+
+page.innerHTML = `
+  <div class="card">
+    <div class="card-body tight">
+      <div class="row" style="gap:14px">
+        <div class="field" style="width:140px"><label>币种</label>
+          <select class="input sm"><option>BTCUSDT</option></select></div>
+        <div class="field" style="width:150px"><label>回测起始</label>
+          <input class="input sm mono" id="cStart" value="${CFG.start}"></div>
+        <div class="field" style="width:150px"><label>回测结束</label>
+          <input class="input sm mono" id="cEnd" value="${CFG.end}"></div>
+        <div class="field" style="width:170px"><label>行情源 / 回放周期</label>
+          <select class="input sm"><option>币安 · 1m</option><option>DeepCoin · 1m</option><option>币安 · 5m</option></select></div>
+        <div class="field" style="width:190px"><label>账户模型</label>
+          <select class="input sm">${(INST ? INST.accounts : [{short:'账户A',cap:26},{short:'账户B',cap:8}])
+            .map(a => `<option>${a.short}（上限 ${a.cap} 张）</option>`).join('')}</select></div>
+        <div class="field spacer"><label>&nbsp;</label>
+          <div class="row">
+            <span class="chip ok"><i class="dot"></i>信号 1,183 条 · K 线 5,760 根 已就绪</span>
+            <button class="btn sm primary" onclick="runAll()">重跑全部 ${RUNS.length} 组</button>
+          </div></div>
+      </div>
+      <div class="note" style="margin-top:12px">
+        <b>数据源：</b>历史信号来自 <span class="mono">strategy_event</span>（真实触发点，含被拦截的，按
+        <span class="mono">instance_key</span> 过滤），行情来自 <span class="mono">trade_kline</span>。
+        回测复用实盘同一套参数定义，但走独立执行路径，<b>不触碰实盘进程</b>。
+        ${INST ? `参数基线取自 <b>${INST.name}</b> 的当前生产参数（阈值 ${INST.threshold}bp / 上限 ${INST.cap} 张 / 下单 ${INST.orderSize} 张）。`
+               : `<b>当前未选定实例</b>，参数基线用的是通用默认值；要以某个实例的生产参数为基线，请在右上角先选实例。`}
+      </div>
+    </div>
+  </div>
+
+  <div class="grid" style="grid-template-columns:340px minmax(0,1fr)">
+    <div class="card" style="align-self:start">
+      <div class="card-head">
+        <h3>参数编辑</h3>
+        <div class="right"><button class="btn sm" onclick="loadProd()">载入生产参数</button></div>
+      </div>
+      <div class="card-body" style="max-height:660px;overflow:auto" id="paramForm"></div>
+      <div style="padding:14px 20px;border-top:1px solid var(--manager-border);display:flex;gap:8px">
+        <button class="btn primary" style="flex:1" onclick="addRun()">加入扫描队列</button>
+        <button class="btn" onclick="resetParams()">重置</button>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:16px;min-width:0">
+      <div class="card">
+        <div class="card-head">
+          <h3>参数组对比</h3>
+          <span class="sub">同区间同数据同实例，只有参数不同</span>
+          <div class="right"><button class="btn sm" onclick="toast('已导出对比矩阵 CSV')">导出对比</button></div>
+        </div>
+        <div class="card-body flush" style="overflow:auto"><table class="tbl" id="cmpTable"></table></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>累计净值曲线</h3>
+          <div class="right legend" id="curveLegend"></div>
+        </div>
+        <div class="card-body"><div id="curve"></div></div>
+      </div>
+
+      <div class="grid g2">
+        <div class="card">
+          <div class="card-head"><h3>出场方式分布</h3><span class="sub" id="exitSub"></span></div>
+          <div class="card-body" id="exitDist"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>与基线的差异</h3><span class="sub">选中组 vs 生产基线 v37</span></div>
+          <div class="card-body" id="diffBox"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="drawer" id="tradeDrawer">
+    <div class="drawer-head"><h3>逐笔明细</h3><span class="chip info" id="tdId"></span>
+      <div class="spacer"><button class="icon-btn" onclick="closeOverlays()">✕</button></div></div>
+    <div class="drawer-body" id="tdBody"></div>
+  </div>
+`;
+
+/* ---------- 参数表单 ---------- */
+function renderForm() {
+  document.getElementById('paramForm').innerHTML = PARAM_GROUPS.map(g => `
+    <div style="margin-bottom:18px">
+      <div style="font-size:12px;font-weight:700;color:var(--manager-text-faint);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px">
+        ${g.icon} ${g.name}
+      </div>
+      ${g.params.map(p => {
+        const changed = editing[p.k] !== BASE[p.k];
+        return `<div class="field" style="margin-bottom:10px">
+          <label style="display:flex;gap:6px;align-items:center">
+            ${p.label}${p.unit ? ` <span style="color:var(--manager-text-dim)">(${p.unit})</span>` : ''}
+            ${changed ? '<span class="chip warn" style="padding:1px 6px;font-size:10px">已改</span>' : ''}
+          </label>
+          ${p.type === 'switch'
+            ? `<select class="input sm" data-k="${p.k}"><option value="1" ${editing[p.k] == 1 ? 'selected' : ''}>开</option><option value="0" ${editing[p.k] == 0 ? 'selected' : ''}>关</option></select>`
+            : `<input class="input sm mono" type="number" step="${p.step}" value="${editing[p.k]}" data-k="${p.k}">`}
+          <span class="hint mono">${p.src}</span>
+        </div>`;
+      }).join('')}
+    </div>`).join('');
+  document.querySelectorAll('#paramForm [data-k]').forEach(el => {
+    el.onchange = e => { editing[e.target.dataset.k] = parseFloat(e.target.value); renderForm(); };
+  });
+}
+
+function loadProd() { editing = { ...BASE }; renderForm(); toast(INST ? `已载入 ${INST.name} 的生产参数 v${INST.version}` : '已载入通用默认参数'); }
+function resetParams() { editing = { ...BASE }; renderForm(); }
+function addRun() {
+  const diff = Object.keys(editing).filter(k => editing[k] !== BASE[k]);
+  if (!diff.length) return toast('参数与生产基线一致，无需重复加入', 'warn');
+  const colors = ['#FF9F43', '#0ECB81', '#4D7EFF', '#A78BFA', '#F6465D'];
+  RUNS.push({
+    id: 'run-' + (RUNS.length + 1),
+    name: diff.map(k => findParam(k).label).slice(0, 2).join(' / ') + (diff.length > 2 ? ` 等 ${diff.length} 项` : ''),
+    color: colors[RUNS.length % colors.length],
+    params: { ...editing }, status: 'running',
+  });
+  renderAll();
+  toast('已加入扫描队列，开始回测…');
+  setTimeout(() => { RUNS[RUNS.length - 1].status = 'done'; renderAll(); toast('回测完成'); }, 1200);
+}
+function runAll() { toast(`已提交 ${RUNS.length} 组回测任务，逐组并发执行`); }
+function findParam(k) { return PARAM_GROUPS.flatMap(g => g.params).find(p => p.k === k); }
+
+/* ---------- 对比表 ---------- */
+function renderAll() {
+  const rows = RUNS.map(r => ({ run: r, m: metrics(r) }));
+  const bestNet = Math.max(...rows.map(x => x.m.net));
+
+  document.getElementById('cmpTable').innerHTML = `
+    <thead><tr>
+      <th>参数组</th><th class="num">信号数</th><th class="num">成交率</th><th class="num">胜率</th>
+      <th class="num">净盈亏</th><th class="num">单笔期望</th><th class="num">盈亏比</th>
+      <th class="num">最大回撤</th><th class="num">夏普</th><th class="num">均持仓</th><th></th>
+    </tr></thead>
+    <tbody>${rows.map(({ run, m }) => `
+      <tr class="clickable ${selected === run.id ? 'sel' : ''}" onclick="select('${run.id}')">
+        <td>
+          <div class="row" style="gap:8px">
+            <i style="width:10px;height:10px;border-radius:3px;background:${run.color};display:inline-block"></i>
+            <div><div style="font-weight:600">${run.name}</div>
+            <div class="mono" style="color:var(--manager-text-dim);font-size:11px">${run.id} · ${paramSummary(run)}</div></div>
+          </div>
+        </td>
+        <td class="num mono">${m.trades}</td>
+        <td class="num mono">${(m.fillRate * 100).toFixed(1)}%</td>
+        <td class="num mono">${(m.winRate * 100).toFixed(1)}%</td>
+        <td class="num mono ${m.net >= 0 ? 'up' : 'down'}" style="font-weight:700">${signed(m.net, 0)}${m.net === bestNet ? ' 🏆' : ''}</td>
+        <td class="num mono">${m.expectancy.toFixed(2)}</td>
+        <td class="num mono">${m.pf.toFixed(2)}</td>
+        <td class="num mono down">${m.dd.toFixed(0)}</td>
+        <td class="num mono">${m.sharpe.toFixed(2)}</td>
+        <td class="num mono">${(m.hold / 60).toFixed(0)}m</td>
+        <td>${run.status === 'running'
+          ? '<span class="chip warn"><i class="dot"></i>回测中</span>'
+          : `<button class="btn sm" onclick="event.stopPropagation();openTrades('${run.id}')">逐笔</button>`}</td>
+      </tr>`).join('')}</tbody>`;
+
+  document.getElementById('curveLegend').innerHTML = RUNS.map(r => `<span><i style="background:${r.color}"></i>${r.name}</span>`).join('');
+  crosshairBus.subs.length = 0;
+  new LineChart(document.getElementById('curve'), {
+    height: 250, zeroBase: true, xTicks: 4, xFmt: fmtDayHour,
+    fmt: v => signed(v, 0) + ' U',
+    series: rows.map(({ run, m }) => ({ name: run.name, color: run.color, width: run.id === selected ? 2.4 : 1.3, points: equityCurve(run, m) })),
+  });
+
+  const sel = rows.find(x => x.run.id === selected) || rows[0];
+  document.getElementById('exitSub').textContent = sel.run.name;
+  const exits = [['移动止盈', sel.m.trail, '#0ECB81'], ['固定止盈', sel.m.tp, '#F0B90B'], ['兜底止损', sel.m.sl, '#F6465D'], ['超时平仓', sel.m.timeout, '#5E6673']];
+  const maxE = Math.max(...exits.map(e => e[1]));
+  document.getElementById('exitDist').innerHTML = exits.map(([n, v, c]) => `
+    <div class="bar-row">
+      <span style="font-size:12.5px">${n}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${v / maxE * 100}%;background:${c}"></div></div>
+      <span class="mono" style="text-align:right">${v} 笔</span>
+    </div>`).join('');
+
+  const base = rows[0];
+  const dm = sel.m, bm = base.m;
+  const paramDiff = Object.keys(sel.run.params).filter(k => sel.run.params[k] !== BASE[k]);
+  document.getElementById('diffBox').innerHTML = sel.run.id === 'run-1'
+    ? '<div class="state" style="padding:26px"><span class="ico">📐</span><h4>当前选中的就是基线</h4><p>选择其他参数组即可看到差异。</p></div>'
+    : `${paramDiff.map(k => {
+        const p = findParam(k);
+        return `<div class="diff-row changed">
+          <span class="k">${p.label}<small class="mono">${p.src}</small></span>
+          <span class="old mono">${BASE[k]}${p.unit}</span><span style="color:var(--manager-text-dim);text-align:center">→</span>
+          <span class="new mono">${sel.run.params[k]}${p.unit}</span></div>`;
+      }).join('')}
+      <div style="height:12px"></div>
+      ${[['净盈亏', dm.net - bm.net, 'U'], ['胜率', (dm.winRate - bm.winRate) * 100, '%'], ['成交率', (dm.fillRate - bm.fillRate) * 100, '%'], ['信号数', dm.trades - bm.trades, '条'], ['最大回撤', dm.dd - bm.dd, 'U']]
+        .map(([n, v, u]) => `<div class="diff-row">
+          <span class="k">${n}</span><span></span><span></span>
+          <span class="mono ${v >= 0 ? 'up' : 'down'}" style="font-weight:700">${signed(v, u === '条' ? 0 : 1, ' ' + u)}</span></div>`).join('')}
+      <div class="row" style="margin-top:14px">
+        <a class="btn sm primary" href="params.html">把这组参数带去发布 →</a>
+      </div>`;
+}
+
+function paramSummary(run) {
+  const d = Object.keys(run.params).filter(k => run.params[k] !== BASE[k]);
+  return d.length ? d.map(k => `${k}=${run.params[k]}`).join(' ') : '与生产参数一致';
+}
+function select(id) { selected = id; renderAll(); }
+
+/* ---------- 逐笔明细 ---------- */
+function openTrades(id) {
+  const run = RUNS.find(r => r.id === id);
+  const m = metrics(run);
+  const r = rng(id.length * 733);
+  const rows = Array.from({ length: 24 }, (_, i) => {
+    const win = r() < m.winRate;
+    const roi = win ? 20 + r() * 180 : -(20 + r() * 280);
+    const filled = r() < m.fillRate;
+    return {
+      t: Date.UTC(2026, 7, 18, 4 + i, Math.floor(r() * 60)),
+      side: r() > 0.4 ? 'long' : 'short',
+      gapBp: (r() > .5 ? 1 : -1) * (5 + r() * 6),
+      entry: 71200 + r() * 3200,
+      size: 1 + Math.floor(r() * 12),
+      status: filled ? 'closed' : 'expired',
+      exit: !filled ? '未成交' : win ? '移动止盈' : (roi < -280 ? '兜底止损' : '超时平仓'),
+      roi: filled ? roi : 0,
+      pnl: filled ? roi * 0.34 : 0,
+    };
+  });
+  document.getElementById('tdId').textContent = run.name;
+  document.getElementById('tdBody').innerHTML = `
+    <div class="grid g4">
+      <div class="card kpi"><div class="label">信号数</div><div class="value" style="font-size:19px">${m.trades}</div></div>
+      <div class="card kpi"><div class="label">成交 / 未成交</div><div class="value" style="font-size:19px">${m.fill} / ${m.expired}</div></div>
+      <div class="card kpi"><div class="label">胜率</div><div class="value up" style="font-size:19px">${(m.winRate * 100).toFixed(1)}%</div></div>
+      <div class="card kpi"><div class="label">净盈亏</div><div class="value ${m.net >= 0 ? 'up' : 'down'}" style="font-size:19px">${signed(m.net, 0)} U</div></div>
+    </div>
+    <div class="note">参数快照已冻结进 <span class="mono">params_snapshot</span>，同参数同区间可完全复现。</div>
+    <div class="card"><div class="card-body flush"><div class="tbl-scroll"><table class="tbl">
+      <thead><tr><th>时刻</th><th>方向</th><th class="num">偏离</th><th class="num">入场价</th><th class="num">张数</th><th>出场</th><th class="num">ROI</th><th class="num">净盈亏</th></tr></thead>
+      <tbody>${rows.map(t => `<tr>
+        <td class="mono">${fmtTime(t.t, true).slice(5)}</td>
+        <td><span class="chip ${t.side === 'long' ? 'ok' : 'err'}">${t.side}</span></td>
+        <td class="num mono ${t.gapBp > 0 ? 'up' : 'down'}">${signed(t.gapBp, 2)}</td>
+        <td class="num mono">${fmtPx(t.entry)}</td>
+        <td class="num mono">${t.size}</td>
+        <td>${t.status === 'expired' ? '<span class="chip mute">未成交</span>' : `<span class="chip ${t.roi >= 0 ? 'ok' : 'err'}">${t.exit}</span>`}</td>
+        <td class="num mono ${t.roi >= 0 ? 'up' : 'down'}">${t.status === 'expired' ? '—' : signed(t.roi, 1, '%')}</td>
+        <td class="num mono ${t.pnl >= 0 ? 'up' : 'down'}">${t.status === 'expired' ? '—' : signed(t.pnl, 1)}</td>
+      </tr>`).join('')}</tbody></table></div></div></div>
+  `;
+  openOverlay('tradeDrawer');
+}
+
+renderForm();
+renderAll();
+</script>
+</body>
+</html>

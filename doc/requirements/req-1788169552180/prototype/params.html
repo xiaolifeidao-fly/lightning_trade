@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argus 参数与运行控制 · 闪电量化管理端原型</title>
+<link rel="stylesheet" href="assets/shell.css">
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script src="assets/chart.js"></script>
+<script>
+const page = renderShell('params', false);   // false = 不允许「全部实例」，必须选定一个
+const INST = currentInstance();
+
+/* hot: 发布后热生效；restart: 需重启才生效；new: 本次需求新增进 DB 的字段 */
+const GROUPS = [
+  { name: '信号', icon: '📡', params: [
+    { k: 'signal_threshold', label: '信号阈值', unit: 'bp', v: 5.0, step: .5, hot: true, src: 'argus_monitor_symbol.signal_threshold' },
+    { k: 'spread_threshold', label: '价差阈值', unit: '', v: 0.001, step: .0005, hot: true, src: 'argus_monitor_symbol.spread_threshold' },
+    { k: 'delay_seconds', label: '信号延迟确认', unit: 's', v: 5, step: 1, hot: true, isNew: true, src: 'trade.signal.delay_seconds' },
+    { k: 'max_price_age_ms', label: '报价最大陈旧度', unit: 'ms', v: 500, step: 50, hot: true, isNew: true, src: 'monitor.spread.max_price_age_ms' },
+  ]},
+  { name: '仓位与风险', icon: '⚖️', params: [
+    { k: 'budget_pct', label: '风险预算 f', unit: '%', v: 20, step: 1, hot: true, src: 'argus_account_risk.risk_budget' },
+    { k: 'catastrophe_stop_pct', label: '兜底止损 S', unit: '%', v: 300, step: 25, hot: true, src: 'argus_account_risk.catastrophic_stop_loss' },
+    { k: 'max_contracts_ceiling', label: '仓位上限', unit: '张', v: 26, step: 1, hot: true, src: 'argus_account_risk.max_contracts' },
+    { k: 'order_size', label: '单次下单张数', unit: '张', v: 1, step: 1, hot: true, src: 'argus_config.default_order_size' },
+    { k: 'contract_face', label: '合约面值', unit: 'BTC', v: 0.001, step: .001, hot: false, isNew: true, src: 'position.risk.contract_face' },
+  ]},
+  { name: '移动止盈分档', icon: '📉', note: '这 8 个参数 importer 已写入 trailing_stop_tiers_json，但运行时目前不消费——本次补齐消费侧。', params: [
+    { k: 'small_activate', label: '小仓 激活', unit: '%', v: 150, step: 10, hot: true, isNew: true, src: 'trailing_stop_tiers_json.small_activate' },
+    { k: 'small_giveback', label: '小仓 回吐', unit: '', v: 0.35, step: .01, hot: true, isNew: true, src: 'trailing_stop_tiers_json.small_giveback' },
+    { k: 'medium_activate', label: '中仓 激活', unit: '%', v: 90, step: 10, hot: true, isNew: true, src: 'trailing_stop_tiers_json.medium_activate' },
+    { k: 'medium_giveback', label: '中仓 回吐', unit: '', v: 0.28, step: .01, hot: true, isNew: true, src: 'trailing_stop_tiers_json.medium_giveback' },
+    { k: 'large_activate', label: '大仓 激活', unit: '%', v: 40, step: 5, hot: true, isNew: true, src: 'trailing_stop_tiers_json.large_activate' },
+    { k: 'large_giveback', label: '大仓 回吐', unit: '', v: 0.20, step: .01, hot: true, isNew: true, src: 'trailing_stop_tiers_json.large_giveback' },
+    { k: 'tier_small_ratio', label: '小仓档比例', unit: '', v: 0.30, step: .05, hot: true, isNew: true, src: 'trailing_stop_tiers_json.tier_small_ratio' },
+    { k: 'tier_large_ratio', label: '大仓档比例', unit: '', v: 0.65, step: .05, hot: true, isNew: true, src: 'trailing_stop_tiers_json.tier_large_ratio' },
+  ]},
+  { name: '反向门控', icon: '🚦', params: [
+    { k: 'reverse_gate', label: '反向门控', unit: '', v: 1, type: 'switch', hot: true, src: 'argus_account_risk.reverse_gate_enabled' },
+    { k: 'reverse_gate_min_profit_pct', label: '最低盈利要求', unit: '%', v: 8, step: 1, hot: true, isNew: true, src: 'position.risk.reverse_gate_min_profit_pct' },
+  ]},
+  { name: '趋势闸', icon: '🧭', params: [
+    { k: 'trend_window_hours', label: '动量窗口', unit: 'h', v: 24, step: 1, hot: true, isNew: true, src: 'trade.trend_gate.window_hours' },
+    { k: 'trend_threshold_pct', label: '逆势阈值', unit: '%', v: 5, step: .5, hot: true, isNew: true, src: 'trade.trend_gate.threshold_pct' },
+  ]},
+  { name: '巡检与告警', icon: '🔔', params: [
+    { k: 'monitor_interval_second', label: '仓位巡检间隔', unit: 's', v: 5, step: 1, hot: true, src: 'argus_config.monitor_interval_second' },
+    { k: 'profit_threshold', label: '盈利告警阈值', unit: '%', v: 150, step: 10, hot: true, src: 'argus_config.profit_threshold' },
+    { k: 'loss_threshold', label: '亏损告警阈值', unit: '%', v: 150, step: 10, hot: true, src: 'argus_config.loss_threshold' },
+    { k: 'server_port', label: '服务端口', unit: '', v: 8855, step: 1, hot: false, src: 'argus_config.server_port' },
+  ]},
+];
+
+const CRITICAL = ['catastrophe_stop_pct', 'max_contracts_ceiling', 'budget_pct', 'reverse_gate', 'signal_threshold'];
+const PUBLISHED = {};
+GROUPS.forEach(g => g.params.forEach(p => PUBLISHED[p.k] = p.v));
+
+// 参数是按实例分域的：同一个键在三个实例上取值不同，表单默认值必须跟着所选实例走
+Object.assign(PUBLISHED, {
+  signal_threshold: INST.threshold,
+  max_contracts_ceiling: INST.cap,
+  order_size: INST.orderSize,
+  budget_pct: INST.budget,
+  catastrophe_stop_pct: INST.stop,
+  trend_window_hours: INST.trend === '未配置' ? 0 : 24,
+  trend_threshold_pct: INST.trend === '未配置' ? 0 : 5,
+});
+let draft = { ...PUBLISHED };
+let liveVersion = INST.version;
+let account = 'A';
+
+const HISTORY = [
+  { v: 37, at: '2026-08-31 12:04:11', by: 'roc', note: '趋势闸阈值 5% 上线（8/21 事故补丁）', status: 'published', changes: 2 },
+  { v: 36, at: '2026-08-28 09:31:47', by: 'roc', note: '账户B 上限 8→10 试跑，OOS 未通过已回滚', status: 'archived', changes: 1 },
+  { v: 35, at: '2026-08-21 16:52:03', by: 'roc', note: '剧烈上涨行情临时收紧风险预算', status: 'archived', changes: 3 },
+  { v: 34, at: '2026-08-18 08:10:22', by: 'roc', note: '移动止盈大仓档 45→40', status: 'archived', changes: 2 },
+];
+
+page.innerHTML = `
+  <div class="note warn">
+    <b>参数按实例分域。</b>当前编辑的是 <b>${INST.name}</b>（${INST.host} · <span class="mono">${INST.key}</span>，
+    配置来源 <span class="mono">${INST.config}</span>）。发布只影响这一个实例，不会波及另外
+    ${INSTANCES.length - 1} 个——这正是 champion / challenger 实验体系要求的隔离。
+    要改别的实例，用右上角的实例选择器切换。
+  </div>
+
+  <div class="grid" style="grid-template-columns:minmax(0,1.6fr) minmax(0,1fr)">
+    <div class="card" id="runtimeCard">
+      <div class="card-head"><h3>运行状态与生效链路</h3><span class="sub" id="instSub"></span>
+        <div class="right row">
+          <button class="btn sm" onclick="ctl('reload')">热加载</button>
+          <button class="btn sm" onclick="ctl('restart')">重启</button>
+          <button class="btn sm danger" onclick="ctl('stop')">停止</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="row" style="gap:20px;margin-bottom:16px">
+          <span class="chip ok"><i class="dot"></i>运行中</span>
+          <div><span style="color:var(--manager-text-faint);font-size:12px">进程心跳</span><div class="mono up" id="hb">3 秒前</div></div>
+          <div><span style="color:var(--manager-text-faint);font-size:12px">程序实际读到</span><div class="mono gold" id="liveVer">v${liveVersion}</div></div>
+          <div><span style="color:var(--manager-text-faint);font-size:12px">快照校验和</span><div class="mono" style="font-size:12px" id="ck">9f3c4b71…a1d4</div></div>
+          <div><span style="color:var(--manager-text-faint);font-size:12px">上次生效耗时</span><div class="mono">2.8 s</div></div>
+        </div>
+        <div id="pipeline"></div>
+      </div>
+    </div>
+
+    <div class="card" style="border-color:rgba(246,70,93,.3)">
+      <div class="card-head"><h3>极端行情快速下发</h3><span class="sub">跳过完整表单，直接改关键项</span></div>
+      <div class="card-body">
+        <div class="row" style="gap:8px;margin-bottom:12px">
+          <button class="btn sm" onclick="quick('signal_threshold', 8)">阈值提到 8bp</button>
+          <button class="btn sm" onclick="quick('max_contracts_ceiling', 10)">上限降到 10 张</button>
+          <button class="btn sm" onclick="quick('reverse_gate', 0)">关闭反向门控</button>
+          <button class="btn sm danger" onclick="quick('order_size', 0)">暂停新开仓</button>
+        </div>
+        <div class="note err" style="margin:0">
+          <b>护栏：</b>关键参数（止损 / 上限 / 风险预算 / 门控 / 信号阈值）改动必须二次确认，
+          发布后会等待心跳回报确认程序已真正读到新版本；未确认前页面不会显示「已生效」。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid" style="grid-template-columns:minmax(0,1.35fr) minmax(0,1fr)">
+    <div class="card">
+      <div class="card-head">
+        <h3>参数编辑</h3>
+        <div class="right row">
+          <div class="seg" id="accSeg">
+            ${INST.accounts.map((a, idx) => `<button data-v="${a.label}" class="${idx === 0 ? 'on' : ''}">${a.short}</button>`).join('')}
+            <button data-v="G">实例全局</button>
+          </div>
+          <button class="btn sm" onclick="resetDraft()">放弃改动</button>
+        </div>
+      </div>
+      <div class="card-body" id="form" style="max-height:720px;overflow:auto"></div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <div class="card">
+        <div class="card-head"><h3>改动预览</h3><span class="sub" id="diffCount"></span></div>
+        <div class="card-body" id="diff"></div>
+        <div style="padding:14px 20px;border-top:1px solid var(--manager-border)">
+          <div class="field" style="margin-bottom:10px">
+            <label>发布说明（必填）</label>
+            <input class="input sm" id="note" placeholder="例如：极端行情临时收紧仓位上限">
+          </div>
+          <div class="row">
+            <button class="btn primary" style="flex:1" id="pubBtn" onclick="tryPublish()">发布到 ${INST.name}</button>
+            <a class="btn" href="backtest.html">先回测</a>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <span style="font-size:12px;color:var(--manager-text-faint)">同步这批改动到：</span>
+            ${INSTANCES.filter(i => i.key !== INST.key).map(i =>
+              `<button class="btn sm" onclick="copyTo('${i.key}')">${i.name}</button>`).join('')}
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>版本历史</h3><span class="sub">可回滚到任意已归档版本</span></div>
+        <div class="card-body flush">
+          <table class="tbl"><tbody id="history"></tbody></table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="confirm">
+    <div class="modal-head"><h3>确认发布关键参数改动</h3></div>
+    <div class="modal-body" id="confirmBody"></div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeOverlays()">取消</button>
+      <button class="btn primary" onclick="doPublish()">确认发布</button>
+    </div>
+  </div>
+`;
+
+/* ---------- 表单 ---------- */
+function renderForm() {
+  document.getElementById('form').innerHTML = GROUPS.map(g => `
+    <div style="margin-bottom:20px">
+      <div class="row" style="margin-bottom:10px">
+        <span style="font-size:12px;font-weight:700;color:var(--manager-text-faint);letter-spacing:.08em;text-transform:uppercase">${g.icon} ${g.name}</span>
+      </div>
+      ${g.note ? `<div class="note warn" style="margin-bottom:10px">${g.note}</div>` : ''}
+      <div class="grid g2">
+        ${g.params.map(p => {
+          const changed = draft[p.k] !== PUBLISHED[p.k];
+          return `<div class="field">
+            <label style="display:flex;gap:5px;align-items:center;flex-wrap:wrap">
+              ${p.label}${p.unit ? ` <span style="color:var(--manager-text-dim)">(${p.unit})</span>` : ''}
+              ${p.isNew ? '<span class="chip info" style="padding:1px 5px;font-size:10px">本次补齐</span>' : ''}
+              ${p.hot ? '' : '<span class="chip warn" style="padding:1px 5px;font-size:10px">需重启</span>'}
+              ${CRITICAL.includes(p.k) ? '<span class="chip err" style="padding:1px 5px;font-size:10px">关键</span>' : ''}
+            </label>
+            ${p.type === 'switch'
+              ? `<select class="input sm" data-k="${p.k}" style="${changed ? 'border-color:var(--manager-primary)' : ''}">
+                   <option value="1" ${draft[p.k] == 1 ? 'selected' : ''}>开</option>
+                   <option value="0" ${draft[p.k] == 0 ? 'selected' : ''}>关</option></select>`
+              : `<input class="input sm mono" type="number" step="${p.step}" value="${draft[p.k]}" data-k="${p.k}"
+                   style="${changed ? 'border-color:var(--manager-primary);box-shadow:0 0 0 3px rgba(240,185,11,.1)' : ''}">`}
+            <span class="hint mono">${p.src}</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`).join('');
+  document.querySelectorAll('#form [data-k]').forEach(el => {
+    el.onchange = e => { draft[e.target.dataset.k] = parseFloat(e.target.value); renderForm(); renderDiff(); };
+  });
+}
+
+function findP(k) { return GROUPS.flatMap(g => g.params).find(p => p.k === k); }
+function changes() { return Object.keys(draft).filter(k => draft[k] !== PUBLISHED[k]); }
+
+function renderDiff() {
+  const ch = changes();
+  document.getElementById('diffCount').textContent = ch.length ? `${ch.length} 项变更` : '暂无变更';
+  document.getElementById('pubBtn').disabled = !ch.length;
+  const needRestart = ch.filter(k => !findP(k).hot);
+  document.getElementById('diff').innerHTML = ch.length ? `
+    ${ch.map(k => {
+      const p = findP(k);
+      const fmt = v => p.type === 'switch' ? (v == 1 ? '开' : '关') : v + p.unit;
+      return `<div class="diff-row changed">
+        <span class="k">${p.label}<small class="mono">${p.src}</small></span>
+        <span class="old mono">${fmt(PUBLISHED[k])}</span>
+        <span style="color:var(--manager-text-dim);text-align:center">→</span>
+        <span class="new mono">${fmt(draft[k])}</span>
+      </div>`;
+    }).join('')}
+    ${needRestart.length ? `<div class="note warn" style="margin-top:12px">
+      <b>${needRestart.map(k => findP(k).label).join('、')}</b> 属于结构性参数，发布后<b>不会热生效</b>，需要重启 argus_single 才生效。
+    </div>` : `<div class="note" style="margin-top:12px">全部改动均可热生效，预计 3 秒内程序读到新版本。</div>`}
+    ${ch.some(k => CRITICAL.includes(k)) ? `<div class="note err" style="margin-top:10px">
+      包含<b>关键参数</b>，发布前需要二次确认。
+    </div>` : ''}`
+    : `<div class="state" style="padding:30px"><span class="ico">✅</span><h4>当前草稿与 v${liveVersion} 一致</h4>
+       <p>修改左侧任意参数后，这里会列出逐项差异。</p></div>`;
+}
+
+function renderPipeline(stage) {
+  const steps = [
+    { t: '管理端保存草稿', d: 'POST /argus-config/drafts', done: stage >= 1 },
+    { t: '发布新版本', d: 'POST /argus-config/versions/:id/publish', done: stage >= 2 },
+    { t: '写 Redis 快照并广播', d: `argus:config:snapshot:${INST.key}`, done: stage >= 3 },
+    { t: 'argus_single 热加载', d: 'ReplaceManager + ReloadMonitor', done: stage >= 4 },
+    { t: '心跳回报已生效版本', d: `argus:heartbeat:${INST.key}`, done: stage >= 5 },
+  ];
+  document.getElementById('pipeline').innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px">
+      ${steps.map((s, i) => `
+        <div style="padding:11px 12px;border-radius:10px;border:1px solid ${s.done ? 'rgba(14,203,129,.35)' : 'var(--manager-border)'};
+             background:${s.done ? 'rgba(14,203,129,.07)' : '#14171D'};transition:.3s">
+          <div class="row" style="gap:6px;margin-bottom:4px">
+            <span style="font-size:11px;font-weight:800;color:${s.done ? 'var(--manager-green)' : 'var(--manager-text-dim)'}">${s.done ? '✓' : i + 1}</span>
+            <span style="font-size:12.5px;font-weight:600">${s.t}</span>
+          </div>
+          <div class="mono" style="font-size:10.5px;color:var(--manager-text-dim);word-break:break-all">${s.d}</div>
+        </div>`).join('')}
+    </div>`;
+}
+
+function renderHistory() {
+  document.getElementById('history').innerHTML = HISTORY.map(h => `
+    <tr>
+      <td style="width:60px"><b class="mono ${h.status === 'published' ? 'gold' : ''}">v${h.v}</b></td>
+      <td>
+        <div style="font-size:12.5px">${h.note}</div>
+        <div class="mono" style="color:var(--manager-text-dim);font-size:11px">${h.at} · ${h.by} · ${h.changes} 项变更</div>
+      </td>
+      <td style="width:88px">${h.status === 'published' ? '<span class="chip ok">生效中</span>' : '<span class="chip mute">已归档</span>'}</td>
+      <td style="width:76px">${h.status === 'published' ? '' : `<button class="btn sm" onclick="rollback(${h.v})">回滚</button>`}</td>
+    </tr>`).join('');
+}
+
+/* ---------- 交互 ---------- */
+function quick(k, v) {
+  draft[k] = v;
+  document.getElementById('note').value = '极端行情人工干预：' + findP(k).label + ' → ' + v;
+  renderForm(); renderDiff();
+  toast('已填入草稿，请确认后发布', 'warn');
+  document.getElementById('note').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+function resetDraft() { draft = { ...PUBLISHED }; renderForm(); renderDiff(); }
+
+function tryPublish() {
+  const ch = changes();
+  if (!document.getElementById('note').value.trim()) return toast('请填写发布说明', 'err');
+  const crit = ch.filter(k => CRITICAL.includes(k));
+  if (!crit.length) return doPublish();
+  document.getElementById('confirmBody').innerHTML = `
+    本次包含 <b>${crit.length}</b> 项关键参数改动，会立即影响实盘下单与风控行为：
+    <div style="margin:12px 0">
+      ${crit.map(k => {
+        const p = findP(k);
+        const fmt = v => p.type === 'switch' ? (v == 1 ? '开' : '关') : v + p.unit;
+        return `<div class="diff-row changed"><span class="k">${p.label}</span>
+          <span class="old mono">${fmt(PUBLISHED[k])}</span><span style="text-align:center;color:var(--manager-text-dim)">→</span>
+          <span class="new mono">${fmt(draft[k])}</span></div>`;
+      }).join('')}
+    </div>
+    发布后可随时在版本历史中一键回滚到 v${liveVersion}。
+  `;
+  openOverlay('confirm');
+}
+
+function doPublish() {
+  closeOverlays();
+  const newVer = liveVersion + 1;
+  const note = document.getElementById('note').value.trim();
+  [1, 2, 3].forEach((s, i) => setTimeout(() => renderPipeline(s), i * 320));
+  toast('已发布 v' + newVer + '，等待程序确认生效…', 'warn');
+  setTimeout(() => renderPipeline(4), 1400);
+  setTimeout(() => {
+    renderPipeline(5);
+    liveVersion = newVer;
+    Object.assign(PUBLISHED, draft);
+    HISTORY.forEach(h => h.status = 'archived');
+    HISTORY.unshift({ v: newVer, at: '2026-08-31 17:26:40', by: 'roc', note, status: 'published', changes: changes().length || 1 });
+    document.getElementById('liveVer').textContent = 'v' + newVer;
+    document.getElementById('ck').textContent = 'b72e1c09…4f8a';
+    document.getElementById('note').value = '';
+    renderForm(); renderDiff(); renderHistory();
+    toast('程序已确认生效：v' + newVer + '（耗时 2.6s）');
+  }, 2600);
+}
+
+function copyTo(key) {
+  const target = INSTANCES.find(i => i.key === key);
+  const ch = changes();
+  if (!ch.length) return toast('当前没有改动可同步', 'warn');
+  toast(`已把 ${ch.length} 项改动复制为 ${target.name} 的草稿，需到该实例确认后再发布`, 'warn');
+}
+
+function rollback(v) {
+  toast('已回滚到 v' + v + '，正在广播…', 'warn');
+  setTimeout(() => toast('程序已确认生效：v' + v), 1500);
+}
+function ctl(action) {
+  const map = { reload: '热加载', restart: '重启', stop: '停止' };
+  if (action === 'stop') {
+    if (!confirm('停止 argus_single 会中断实盘监控与自动平仓，确认继续？')) return;
+  }
+  toast(`已下发 ${map[action]} 指令（POST /argus/runtime/${action}）`, action === 'stop' ? 'err' : 'ok');
+}
+
+document.getElementById('accSeg').onclick = e => {
+  const b = e.target.closest('button'); if (!b) return;
+  account = b.dataset.v;
+  document.querySelectorAll('#accSeg button').forEach(x => x.classList.toggle('on', x === b));
+  toast(`已切换到${b.textContent}参数视图（账户级覆盖优先于全局）`);
+};
+
+document.getElementById('instSub').innerHTML =
+  `${INST.name} · ${INST.host} · <span class="mono">${INST.key}</span>`;
+renderForm(); renderDiff(); renderPipeline(5); renderHistory();
+</script>
+</body>
+</html>

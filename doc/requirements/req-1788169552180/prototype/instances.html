@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>实例与参数对比 · 闪电量化管理端原型</title>
+<link rel="stylesheet" href="assets/shell.css">
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script src="assets/chart.js"></script>
+<script>
+const page = renderShell('instances');
+
+/* 参数对比矩阵的行定义：每行一个参数，跨实例横向对比 */
+const ROWS = [
+  { g: '部署', k: 'host',      label: '所在服务器',   get: i => i.host },
+  { g: '部署', k: 'config',    label: '配置文件',     get: i => i.config, mono: true },
+  { g: '部署', k: 'deploy',    label: '部署脚本',     get: i => i.deploy, mono: true },
+  { g: '部署', k: 'accounts',  label: '账户数',       get: i => i.accounts.length + ' 个' },
+  { g: '部署', k: 'variants',  label: '策略变体',     get: i => i.variants.join('<br>'), mono: true },
+
+  { g: '信号', k: 'threshold', label: '信号阈值 (bp)', get: i => i.threshold.toFixed(1) },
+
+  { g: '仓位与风险', k: 'orderSize', label: '单次下单张数', get: i => i.orderSize },
+  { g: '仓位与风险', k: 'cap',       label: '仓位上限（张）', get: i => i.accounts.map(a => `${a.short} ${a.cap}`).join(' / ') },
+  { g: '仓位与风险', k: 'budget',    label: '风险预算 f (%)', get: i => i.budget },
+  { g: '仓位与风险', k: 'stop',      label: '兜底止损 S (%)', get: i => i.stop },
+
+  { g: '门控', k: 'trend', label: '趋势闸', get: i => i.trend },
+];
+
+const GROUPS = [...new Set(ROWS.map(r => r.g))];
+function differs(row) { return new Set(INSTANCES.map(i => String(row.get(i)))).size > 1; }
+
+page.innerHTML = `
+  <div class="note err">
+    <b>当前实现的硬约束：</b>配置下发是<b>全局单版本</b>的——
+    <span class="mono">argus_config_version.published_slot</span> 上的唯一索引
+    <span class="mono">idx_argus_single_published</span> 只允许全表存在一个 published 版本；
+    Redis 的 <span class="mono">argus:config:snapshot</span> / <span class="mono">argus:config:version</span> 是全局单键；
+    <span class="mono">ConfigVersionMessage</span> 里没有 instanceId，
+    <span class="mono">runtimeconfig.handleVersionMessage</span> 也不做实例过滤。
+    <b>结果：现在发布一次参数，三个实例会同时加载同一份快照</b>——而它们的参数本来就不同。
+  </div>
+
+  <div class="note warn">
+    <b>另一个已经在生产上的问题：</b>三份 properties 的
+    <span class="mono">argus.instance.id</span> 都写成了 <span class="mono">argus-single-1</span>。
+    心跳键是 <span class="mono">argus:heartbeat:&lt;instanceId&gt;</span>，因此三个实例的心跳互相覆盖，
+    管理端只看得到最后上报的那一个；<span class="mono">reload</span> 的实例过滤也因此对三个实例同时成立。
+  </div>
+
+  <div class="grid g3" id="cards"></div>
+
+  <div class="card">
+    <div class="card-head">
+      <h3>参数对比矩阵</h3>
+      <span class="sub">高亮列 = 三个实例取值不一致的参数，这些就是 champion/challenger 的实验变量</span>
+      <div class="right row">
+        <label class="row" style="gap:6px;font-size:12.5px;color:var(--manager-text-faint);cursor:pointer">
+          <input type="checkbox" id="onlyDiff"> 只看有差异的参数
+        </label>
+        <button class="btn sm" onclick="toast('已导出参数对比矩阵 CSV')">导出</button>
+      </div>
+    </div>
+    <div class="card-body flush" style="overflow:auto"><table class="tbl" id="matrix"></table></div>
+  </div>
+
+  <div class="grid g2">
+    <div class="card">
+      <div class="card-head"><h3>建议的配置分域方案</h3><span class="sub">让每个实例各有一条发布链路</span></div>
+      <div class="card-body">
+        <div class="timeline">
+          <div class="tl-item">
+            <div class="h">新增 <span class="mono">argus_instance</span> 表</div>
+            <div class="d">instance_key / 名称 / 所在服务器 / 配置来源 / 启用状态。三个实例先从
+              <span class="mono">configs/application*.properties</span> 用现有的
+              <span class="mono">cmd/argus-config-import</span> 各导一份。</div>
+          </div>
+          <div class="tl-item">
+            <div class="h">配置版本按实例分域</div>
+            <div class="d"><span class="mono">argus_config_version</span> 加 <span class="mono">instance_key</span>，
+              唯一索引从 <span class="mono">(published_slot)</span> 改成
+              <span class="mono">(instance_key, published_slot)</span> —— 每个实例各有一个 published 版本。</div>
+          </div>
+          <div class="tl-item">
+            <div class="h">Redis 键与广播加实例命名空间</div>
+            <div class="d"><span class="mono">argus:config:snapshot:&lt;instance&gt;</span>、
+              <span class="mono">argus:config:version:&lt;instance&gt;</span>；
+              <span class="mono">ConfigVersionMessage</span> 加 <span class="mono">instanceId</span>，
+              <span class="mono">handleVersionMessage</span> 按实例过滤（照 <span class="mono">handleControlMessage</span> 已有的写法）。</div>
+          </div>
+          <div class="tl-item red">
+            <div class="h">修正 instance.id 撞名</div>
+            <div class="d">三份 properties 各给唯一 id。这一步要先做，否则心跳和 reload 都是错的。</div>
+          </div>
+          <div class="tl-item green">
+            <div class="h">事件与行情带实例维度</div>
+            <div class="d"><span class="mono">strategy_event</span> 加 <span class="mono">instance_key</span>；
+              账户唯一性用 <span class="mono">(instance_key, account)</span> 或 uid——
+              实例1 的 account1 是 1394537246@qq.com，实例3 的 account1 是 uid 9564268，
+              只按账户名归集会串实例。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>运行控制的可达性</h3><span class="sub">哪些动作能跨服务器，哪些不能</span></div>
+      <div class="card-body">
+        <table class="tbl">
+          <thead><tr><th>动作</th><th>现有通道</th><th>跨服务器</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><b>reload</b></td><td class="mono">Redis argus:control</td>
+                <td><span class="chip ok">可以</span></td>
+                <td style="font-size:12.5px;color:var(--manager-text-soft)">进程订阅频道，自己响应</td></tr>
+            <tr><td><b>stop / restart</b></td><td class="mono">exec control.sh</td>
+                <td><span class="chip err">不可以</span></td>
+                <td style="font-size:12.5px;color:var(--manager-text-soft)">
+                  <span class="mono">service/argus_runtime</span> 跑的是<b>本地</b>脚本，
+                  而 <span class="mono">deploy_2.sh</span> 指向另一台机器</td></tr>
+            <tr><td><b>start</b></td><td class="mono">exec control.sh</td>
+                <td><span class="chip err">不可以</span></td>
+                <td style="font-size:12.5px;color:var(--manager-text-soft)">进程已停，Redis 订阅也没了，只能从机器本地拉起</td></tr>
+          </tbody>
+        </table>
+        <div class="note warn" style="margin-top:14px">
+          <b>待你定：</b>stop/restart 可以改走 Redis 控制通道（进程活着就能自己响应），
+          但 <b>start 必须留在机器本地</b>。两个选项：
+          ① 每台机器加一个最小 agent 暴露 control.sh；
+          ② 交给 systemd / supervisor 自动拉起，管理端只做 stop/reload + 等心跳确认。
+          我倾向 ②，少一个要维护的常驻组件。
+        </div>
+      </div>
+    </div>
+  </div>
+`;
+
+/* ---------- 实例卡片 ---------- */
+document.getElementById('cards').innerHTML = INSTANCES.map(i => {
+  const stale = i.hbSec > 15;
+  const drift = i.version !== 37;
+  return `<div class="card" style="border-color:${drift ? 'rgba(240,185,11,.34)' : 'var(--manager-border)'}">
+    <div class="card-head">
+      <h3>${i.name}</h3>
+      <div class="right"><span class="chip ${stale ? 'err' : 'ok'}"><i class="dot"></i>${stale ? '心跳超时' : '运行中'}</span></div>
+    </div>
+    <div class="card-body">
+      <dl class="kv">
+        <dt>所在服务器</dt><dd>${i.host}</dd>
+        <dt>实例键</dt><dd class="mono">${i.key}</dd>
+        <dt>心跳</dt><dd class="mono ${stale ? 'down' : 'up'}">${i.hbSec} 秒前</dd>
+        <dt>生效参数</dt><dd class="mono ${drift ? 'gold' : ''}">v${i.version}${drift ? ' ⚠ 落后' : ''}</dd>
+        <dt>今日信号</dt><dd class="mono">${i.signals} 条</dd>
+        <dt>当前净持仓</dt><dd class="mono">${i.net} 张 / 上限 ${i.cap}</dd>
+        <dt>今日盈亏</dt><dd class="mono ${i.pnl >= 0 ? 'up' : 'down'}">${signed(i.pnl, 0, ' U')} (${signed(i.equityPct, 1, '%')})</dd>
+      </dl>
+      <div class="row" style="margin-top:14px">
+        <button class="btn sm" onclick="setInstance('${i.key}')">切到该实例</button>
+        <a class="btn sm" href="params.html" onclick="setInstance('${i.key}');return false;">改它的参数</a>
+      </div>
+    </div>
+  </div>`;
+}).join('');
+
+/* ---------- 对比矩阵 ---------- */
+function renderMatrix() {
+  const onlyDiff = document.getElementById('onlyDiff').checked;
+  const rows = ROWS.filter(r => !onlyDiff || differs(r));
+  let html = `<thead><tr><th style="min-width:150px">参数</th>
+    ${INSTANCES.map(i => `<th style="min-width:190px">${i.name}<div class="mono" style="color:var(--manager-text-dim);font-weight:400;font-size:11px">${i.host} · ${i.key}</div></th>`).join('')}
+  </tr></thead><tbody>`;
+  GROUPS.forEach(g => {
+    const list = rows.filter(r => r.g === g);
+    if (!list.length) return;
+    html += `<tr><td colspan="${INSTANCES.length + 1}" style="background:#14171D;font-size:11px;font-weight:800;
+      letter-spacing:.1em;text-transform:uppercase;color:var(--manager-text-faint)">${g}</td></tr>`;
+    list.forEach(r => {
+      const d = differs(r);
+      html += `<tr><td style="color:var(--manager-text-soft)">${r.label}${d ? ' <span class="chip warn" style="padding:1px 5px;font-size:10px">有差异</span>' : ''}</td>
+        ${INSTANCES.map(i => `<td class="${d ? 'differs' : ''} ${r.mono ? 'mono' : ''}" style="${r.mono ? 'font-size:11.5px' : ''}">${r.get(i)}</td>`).join('')}</tr>`;
+    });
+  });
+  document.getElementById('matrix').innerHTML = html + '</tbody>';
+}
+document.getElementById('onlyDiff').onchange = renderMatrix;
+renderMatrix();
+</script>
+</body>
+</html>

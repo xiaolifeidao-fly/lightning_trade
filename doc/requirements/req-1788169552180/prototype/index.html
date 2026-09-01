@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argus 总览 · 闪电量化管理端原型</title>
+<link rel="stylesheet" href="assets/shell.css">
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script src="assets/chart.js"></script>
+<script>
+const page = renderShell('dashboard');
+
+/* ---------- 数据 ---------- */
+const DAY_START = Date.UTC(2026, 7, 31, 8, 0, 0);
+const candles = genCandles({ seed: 7, count: 600, start: DAY_START, stepMs: 60000, base: 78050 });
+const dev = genDeviation(candles, 33);
+const signals = genSignals(candles, dev, 51);
+
+const stat = { open: 0, gate_block: 0, cap_skip: 0, trend_skip: 0 };
+signals.forEach(s => stat[s.kind]++);
+const total = signals.length;
+const blocked = stat.gate_block + stat.cap_skip + stat.trend_skip;
+
+/* 权益曲线（每 10 分钟一个心跳采样点）。
+   125x 杠杆下浮亏摆动很大，用相对初始权益的百分比展示，两个账户才能同屏可比。 */
+const eq = [];
+const rr = rng(99);
+const A0 = 8420, B0 = 3180;
+let a = A0, b = B0;
+for (let i = 0; i < candles.length; i += 10) {
+  a += (rr() - 0.44) * 420;
+  b += (rr() - 0.45) * 190;
+  if (i > 220 && i < 300) { a -= 180; b -= 70; }   // 一段回撤，让曲线不是单调上行
+  eq.push({ t: candles[i].t, a, b, ap: (a / A0 - 1) * 100, bp: (b / B0 - 1) * 100 });
+}
+const equityTotal = eq[eq.length - 1].a + eq[eq.length - 1].b;
+const equityOpen = eq[0].a + eq[0].b;
+const pnlToday = equityTotal - equityOpen;
+
+const recent = signals.slice(-9).reverse();
+
+const GATE_TOP = [
+  { name: '反向门控 · 盈利不足 ROI < 8%', v: stat.gate_block, color: '#A78BFA' },
+  { name: '仓位上限 · 已达 26 张',       v: stat.cap_skip,   color: '#FF9F43' },
+  { name: '趋势闸 · 24h 动量逆势',       v: stat.trend_skip, color: '#4D7EFF' },
+];
+const maxGate = Math.max(...GATE_TOP.map(g => g.v), 1);
+
+/* ---------- 实例作用域 ---------- */
+const INST = currentInstance();                 // null = 全部实例
+const SCOPE = INST ? [INST] : INSTANCES;
+const agg = {
+  signals: SCOPE.reduce((s, i) => s + i.signals, 0),
+  net: SCOPE.reduce((s, i) => s + i.net, 0),
+  pnl: SCOPE.reduce((s, i) => s + i.pnl, 0),
+  drift: INSTANCES.filter(i => i.version !== 37).length,
+};
+
+/* ---------- 渲染 ---------- */
+page.innerHTML = `
+  ${INST ? `
+  <div class="card" style="border-color:rgba(14,203,129,.28)">
+    <div class="card-body tight">
+      <div class="row" style="gap:18px">
+        <span class="chip ok"><i class="dot"></i>argus_single 运行中</span>
+        <div class="row" style="gap:8px"><span style="color:var(--manager-text-faint)">实例</span>
+          <b class="mono">${INST.key}</b><span class="chip mute">${INST.host}</span></div>
+        <div class="row" style="gap:8px"><span style="color:var(--manager-text-faint)">心跳</span><b class="mono up">${INST.hbSec} 秒前</b></div>
+        <div class="row" style="gap:8px"><span style="color:var(--manager-text-faint)">生效参数</span>
+          <b class="mono ${INST.version === 37 ? 'gold' : 'down'}">v${INST.version}</b>
+          <span class="mono" style="color:var(--manager-text-dim);font-size:12px">checksum 9f3c…a1d4</span></div>
+        <div class="row" style="gap:8px"><span style="color:var(--manager-text-faint)">交易开关</span><span class="chip ok">开仓已启用</span></div>
+        <div class="row spacer" style="gap:8px">
+          <span class="chip info">事件双写 正常</span>
+          <a class="btn sm" href="params.html">改这个实例的参数 →</a>
+        </div>
+      </div>
+    </div>
+  </div>` : `
+  <div class="card">
+    <div class="card-head">
+      <h3>三个部署实例</h3>
+      <span class="sub">每个实例参数不同（champion / challenger 实验体系），指标不能跨实例相加解读</span>
+      <div class="right">
+        ${agg.drift ? `<span class="chip warn"><i class="dot"></i>${agg.drift} 个实例参数版本落后</span>` : ''}
+        <a class="btn sm" href="instances.html">实例与参数对比 →</a>
+      </div>
+    </div>
+    <div class="card-body flush">
+      <table class="tbl">
+        <thead><tr><th>实例</th><th>服务器</th><th>心跳</th><th>参数版本</th><th>策略变体</th>
+          <th class="num">今日信号</th><th class="num">净持仓</th><th class="num">今日盈亏</th><th></th></tr></thead>
+        <tbody>${INSTANCES.map(i => `
+          <tr class="clickable" onclick="setInstance('${i.key}')">
+            <td><b>${i.name}</b><div class="mono" style="color:var(--manager-text-dim);font-size:11px">${i.key}</div></td>
+            <td style="white-space:nowrap">${i.host}</td>
+            <td><span class="chip ${i.hbSec > 15 ? 'err' : 'ok'}"><i class="dot"></i>${i.hbSec}s 前</span></td>
+            <td><span class="chip ${i.version === 37 ? 'mute' : 'warn'} mono">v${i.version}</span></td>
+            <td class="mono" style="font-size:11.5px;color:var(--manager-text-soft)">${i.variants.join('<br>')}</td>
+            <td class="num mono">${i.signals}</td>
+            <td class="num mono">${i.net} / ${i.cap}</td>
+            <td class="num mono ${i.pnl >= 0 ? 'up' : 'down'}">${signed(i.pnl, 0)}</td>
+            <td><button class="btn sm">进入</button></td>
+          </tr>`).join('')}</tbody>
+      </table>
+    </div>
+  </div>`}
+
+  ${!INST ? `<div class="note warn">
+    下面的图表按<b>全部实例合并</b>展示，只用于看整体规模。
+    实例之间参数不同（信号阈值 5bp / 3bp、仓位上限 15 / 26+8 / 246、下单张数 1 / 10），
+    <b>胜率、盈亏这类指标跨实例相加没有意义</b>，要对比请去实例对比页，要归因请先在右上角切到具体实例。
+  </div>` : ''}
+
+  <div class="grid g6">
+    ${kpi('今日信号总数', total, INST ? '2026-08-31 08:00 – 18:00 UTC' : `${INSTANCES.length} 个实例合计`)}
+    ${kpi('成功开仓', stat.open, `成交率 ${(stat.open / total * 100).toFixed(0)}%`, 'up')}
+    ${kpi('被条件挡住', blocked, `门控 ${stat.gate_block} · 上限 ${stat.cap_skip} · 趋势闸 ${stat.trend_skip}`, 'gold')}
+    ${kpi('当前净持仓', agg.net + ' 张', INST ? `上限 ${INST.cap} 张` : SCOPE.map(i => `${i.name.slice(0, 3)} ${i.net}`).join(' / '), 'blue')}
+    ${kpi('账户权益合计', '$' + fmtPx(equityTotal, 0), '含未实现盈亏')}
+    ${kpi('今日净盈亏', signed(pnlToday, 0, ' U'), `ROI ${signed(pnlToday / equityOpen * 100, 2, '%')}`, pnlToday >= 0 ? 'up' : 'down')}
+  </div>
+
+  <div class="grid" style="grid-template-columns:minmax(0,1.75fr) minmax(0,1fr)">
+    <div class="card">
+      <div class="card-head">
+        <h3>账户权益曲线</h3>
+        <span class="sub">相对当日初始权益的变动百分比 · 来源：balance 心跳事件（每账户每分钟一条，按 10 分钟降采样）</span>
+        <div class="right legend">
+          <span><i style="background:#F0B90B"></i>账户A</span>
+          <span><i style="background:#4D7EFF"></i>账户B</span>
+        </div>
+      </div>
+      <div class="card-body"><div id="eqChart"></div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>今日触发点结果分布</h3></div>
+      <div class="card-body">
+        <div style="display:grid;place-items:center"><canvas id="donut"></canvas></div>
+        <div style="margin-top:16px;display:flex;flex-direction:column;gap:6px">
+          ${GATE_TOP.map(g => `
+            <div class="bar-row">
+              <span style="color:var(--manager-text-soft);font-size:12px">${g.name.split(' · ')[0]}</span>
+              <div class="bar-track"><div class="bar-fill" style="width:${g.v / maxGate * 100}%;background:${g.color}"></div></div>
+              <span class="mono" style="text-align:right">${g.v} 次</span>
+            </div>`).join('')}
+        </div>
+        <div class="note" style="margin-top:14px">
+          拦截原因已<b>结构化落库</b>（门控类型 + 阈值 + 实测值），不再是自由文本，因此可以按类型聚合与筛选。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid" style="grid-template-columns:minmax(0,1.75fr) minmax(0,1fr)">
+    <div class="card">
+      <div class="card-head">
+        <h3>最近触发信号</h3>
+        <span class="sub">替代原先「每周导出 TG 消息给 AI 读」的流程</span>
+        <div class="right"><a class="btn sm" href="signals.html">全部信号复盘 →</a></div>
+      </div>
+      <div class="card-body flush">
+        <table class="tbl">
+          <thead><tr>
+            <th>时间</th><th>账户</th><th>信号</th><th class="num">参考价</th>
+            <th class="num">偏离</th><th>结果</th><th>原因 / 明细</th><th>参数版本</th>
+          </tr></thead>
+          <tbody>${recent.map(rowOf).join('')}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <div class="card">
+        <div class="card-head">
+          <h3>${INST ? '当前生效参数' : '各实例生效参数'}</h3>
+          <div class="right">${INST ? `<span class="chip ${INST.version === 37 ? 'warn' : 'err'} mono">v${INST.version}</span>` : ''}</div>
+        </div>
+        <div class="card-body">
+          ${INST ? `
+          <dl class="kv">
+            <dt>信号阈值</dt><dd class="mono">${INST.threshold.toFixed(1)} bp</dd>
+            <dt>仓位上限</dt><dd class="mono">${INST.accounts.map(a => `${a.short} ${a.cap} 张`).join(' / ')}</dd>
+            <dt>单次下单</dt><dd class="mono">${INST.orderSize} 张</dd>
+            <dt>风险预算 f</dt><dd class="mono">${INST.budget}%</dd>
+            <dt>兜底止损</dt><dd class="mono">−${INST.stop}%</dd>
+            <dt>趋势闸</dt><dd class="mono">${INST.trend}</dd>
+            <dt>策略变体</dt><dd class="mono" style="font-size:11.5px">${INST.variants.join('<br>')}</dd>
+          </dl>` : `
+          <table class="tbl" style="font-size:12px">
+            <thead><tr><th>实例</th><th class="num">阈值</th><th class="num">上限</th><th class="num">下单</th><th class="num">止损</th></tr></thead>
+            <tbody>${INSTANCES.map(i => `<tr>
+              <td style="white-space:nowrap">${i.name.slice(0, 3)}</td>
+              <td class="num mono">${i.threshold}bp</td>
+              <td class="num mono">${i.cap}</td>
+              <td class="num mono">${i.orderSize}</td>
+              <td class="num mono">−${i.stop}%</td>
+            </tr>`).join('')}</tbody>
+          </table>
+          <div class="hint" style="color:var(--manager-text-dim);font-size:11.5px;margin-top:8px">
+            参数分实例，改动必须先选定实例。
+          </div>`}
+          <div class="row" style="margin-top:14px">
+            <a class="btn sm primary" href="params.html">${INST ? '调整参数' : '选实例后调参'}</a>
+            <a class="btn sm" href="backtest.html">先回测验证</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>数据健康</h3></div>
+        <div class="card-body" style="display:flex;flex-direction:column;gap:10px">
+          ${health('1m K 线覆盖率（币安 / DC）', '99.8% / 99.4%', 'ok', '近 30 天，缺口自动回填')}
+          ${health('多周期落库', '1m · 5m · 1h · 1d', 'ok', '约 0.4 GB/年·币种')}
+          ${health('触发瞬间秒级切片', '±1min · 保留 90 天', 'ok', '约 0.44 GB/年，常驻 ≈ 110 MB')}
+          ${health('事件双写（JSONL + MySQL）', '一致 · 差异 0 条', 'ok', '双写保留期至 2026-12-01')}
+          ${health('历史 JSONL 回灌', '565 / 565 文件', 'ok', '含 8.18–8.21 剧烈上涨数据集')}
+        </div>
+      </div>
+    </div>
+  </div>
+`;
+
+function kpi(label, value, meta, cls = '') {
+  return `<div class="card kpi">
+    <div class="label" style="white-space:nowrap">${label}</div>
+    <div class="value ${cls}">${value}</div>
+    <div class="meta">${meta}</div>
+  </div>`;
+}
+function health(name, value, kind, meta) {
+  return `<div class="row" style="gap:10px;align-items:flex-start">
+    <span class="chip ${kind}" style="margin-top:1px"><i class="dot"></i></span>
+    <div style="min-width:0;flex:1">
+      <div style="font-size:13px;font-weight:600">${name}</div>
+      <div style="color:var(--manager-text-dim);font-size:11.5px">${meta}</div>
+    </div>
+    <b class="mono" style="font-size:12.5px;white-space:nowrap">${value}</b>
+  </div>`;
+}
+function rowOf(s) {
+  const g = GATE_KINDS[s.kind];
+  return `<tr class="clickable" onclick="location.href='signals.html'">
+    <td class="mono">${fmtTime(s.t)}</td>
+    <td style="white-space:nowrap;color:var(--manager-text-soft)">${s.account.short}</td>
+    <td><span class="chip ${s.dir === 'UP' ? 'ok' : 'err'}">${s.dir} → ${s.side}</span></td>
+    <td class="num mono">${fmtPx(s.price)}</td>
+    <td class="num mono ${s.gapBp > 0 ? 'up' : 'down'}" style="white-space:nowrap">${signed(s.gapBp, 2)} bp</td>
+    <td><span class="chip ${g.chip}">${g.label}</span></td>
+    <td style="color:var(--manager-text-soft);font-size:12.5px">${s.kind === 'open' ? `${s.size} 张 · 均价 ${fmtPx(s.price + 9.6)}` : s.reason}</td>
+    <td class="mono" style="color:var(--manager-text-dim)">v${s.configVersion}</td>
+  </tr>`;
+}
+
+/* ---------- 图表 ---------- */
+new LineChart(document.getElementById('eqChart'), {
+  height: 250,
+  fmt: v => signed(v, 1, '%'),
+  series: [
+    { name: '账户A', color: '#F0B90B', fill: 'rgba(240,185,11,.20)', points: eq.map(p => ({ t: p.t, v: p.ap })) },
+    { name: '账户B', color: '#4D7EFF', fill: 'rgba(77,126,255,.16)', points: eq.map(p => ({ t: p.t, v: p.bp })) },
+  ],
+});
+drawDonut(document.getElementById('donut'), [
+  { value: stat.open, color: '#0ECB81' },
+  { value: stat.gate_block, color: '#A78BFA' },
+  { value: stat.cap_skip, color: '#FF9F43' },
+  { value: stat.trend_skip, color: '#4D7EFF' },
+], String(total), `成功 ${stat.open} · 拦截 ${blocked}`);
+window.addEventListener('resize', () => drawDonut(document.getElementById('donut'), [
+  { value: stat.open, color: '#0ECB81' },
+  { value: stat.gate_block, color: '#A78BFA' },
+  { value: stat.cap_skip, color: '#FF9F43' },
+  { value: stat.trend_skip, color: '#4D7EFF' },
+], String(total), `成功 ${stat.open} · 拦截 ${blocked}`));
+</script>
+</body>
+</html>
