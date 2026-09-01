@@ -549,7 +549,7 @@ func (s *TradeService) ListKlines(query tradeDTO.TradeKlineQueryDTO) ([]*tradeDT
 	if interval == "" {
 		interval = "1m"
 	}
-	rows, err := s.tradeKlineRepository.ListBySymbolInterval(query.Symbol, interval, query.Limit)
+	rows, err := s.tradeKlineRepository.ListBySymbolInterval(query.PlatformCode, query.Symbol, interval, query.Limit)
 	if err != nil {
 		return nil, err
 	}
@@ -822,7 +822,7 @@ func (s *TradeService) GetSimulationAnalysis(ctx context.Context, query tradeDTO
 
 	realKlines, err := s.fetchSimulationKlines(ctx, platformCode, symbol, interval, limit)
 	if err != nil {
-		realKlines, err = s.listSimulationKlinesFromDB(symbol, interval, limit)
+		realKlines, err = s.listSimulationKlinesFromDB(platformCode, symbol, interval, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -1208,8 +1208,8 @@ func (s *TradeService) fetchSimulationKlines(ctx context.Context, platformCode, 
 	return points, nil
 }
 
-func (s *TradeService) listSimulationKlinesFromDB(symbol, interval string, limit int) ([]tradeDTO.TradeSimulationKlinePointDTO, error) {
-	klineRows, err := s.tradeKlineRepository.ListBySymbolInterval(symbol, interval, limit)
+func (s *TradeService) listSimulationKlinesFromDB(platform, symbol, interval string, limit int) ([]tradeDTO.TradeSimulationKlinePointDTO, error) {
+	klineRows, err := s.tradeKlineRepository.ListBySymbolInterval(platform, symbol, interval, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1536,7 +1536,7 @@ func (s *TradeService) GetStrategyBacktest(ctx context.Context, query tradeDTO.T
 
 	symbol := coinCode + "USDT"
 
-	klines, err := s.listSimulationKlinesFromDB(symbol, interval, limit)
+	klines, err := s.listSimulationKlinesFromDB(platformCode, symbol, interval, limit)
 	if err != nil {
 		return nil, err
 	}

@@ -4,8 +4,28 @@ import (
 	"time"
 )
 
+// InstanceDTO 是部署实例注册表的响应结构。
+type InstanceDTO struct {
+	ID           uint64 `json:"id"`
+	InstanceKey  string `json:"instanceKey"`
+	InstanceName string `json:"instanceName"`
+	Description  string `json:"description,omitempty"`
+	ConfigSource string `json:"configSource,omitempty"`
+	Enabled      uint8  `json:"enabled"`
+}
+
+// SaveInstanceRequest 用于注册或更新一个部署实例，InstanceKey 全局唯一。
+type SaveInstanceRequest struct {
+	InstanceKey  string `json:"instanceKey" binding:"required"`
+	InstanceName string `json:"instanceName"`
+	Description  string `json:"description"`
+	ConfigSource string `json:"configSource"`
+	Enabled      *uint8 `json:"enabled"`
+}
+
 type ConfigVersionDTO struct {
 	ID               uint64     `json:"id"`
+	InstanceKey      string     `json:"instanceKey"`
 	Version          uint64     `json:"version"`
 	Status           string     `json:"status"`
 	ReleaseNote      string     `json:"releaseNote"`
@@ -132,6 +152,7 @@ type RuntimeSessionDTO struct {
 }
 
 type ConfigSnapshotDTO struct {
+	InstanceKey    string              `json:"instanceKey"`
 	Version        ConfigVersionDTO    `json:"version"`
 	Config         ConfigDTO           `json:"config"`
 	Accounts       []AccountDTO        `json:"accounts"`
@@ -142,6 +163,8 @@ type ConfigSnapshotDTO struct {
 }
 
 type SaveConfigRequest struct {
+	// InstanceKey 指定草稿归属的部署实例；为空时由服务端按默认实例解析。
+	InstanceKey    string              `json:"instanceKey"`
 	Config         ConfigDTO           `json:"config" binding:"required"`
 	Accounts       []AccountDTO        `json:"accounts"`
 	AccountRisks   []AccountRiskDTO    `json:"accountRisks"`
@@ -152,5 +175,7 @@ type SaveConfigRequest struct {
 }
 
 type PublishConfigRequest struct {
+	// InstanceKey 指定发布目标实例；为空时由服务端按默认实例解析。
+	InstanceKey string `json:"instanceKey"`
 	ReleaseNote string `json:"releaseNote"`
 }

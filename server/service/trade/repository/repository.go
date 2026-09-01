@@ -187,10 +187,52 @@ func (r *TradeKlineRepository) EnsureTable() error {
 	if r.Db == nil {
 		return fmt.Errorf("database is not initialized")
 	}
-	return r.Db.AutoMigrate(&TradeKline{})
+	if err := r.Db.AutoMigrate(&TradeKline{}); err != nil {
+		return err
+	}
+	return r.migrateKlinePlatformDim()
 }
 
-func (r *TradeKlineRepository) ListBySymbolInterval(symbol, interval string, limit int) ([]*TradeKline, error) {
+// migrateKlinePlatformDim 把老表(唯一键只有 symbol+interval+open_time)迁到带平台维度的唯一键。
+// 老数据全部来自币安，故 platform_code 为空的历史行统一回填 binance；
+// 回填完成后再删旧唯一索引，避免同一 symbol 的两个平台行被旧索引挡住。
+func (r *TradeKlineRepository) migrateKlinePlatformDim() error {
+	if err := r.Db.Model(&TradeKline{}).
+		Where("platform_code IS NULL OR platform_code = ''").
+		UpdateColumn("platform_code", KlinePlatformBinance).Error; err != nil {
+		return err
+	}
+	migrator := r.Db.Migrator()
+	// AutoMigrate 只会新建 idx_kline_platform_dim，不会动同表的历史索引，这里显式清理。
+	if migrator.HasIndex(&TradeKline{}, legacyKlineUniqueIndex) {
+		if err := migrator.DropIndex(&TradeKline{}, legacyKlineUniqueIndex); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// legacyKlineUniqueIndex 是加平台维度之前的唯一索引名，迁移时需要删除。
+const legacyKlineUniqueIndex = "idx_symbol_interval_open"
+
+// KlinePlatformBinance 是行情平台缺省值：老数据与未显式指定平台的查询都按币安口径。
+const KlinePlatformBinance = "binance"
+
+// NormalizeKlinePlatform 统一平台代码大小写与空白；空值按币安兜底，与历史数据口径一致。
+func NormalizeKlinePlatform(platform string) string {
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	if platform == "" {
+		return KlinePlatformBinance
+	}
+	return platform
+}
+
+// scopeKlinePlatform 给查询挂上平台过滤；platform 为空时按币安兜底，保持老调用方语义不变。
+func scopeKlinePlatform(query *gorm.DB, platform string) *gorm.DB {
+	return query.Where("platform_code = ?", NormalizeKlinePlatform(platform))
+}
+
+func (r *TradeKlineRepository) ListBySymbolInterval(platform, symbol, interval string, limit int) ([]*TradeKline, error) {
 	if r.Db == nil {
 		return nil, fmt.Errorf("database is not initialized")
 	}
@@ -198,37 +240,36 @@ func (r *TradeKlineRepository) ListBySymbolInterval(symbol, interval string, lim
 		limit = 200
 	}
 	var rows []*TradeKline
-	if err := r.Db.Where("active = 1 AND symbol = ? AND `interval` = ?", strings.ToUpper(symbol), interval).
-		Order("open_time DESC").Limit(limit).Find(&rows).Error; err != nil {
+	query := scopeKlinePlatform(r.Db.Where("active = 1 AND symbol = ? AND `interval` = ?", strings.ToUpper(symbol), interval), platform)
+	if err := query.Order("open_time DESC").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
 }
 
-func (r *TradeKlineRepository) ListBySymbolIntervalTimeRange(symbol, interval string, startTime, endTime time.Time) ([]*TradeKline, error) {
+func (r *TradeKlineRepository) ListBySymbolIntervalTimeRange(platform, symbol, interval string, startTime, endTime time.Time) ([]*TradeKline, error) {
 	if r.Db == nil {
 		return nil, fmt.Errorf("database is not initialized")
 	}
 	var rows []*TradeKline
-	if err := r.Db.Where("active = 1 AND symbol = ? AND `interval` = ? AND open_time >= ? AND open_time <= ?",
-		strings.ToUpper(symbol), interval, startTime, endTime).
-		Order("open_time ASC").Find(&rows).Error; err != nil {
+	query := scopeKlinePlatform(r.Db.Where("active = 1 AND symbol = ? AND `interval` = ? AND open_time >= ? AND open_time <= ?",
+		strings.ToUpper(symbol), interval, startTime, endTime), platform)
+	if err := query.Order("open_time ASC").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
 }
 
-// LatestKline 取某 symbol+interval 已入库的最新一根(按 open_time 倒序)；无数据返回 (nil, nil)。
+// LatestKline 取某平台+symbol+interval 已入库的最新一根(按 open_time 倒序)；无数据返回 (nil, nil)。
 // 回填前用它定位“距离条件最新的一条”，据此推算还需向交易所拉取多少根。
-func (r *TradeKlineRepository) LatestKline(symbol, interval string) (*TradeKline, error) {
+func (r *TradeKlineRepository) LatestKline(platform, symbol, interval string) (*TradeKline, error) {
 	if r.Db == nil {
 		return nil, fmt.Errorf("database is not initialized")
 	}
 	var rows []TradeKline
 	// 用 Limit(1).Find 而非 First：无数据时返回空切片而不触发 ErrRecordNotFound 的错误日志。
-	err := r.Db.Where("active = 1 AND symbol = ? AND `interval` = ?", strings.ToUpper(symbol), interval).
-		Order("open_time DESC").Limit(1).Find(&rows).Error
-	if err != nil {
+	query := scopeKlinePlatform(r.Db.Where("active = 1 AND symbol = ? AND `interval` = ?", strings.ToUpper(symbol), interval), platform)
+	if err := query.Order("open_time DESC").Limit(1).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	if len(rows) == 0 {
@@ -237,20 +278,20 @@ func (r *TradeKlineRepository) LatestKline(symbol, interval string) (*TradeKline
 	return &rows[0], nil
 }
 
-// CountBySymbolIntervalRange 统计某 symbol+interval 在 [start,end] 内已入库的根数(供回填结果展示)。
-func (r *TradeKlineRepository) CountBySymbolIntervalRange(symbol, interval string, start, end time.Time) (int64, error) {
+// CountBySymbolIntervalRange 统计某平台+symbol+interval 在 [start,end] 内已入库的根数(供回填结果展示)。
+func (r *TradeKlineRepository) CountBySymbolIntervalRange(platform, symbol, interval string, start, end time.Time) (int64, error) {
 	if r.Db == nil {
 		return 0, fmt.Errorf("database is not initialized")
 	}
 	var n int64
-	err := r.Db.Model(&TradeKline{}).
+	query := scopeKlinePlatform(r.Db.Model(&TradeKline{}).
 		Where("active = 1 AND symbol = ? AND `interval` = ? AND open_time >= ? AND open_time <= ?",
-			strings.ToUpper(symbol), interval, start, end).
-		Count(&n).Error
+			strings.ToUpper(symbol), interval, start, end), platform)
+	err := query.Count(&n).Error
 	return n, err
 }
 
-// UpsertKlines 幂等批量入库：按唯一键 (symbol, interval, open_time) 去重，
+// UpsertKlines 幂等批量入库：按唯一键 (platform_code, symbol, interval, open_time) 去重，
 // 冲突时只刷新行情值(覆盖未收盘那根的最新数据)，不动 created_time。返回影响行数。
 func (r *TradeKlineRepository) UpsertKlines(rows []*TradeKline) (int64, error) {
 	if r.Db == nil {
@@ -260,11 +301,12 @@ func (r *TradeKlineRepository) UpsertKlines(rows []*TradeKline) (int64, error) {
 		return 0, nil
 	}
 	for _, row := range rows {
+		row.PlatformCode = NormalizeKlinePlatform(row.PlatformCode)
 		row.Symbol = strings.ToUpper(row.Symbol)
 		row.Init()
 	}
 	tx := r.Db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "symbol"}, {Name: "interval"}, {Name: "open_time"}},
+		Columns: []clause.Column{{Name: "platform_code"}, {Name: "symbol"}, {Name: "interval"}, {Name: "open_time"}},
 		DoUpdates: clause.AssignmentColumns([]string{
 			"close_time", "open_price", "high_price", "low_price", "close_price",
 			"volume", "turnover", "trade_count", "updated_time",

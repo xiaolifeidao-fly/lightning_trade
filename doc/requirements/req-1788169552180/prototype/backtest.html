@@ -46,6 +46,19 @@ const PARAM_GROUPS = [
   ]},
 ];
 
+/* 回测精度等级：信号序列是否需要重新推导，决定结果可信度 */
+const FIDELITY = {
+  event: { label: '事件级精度', chip: 'ok',
+    desc: '信号序列完全不变，直接回放 strategy_event 里的真实触发时刻与成交均价。触发点精确到秒，无推导误差。' },
+  freq:  { label: '频率级精度', chip: 'warn',
+    desc: '改动了信号阈值，必须重新推导信号序列。历史事件被生产阈值结构性截断（实测 min=5.01bp），' +
+          '因此改用 dev_sample 的 DevCross（9 个候选阈值的无条件穿越计数）推算频率 λ(θ)——' +
+          '能算出「触发次数会变多少」，但算不出每一次的精确时刻。笔均指标可信，逐笔时点仅供参考。' },
+};
+function fidelityOf(params) {
+  return params.signal_threshold !== BASE.signal_threshold ? FIDELITY.freq : FIDELITY.event;
+}
+
 const BASE = {};
 PARAM_GROUPS.forEach(g => g.params.forEach(p => BASE[p.k] = p.v));
 if (INST) Object.assign(BASE, {
@@ -131,6 +144,13 @@ page.innerHTML = `
         <b>数据源：</b>历史信号来自 <span class="mono">strategy_event</span>（真实触发点，含被拦截的，按
         <span class="mono">instance_key</span> 过滤），行情来自 <span class="mono">trade_kline</span>。
         回测复用实盘同一套参数定义，但走独立执行路径，<b>不触碰实盘进程</b>。
+        <br><b>为什么不从 K 线推信号：</b>信号源是 DeepCoin last 相对 mark 的偏离，K 线里没有 mark price，
+        推不出来；且实测 <b>28.7% 的信号分钟内触发 ≥2 次</b>（承载 48.6% 的全部触发，单分钟最多 5 次），
+        按 1m 推导会丢掉约一半触发。
+        <br><b>1m K 线只用于持仓期间的路径回放</b>（算浮盈、判定移动止盈与兜底止损）。实盘判定频率是 5 秒
+        （<span class="mono">position.monitor.interval_seconds</span>），回测是 60 秒，因此
+        <b>峰值浮盈 peakPct 会略偏高</b>；同一根内可能同时触及止盈与止损时<b>按不利方向结算</b>（先止损），宁可低估。
+        实测持仓中位约 2 小时（≈120 根 1m），出场时点 ±1 分钟对最终 ROI 影响很小。
         ${INST ? `参数基线取自 <b>${INST.name}</b> 的当前生产参数（阈值 ${INST.threshold}bp / 上限 ${INST.cap} 张 / 下单 ${INST.orderSize} 张）。`
                : `<b>当前未选定实例</b>，参数基线用的是通用默认值；要以某个实例的生产参数为基线，请在右上角先选实例。`}
       </div>
@@ -159,6 +179,8 @@ page.innerHTML = `
         </div>
         <div class="card-body flush" style="overflow:auto"><table class="tbl" id="cmpTable"></table></div>
       </div>
+
+      <div class="note" id="fidelityNote"></div>
 
       <div class="card">
         <div class="card-head">
@@ -242,7 +264,7 @@ function renderAll() {
     <thead><tr>
       <th>参数组</th><th class="num">信号数</th><th class="num">成交率</th><th class="num">胜率</th>
       <th class="num">净盈亏</th><th class="num">单笔期望</th><th class="num">盈亏比</th>
-      <th class="num">最大回撤</th><th class="num">夏普</th><th class="num">均持仓</th><th></th>
+      <th class="num">最大回撤</th><th class="num">夏普</th><th class="num">均持仓</th><th>精度</th><th></th>
     </tr></thead>
     <tbody>${rows.map(({ run, m }) => `
       <tr class="clickable ${selected === run.id ? 'sel' : ''}" onclick="select('${run.id}')">
@@ -262,6 +284,7 @@ function renderAll() {
         <td class="num mono down">${m.dd.toFixed(0)}</td>
         <td class="num mono">${m.sharpe.toFixed(2)}</td>
         <td class="num mono">${(m.hold / 60).toFixed(0)}m</td>
+        <td><span class="chip ${fidelityOf(run.params).chip}" title="${fidelityOf(run.params).desc}">${fidelityOf(run.params).label}</span></td>
         <td>${run.status === 'running'
           ? '<span class="chip warn"><i class="dot"></i>回测中</span>'
           : `<button class="btn sm" onclick="event.stopPropagation();openTrades('${run.id}')">逐笔</button>`}</td>
@@ -277,6 +300,10 @@ function renderAll() {
 
   const sel = rows.find(x => x.run.id === selected) || rows[0];
   document.getElementById('exitSub').textContent = sel.run.name;
+  const fid = fidelityOf(sel.run.params);
+  document.getElementById('fidelityNote').className = 'note ' + (fid.chip === 'warn' ? 'warn' : '');
+  document.getElementById('fidelityNote').innerHTML =
+    `<b>${sel.run.name} · ${fid.label}：</b>${fid.desc}`;
   const exits = [['移动止盈', sel.m.trail, '#0ECB81'], ['固定止盈', sel.m.tp, '#F0B90B'], ['兜底止损', sel.m.sl, '#F6465D'], ['超时平仓', sel.m.timeout, '#5E6673']];
   const maxE = Math.max(...exits.map(e => e[1]));
   document.getElementById('exitDist').innerHTML = exits.map(([n, v, c]) => `

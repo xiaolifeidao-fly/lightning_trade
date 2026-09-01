@@ -220,8 +220,10 @@ export async function fetchBacktestRunDetail(id: number): Promise<BacktestRunDet
   return unwrapApiResponse(res.data);
 }
 
-// 拉取某 symbol+interval 在时间区间内的 K 线（K线详情弹窗）。
+// 拉取某平台+symbol+interval 在时间区间内的 K 线（K线详情弹窗）。
+// platformCode 决定取 DC 还是币安那份行情，缺省由后端按 binance 兜底。
 export async function fetchKlineRange(params: {
+  platformCode?: string;
   symbol: string;
   interval: string;
   start: string;

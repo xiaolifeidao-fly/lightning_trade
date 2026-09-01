@@ -133,23 +133,25 @@ type TradeMatchQueryDTO struct {
 
 type TradeKlineDTO struct {
 	baseDTO.BaseDTO
-	Symbol     string    `json:"symbol"`
-	Interval   string    `json:"interval"`
-	OpenTime   time.Time `json:"openTime"`
-	CloseTime  time.Time `json:"closeTime"`
-	OpenPrice  float64   `json:"openPrice"`
-	HighPrice  float64   `json:"highPrice"`
-	LowPrice   float64   `json:"lowPrice"`
-	ClosePrice float64   `json:"closePrice"`
-	Volume     float64   `json:"volume"`
-	Turnover   float64   `json:"turnover"`
-	TradeCount uint64    `json:"tradeCount"`
+	PlatformCode string    `json:"platformCode"`
+	Symbol       string    `json:"symbol"`
+	Interval     string    `json:"interval"`
+	OpenTime     time.Time `json:"openTime"`
+	CloseTime    time.Time `json:"closeTime"`
+	OpenPrice    float64   `json:"openPrice"`
+	HighPrice    float64   `json:"highPrice"`
+	LowPrice     float64   `json:"lowPrice"`
+	ClosePrice   float64   `json:"closePrice"`
+	Volume       float64   `json:"volume"`
+	Turnover     float64   `json:"turnover"`
+	TradeCount   uint64    `json:"tradeCount"`
 }
 
 type TradeKlineQueryDTO struct {
-	Symbol   string `form:"symbol"`
-	Interval string `form:"interval"`
-	Limit    int    `form:"limit"`
+	PlatformCode string `form:"platformCode"` // 行情平台 binance/deepcoin，空则按 binance
+	Symbol       string `form:"symbol"`
+	Interval     string `form:"interval"`
+	Limit        int    `form:"limit"`
 }
 
 type TradeStatsDTO struct {
@@ -855,12 +857,13 @@ type KlinePointDTO struct {
 	Volume float64 `json:"volume"`
 }
 
-// KlineRangeQueryDTO 按 symbol+interval+时间区间拉取 K 线。
+// KlineRangeQueryDTO 按平台+symbol+interval+时间区间拉取 K 线。
 type KlineRangeQueryDTO struct {
-	Symbol   string `form:"symbol"`
-	Interval string `form:"interval"`
-	Start    string `form:"start"`
-	End      string `form:"end"`
+	PlatformCode string `form:"platformCode"` // 行情平台 binance/deepcoin，空则按 binance
+	Symbol       string `form:"symbol"`
+	Interval     string `form:"interval"`
+	Start        string `form:"start"`
+	End          string `form:"end"`
 }
 
 // ─── 回测「K线详情」预测增强：复合方向 + 预测周期 K 线 ───────────────────────────
@@ -927,22 +930,44 @@ type PredictionDetailQueryDTO struct {
 	Entry    string `form:"entry"`    // 入场价基准(成交价/期望价)
 }
 
-// BackfillKlineDTO 触发 K 线回填的入参：拉某币种某周期“最近 limit 根”入库。
+// BackfillKlineDTO 触发 K 线回填的入参：拉某平台某币种某周期“最近 limit 根”入库。
 type BackfillKlineDTO struct {
-	PlatformCode string `json:"platformCode"` // 交易所，默认 binance
+	PlatformCode string `json:"platformCode"` // 交易所 binance/deepcoin，默认 binance
 	Symbol       string `json:"symbol" binding:"required"`
 	Interval     string `json:"interval" binding:"required"` // 1m/5m/15m/1h/4h/1d ...
 	Limit        int    `json:"limit" binding:"required"`    // 想要的最近根数
 }
 
+// BatchBackfillKlineDTO 批量回填入参：平台 × 币种 × 周期 三维笛卡尔积，逐组合独立回填。
+// 复数字段为空时回落到对应的单数字段，兼容老的单组合请求体。
+type BatchBackfillKlineDTO struct {
+	PlatformCodes []string `json:"platformCodes"` // 空则取 platformCode，仍为空默认 [binance]
+	PlatformCode  string   `json:"platformCode"`
+	Symbols       []string `json:"symbols"` // 空则取 symbol
+	Symbol        string   `json:"symbol"`
+	Intervals     []string `json:"intervals"` // 空则取 interval，仍为空默认 [1m,5m,1h,1d]
+	Interval      string   `json:"interval"`
+	Limit         int      `json:"limit"` // 每个组合想要的最近根数
+}
+
+// BackfillKlineBatchResultDTO 批量回填汇总：逐组合结果 + 成功/失败计数。
+type BackfillKlineBatchResultDTO struct {
+	Total     int                      `json:"total"`     // 组合总数
+	Succeeded int                      `json:"succeeded"` // 回填成功的组合数
+	Failed    int                      `json:"failed"`    // 回填失败的组合数
+	Items     []BackfillKlineResultDTO `json:"items"`     // 逐组合明细(失败项带 error)
+}
+
 // BackfillKlineResultDTO K 线回填结果：把“现有→需补→实拉→入库”的链路透明化。
 type BackfillKlineResultDTO struct {
+	PlatformCode string `json:"platformCode"` // 行情平台
 	Symbol       string `json:"symbol"`
 	Interval     string `json:"interval"`
-	Requested    int    `json:"requested"`    // 请求的最近根数
-	LatestBefore string `json:"latestBefore"` // 回填前 DB 最新一根 open_time(空=原本无数据)
-	NeedFetch    int    `json:"needFetch"`    // 据最新一条推算出需向交易所拉取的根数
-	Fetched      int    `json:"fetched"`      // 实际从交易所拉到的根数
-	Upserted     int64  `json:"upserted"`     // 幂等入库影响行数
-	LatestAfter  string `json:"latestAfter"`  // 回填后 DB 最新一根 open_time
+	Requested    int    `json:"requested"`       // 请求的最近根数
+	LatestBefore string `json:"latestBefore"`    // 回填前 DB 最新一根 open_time(空=原本无数据)
+	NeedFetch    int    `json:"needFetch"`       // 据最新一条推算出需向交易所拉取的根数
+	Fetched      int    `json:"fetched"`         // 实际从交易所拉到的根数
+	Upserted     int64  `json:"upserted"`        // 幂等入库影响行数
+	LatestAfter  string `json:"latestAfter"`     // 回填后 DB 最新一根 open_time
+	Error        string `json:"error,omitempty"` // 该组合的失败原因(批量回填时单组合失败不影响其它组合)
 }

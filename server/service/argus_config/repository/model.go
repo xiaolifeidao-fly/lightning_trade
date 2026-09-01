@@ -11,13 +11,28 @@ const (
 	ConfigVersionStatusArchived  = "archived"
 )
 
-// ArgusConfigVersion is the single-instance configuration version root. All
-// static configuration children belong to one immutable version snapshot.
+// ArgusInstance is the deployment instance registry. Every configuration
+// version, Redis key and broadcast message is scoped by InstanceKey, so the
+// three Argus deployments own independent publish chains.
+type ArgusInstance struct {
+	db.BaseEntity
+	InstanceKey  string `gorm:"column:instance_key;type:varchar(64);uniqueIndex:idx_argus_instance_key" description:"实例唯一键，对应 argus.instance.id"`
+	InstanceName string `gorm:"column:instance_name;type:varchar(128)" description:"实例展示名"`
+	Description  string `gorm:"column:description;type:varchar(500)" description:"实例说明"`
+	ConfigSource string `gorm:"column:config_source;type:varchar(255)" description:"导入来源的 properties 文件名"`
+	Enabled      uint8  `gorm:"column:enabled;type:tinyint unsigned;default:1;check:chk_argus_instance_enabled,enabled IN (0,1)" description:"实例启用状态"`
+}
+
+func (i *ArgusInstance) TableName() string { return "argus_instance" }
+
+// ArgusConfigVersion is the per-instance configuration version root. All static
+// configuration children belong to one immutable version snapshot.
 type ArgusConfigVersion struct {
 	db.BaseEntity
-	Version          uint64     `gorm:"column:version;type:bigint unsigned;uniqueIndex:idx_argus_config_version" description:"单实例配置版本号"`
+	InstanceKey      string     `gorm:"column:instance_key;type:varchar(64);uniqueIndex:idx_argus_config_version,priority:1;uniqueIndex:idx_argus_single_published,priority:1;index:idx_argus_config_version_instance" description:"所属实例键"`
+	Version          uint64     `gorm:"column:version;type:bigint unsigned;uniqueIndex:idx_argus_config_version,priority:2" description:"实例内配置版本号"`
 	Status           string     `gorm:"column:status;type:varchar(16);index:idx_argus_config_status;check:chk_argus_config_version_status,status IN ('draft','published','archived')" description:"draft/published/archived"`
-	PublishedSlot    *uint8     `gorm:"column:published_slot;type:tinyint unsigned;uniqueIndex:idx_argus_single_published" description:"仅已发布版本为 1，其余为 NULL"`
+	PublishedSlot    *uint8     `gorm:"column:published_slot;type:tinyint unsigned;uniqueIndex:idx_argus_single_published,priority:2" description:"仅已发布版本为 1，其余为 NULL"`
 	ReleaseNote      string     `gorm:"column:release_note;type:varchar(500)" description:"发布说明"`
 	PublishedBy      string     `gorm:"column:published_by;type:varchar(64)" description:"发布操作者"`
 	PublishedAt      *time.Time `gorm:"column:published_at;type:datetime" description:"发布时间"`

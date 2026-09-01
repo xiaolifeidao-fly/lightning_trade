@@ -38,7 +38,7 @@ func Init() error {
 	if err := runtimeconfig.ApplyInitial(runtime); err != nil {
 		return err
 	}
-	runtimeconfig.InstallSessionWriteBack()
+	runtimeManager.InstallSessionWriteBack()
 
 	// 初始化结构化事件日志（须在任何交易/监控启动前，避免早期信号事件被静默丢弃）
 	eventLogDir := vipper.GetString("log.dir")
@@ -98,7 +98,7 @@ func Init() error {
 		return fmt.Errorf("start Argus config subscription: %w", err)
 	}
 	heartbeat := runtimehealth.New(
-		vipper.GetString("argus.instance.id"),
+		runtimeManager.InstanceID(),
 		vipper.GetString("argus.build.version"),
 		time.Duration(vipper.GetInt("argus.heartbeat.interval_seconds"))*time.Second,
 		time.Duration(vipper.GetInt("argus.heartbeat.ttl_seconds"))*time.Second,

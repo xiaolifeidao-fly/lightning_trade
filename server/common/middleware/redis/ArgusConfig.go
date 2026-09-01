@@ -7,32 +7,54 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	goRedis "github.com/go-redis/redis"
 )
 
 const (
-	ArgusConfigVersionKey  = "argus:config:version"
-	ArgusConfigSnapshotKey = "argus:config:snapshot"
-	ArgusConfigChannel     = "argus:config:changed"
-	ArgusHeartbeatPrefix   = "argus:heartbeat:"
-	ArgusControlChannel    = "argus:control"
-	ArgusSnapshotNamespace = "argus:config:snapshot:"
+	ArgusConfigChannel   = "argus:config:changed"
+	ArgusHeartbeatPrefix = "argus:heartbeat:"
+	ArgusControlChannel  = "argus:control"
+	// ArgusConfigPrefix 是配置键的实例命名空间前缀，完整键形如
+	// argus:config:{instanceKey}:snapshot，不同部署实例互不覆盖。
+	ArgusConfigPrefix = "argus:config:"
 )
 
 var ErrRedisNotInitialized = errors.New("redis is not initialized")
 
+var ErrInstanceKeyRequired = errors.New("argus instance key is required")
+
+// ArgusConfigVersionKey 返回某个实例当前已发布版本号的键。
+func ArgusConfigVersionKey(instanceKey string) string {
+	return ArgusConfigPrefix + instanceKey + ":version"
+}
+
+// ArgusConfigSnapshotKey 返回某个实例当前生效快照的键。
+func ArgusConfigSnapshotKey(instanceKey string) string {
+	return ArgusConfigPrefix + instanceKey + ":snapshot"
+}
+
+// ArgusConfigSnapshotVersionKey 返回某个实例指定版本的历史快照键，用于回滚查阅。
+func ArgusConfigSnapshotVersionKey(instanceKey string, version uint64) string {
+	return ArgusConfigPrefix + instanceKey + ":snapshot:" + fmt.Sprintf("%d", version)
+}
+
 type ConfigSnapshotEnvelope struct {
-	Version   uint64          `json:"version"`
-	Checksum  string          `json:"checksum"`
-	CreatedAt time.Time       `json:"createdAt"`
-	Payload   json.RawMessage `json:"payload"`
+	// InstanceID 是快照所属实例键，读取时用于兜底校验，避免错读到别的实例快照。
+	InstanceID string          `json:"instanceId,omitempty"`
+	Version    uint64          `json:"version"`
+	Checksum   string          `json:"checksum"`
+	CreatedAt  time.Time       `json:"createdAt"`
+	Payload    json.RawMessage `json:"payload"`
 }
 
 type ConfigVersionMessage struct {
-	Version  uint64 `json:"version"`
-	Checksum string `json:"checksum"`
+	// InstanceID 是目标实例键，订阅方必须过滤掉不属于自己的版本消息。
+	InstanceID string `json:"instanceId,omitempty"`
+	Version    uint64 `json:"version"`
+	Checksum   string `json:"checksum"`
 }
 
 type ArgusHeartbeat struct {
@@ -93,7 +115,10 @@ func SubscribeContext(ctx context.Context, channels ...string) (*goRedis.PubSub,
 	return rdb.WithContext(ctx).Subscribe(channels...), nil
 }
 
-func WriteConfigSnapshot(ctx context.Context, version uint64, payload interface{}, expiration time.Duration) (ConfigSnapshotEnvelope, error) {
+func WriteConfigSnapshot(ctx context.Context, instanceKey string, version uint64, payload interface{}, expiration time.Duration) (ConfigSnapshotEnvelope, error) {
+	if strings.TrimSpace(instanceKey) == "" {
+		return ConfigSnapshotEnvelope{}, ErrInstanceKeyRequired
+	}
 	if version == 0 {
 		return ConfigSnapshotEnvelope{}, fmt.Errorf("config version must be positive")
 	}
@@ -103,33 +128,38 @@ func WriteConfigSnapshot(ctx context.Context, version uint64, payload interface{
 	}
 	digest := sha256.Sum256(encoded)
 	envelope := ConfigSnapshotEnvelope{
-		Version:   version,
-		Checksum:  hex.EncodeToString(digest[:]),
-		CreatedAt: time.Now().UTC(),
-		Payload:   encoded,
+		InstanceID: instanceKey,
+		Version:    version,
+		Checksum:   hex.EncodeToString(digest[:]),
+		CreatedAt:  time.Now().UTC(),
+		Payload:    encoded,
 	}
 	data, err := json.Marshal(envelope)
 	if err != nil {
 		return ConfigSnapshotEnvelope{}, fmt.Errorf("marshal config snapshot envelope: %w", err)
 	}
-	key := ArgusSnapshotNamespace + fmt.Sprintf("%d", version)
+	key := ArgusConfigSnapshotVersionKey(instanceKey, version)
+	activeKey := ArgusConfigSnapshotKey(instanceKey)
 	if err := SetContext(ctx, key, data, expiration); err != nil {
 		return ConfigSnapshotEnvelope{}, fmt.Errorf("write config snapshot: %w", err)
 	}
-	if err := SetContext(ctx, ArgusConfigSnapshotKey, data, expiration); err != nil {
+	if err := SetContext(ctx, activeKey, data, expiration); err != nil {
 		_ = DeleteContext(context.Background(), key)
 		return ConfigSnapshotEnvelope{}, fmt.Errorf("activate config snapshot: %w", err)
 	}
-	if err := SetContext(ctx, ArgusConfigVersionKey, version, expiration); err != nil {
+	if err := SetContext(ctx, ArgusConfigVersionKey(instanceKey), version, expiration); err != nil {
 		_ = DeleteContext(context.Background(), key)
-		_ = DeleteContext(context.Background(), ArgusConfigSnapshotKey)
+		_ = DeleteContext(context.Background(), activeKey)
 		return ConfigSnapshotEnvelope{}, fmt.Errorf("write config version: %w", err)
 	}
 	return envelope, nil
 }
 
-func ReadConfigSnapshot(ctx context.Context) (ConfigSnapshotEnvelope, error) {
-	data, err := GetContext(ctx, ArgusConfigSnapshotKey)
+func ReadConfigSnapshot(ctx context.Context, instanceKey string) (ConfigSnapshotEnvelope, error) {
+	if strings.TrimSpace(instanceKey) == "" {
+		return ConfigSnapshotEnvelope{}, ErrInstanceKeyRequired
+	}
+	data, err := GetContext(ctx, ArgusConfigSnapshotKey(instanceKey))
 	if err != nil {
 		return ConfigSnapshotEnvelope{}, err
 	}
@@ -141,14 +171,29 @@ func ReadConfigSnapshot(ctx context.Context) (ConfigSnapshotEnvelope, error) {
 	if hex.EncodeToString(digest[:]) != envelope.Checksum {
 		return ConfigSnapshotEnvelope{}, fmt.Errorf("config snapshot checksum mismatch")
 	}
+	// 键已按实例命名空间隔离，快照体内的实例标识只用于兜底校验错读。
+	if envelope.InstanceID != "" && envelope.InstanceID != instanceKey {
+		return ConfigSnapshotEnvelope{}, fmt.Errorf("config snapshot instance mismatch: snapshot=%s want=%s", envelope.InstanceID, instanceKey)
+	}
 	return envelope, nil
 }
 
-func PublishConfigVersion(ctx context.Context, version uint64, checksum string) error {
+// DeleteConfigSnapshot 清除某个实例当前生效的快照与版本键，只影响该实例。
+func DeleteConfigSnapshot(ctx context.Context, instanceKey string) error {
+	if strings.TrimSpace(instanceKey) == "" {
+		return ErrInstanceKeyRequired
+	}
+	return DeleteContext(ctx, ArgusConfigSnapshotKey(instanceKey), ArgusConfigVersionKey(instanceKey))
+}
+
+func PublishConfigVersion(ctx context.Context, instanceKey string, version uint64, checksum string) error {
+	if strings.TrimSpace(instanceKey) == "" {
+		return ErrInstanceKeyRequired
+	}
 	if version == 0 || checksum == "" {
 		return fmt.Errorf("version and checksum are required")
 	}
-	data, err := json.Marshal(ConfigVersionMessage{Version: version, Checksum: checksum})
+	data, err := json.Marshal(ConfigVersionMessage{InstanceID: instanceKey, Version: version, Checksum: checksum})
 	if err != nil {
 		return fmt.Errorf("marshal config version message: %w", err)
 	}

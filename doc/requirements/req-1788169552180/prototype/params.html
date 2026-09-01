@@ -91,9 +91,7 @@ page.innerHTML = `
     <div class="card" id="runtimeCard">
       <div class="card-head"><h3>运行状态与生效链路</h3><span class="sub" id="instSub"></span>
         <div class="right row">
-          <button class="btn sm" onclick="ctl('reload')">热加载</button>
-          <button class="btn sm" onclick="ctl('restart')">重启</button>
-          <button class="btn sm danger" onclick="ctl('stop')">停止</button>
+          <button class="btn sm" onclick="ctl('reload')">立即热加载</button>
         </div>
       </div>
       <div class="card-body">
@@ -120,6 +118,69 @@ page.innerHTML = `
         <div class="note err" style="margin:0">
           <b>护栏：</b>关键参数（止损 / 上限 / 风险预算 / 门控 / 信号阈值）改动必须二次确认，
           发布后会等待心跳回报确认程序已真正读到新版本；未确认前页面不会显示「已生效」。
+        </div>
+        <div class="note" style="margin-top:10px">
+          <b>为什么没有「停止进程」按钮：</b>停进程后持仓仍挂在交易所，但移动止盈、兜底止损、
+          平仓监控全部失效——比不停更危险。真正的紧急刹车是
+          <b>「暂停新开仓」</b>（<span class="mono">order_size = 0</span>）：停止开新仓，
+          但继续看着已有持仓。启停进程属于发版与故障处置，留在运维侧。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid g2">
+    <div class="card">
+      <div class="card-head"><h3>配置面覆盖度</h3><span class="sub">properties 共 63 个键，收敛到 DB 的进度</span></div>
+      <div class="card-body">
+        ${[['必须留 properties（连库前置）', 4, '#5E6673', 'sqlconn / redis.addr / redis.password / argus.instance.id'],
+           ['DB 有列且运行时已消费', 34, '#0ECB81', '账户凭证、监控币种、通知、端口路径等'],
+           ['DB 有列但运行时不读', 13, '#F6465D', 'trail 8 项 / trade_logic / variant / 巡检与告警 3 项'],
+           ['DB 完全没有列', 9, '#FF9F43', 'order_size / risk_equity / 门控与趋势闸 / 合约面值等'],
+           ['可进 DB 但优先级低', 3, '#4D7EFF', 'build.version / heartbeat.interval / heartbeat.ttl']]
+          .map(([n, v, c, d]) => `
+          <div class="bar-row" style="grid-template-columns:190px 1fr 46px">
+            <div><div style="font-size:12.5px">${n}</div>
+              <div style="color:var(--manager-text-dim);font-size:11px">${d}</div></div>
+            <div class="bar-track"><div class="bar-fill" style="width:${v / 63 * 100}%;background:${c}"></div></div>
+            <span class="mono" style="text-align:right">${v}</span>
+          </div>`).join('')}
+        <div class="note err" style="margin-top:12px">
+          <b>其中一项是功能性故障：</b><span class="mono">trade_logic</span> 在 <span class="mono">extra_risk_json</span>
+          里有值但 <span class="mono">runtimeAccount</span> 不读 → 空字符串被
+          <span class="mono">normalizeTradeLogic</span> 归一化成 <b>spread（老价差逻辑）</b> →
+          <span class="mono">manager.go:286</span> 的盘口信号分支不会走。
+          <b>切到 DB 配置驱动后整套信号策略会静默失效且不报错。</b>
+          同理 <span class="mono">variant</span> 为空会让 champion/challenger 归因彻底失灵。
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h3>账户会话状态</h3>
+        <span class="sub">运行时状态，非配置 · 只读</span>
+        <div class="right"><span class="chip mute">argus_runtime_session</span></div>
+      </div>
+      <div class="card-body flush">
+        <table class="tbl">
+          <thead><tr><th>账户</th><th>会话</th><th>Cookie</th><th>Token</th><th>最后刷新</th><th>到期</th></tr></thead>
+          <tbody>${INST.accounts.map((a, i) => `<tr>
+            <td>${a.short}</td>
+            <td><span class="chip ${i === 0 ? 'ok' : 'warn'}"><i class="dot"></i>${i === 0 ? '有效' : '即将过期'}</span></td>
+            <td class="mono" style="color:var(--manager-text-faint)">950 字符 · 已加密</td>
+            <td class="mono" style="color:var(--manager-text-faint)">88 字符 · 已加密</td>
+            <td class="mono">${i === 0 ? '12 分钟前' : '6 小时前'}</td>
+            <td class="mono ${i === 0 ? '' : 'down'}">${i === 0 ? '2026-09-03 08:00' : '2026-09-01 20:00'}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>
+      <div style="padding:14px 20px;border-top:1px solid var(--manager-border)">
+        <div class="note" style="margin:0">
+          <b>为什么不放进参数编辑表单：</b>cookie / token / sentry 是程序登录后自己刷新的<b>运行时状态</b>，
+          由 <span class="mono">InstallSessionWriteBack()</span> 自动回写，不属于配置版本快照
+          （所以 <span class="mono">argus_runtime_session</span> 才和 <span class="mono">argus_account</span> 分表）。
+          手工编辑一段 950 字符的 cookie 没有实际意义，只增加泄露面。这里只做只读巡检。
         </div>
       </div>
     </div>
@@ -251,6 +312,12 @@ function renderPipeline(stage) {
     { t: 'argus_single 热加载', d: 'ReplaceManager + ReloadMonitor', done: stage >= 4 },
     { t: '心跳回报已生效版本', d: `argus:heartbeat:${INST.key}`, done: stage >= 5 },
   ];
+  const fallback = `<div class="note" style="margin-top:12px">
+    <b>兜底：</b>pub/sub 是「发过就没了」，广播那一刻若订阅正好断线重连，消息会永久丢失且不报错。
+    因此 argus_single 另有一个 <b>30 秒轮询</b>：比对
+    <span class="mono">argus:config:version:${INST.key}</span>（Redis 不可用时直接查 DB 的 published 版本），
+    发现与当前 version 不一致就自行 Reload。正常情况秒级生效，漏消息时最坏 30 秒补上。
+  </div>`;
   document.getElementById('pipeline').innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px">
       ${steps.map((s, i) => `
@@ -262,7 +329,7 @@ function renderPipeline(stage) {
           </div>
           <div class="mono" style="font-size:10.5px;color:var(--manager-text-dim);word-break:break-all">${s.d}</div>
         </div>`).join('')}
-    </div>`;
+    </div>` + fallback;
 }
 
 function renderHistory() {
@@ -342,11 +409,7 @@ function rollback(v) {
   setTimeout(() => toast('程序已确认生效：v' + v), 1500);
 }
 function ctl(action) {
-  const map = { reload: '热加载', restart: '重启', stop: '停止' };
-  if (action === 'stop') {
-    if (!confirm('停止 argus_single 会中断实盘监控与自动平仓，确认继续？')) return;
-  }
-  toast(`已下发 ${map[action]} 指令（POST /argus/runtime/${action}）`, action === 'stop' ? 'err' : 'ok');
+  toast('已下发热加载指令（POST /argus/runtime/reload → Redis argus:control）');
 }
 
 document.getElementById('accSeg').onclick = e => {

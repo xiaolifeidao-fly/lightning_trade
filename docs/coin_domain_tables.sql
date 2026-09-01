@@ -380,6 +380,7 @@ CREATE TABLE IF NOT EXISTS `trade_kline` (
   `updated_time` timestamp DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   `created_by` varchar(32) DEFAULT NULL COMMENT '创建人',
   `updated_by` varchar(32) DEFAULT NULL COMMENT '更新人',
+  `platform_code` varchar(32) NOT NULL DEFAULT 'binance' COMMENT '行情平台代码 binance/deepcoin',
   `symbol` varchar(32) DEFAULT NULL COMMENT '交易对',
   `interval` varchar(8) DEFAULT NULL COMMENT '周期 1m/5m/15m/1h/4h/1d',
   `open_time` datetime DEFAULT NULL COMMENT '开始时间',
@@ -392,7 +393,9 @@ CREATE TABLE IF NOT EXISTS `trade_kline` (
   `turnover` decimal(36,18) DEFAULT 0 COMMENT '成交额',
   `trade_count` bigint unsigned DEFAULT 0 COMMENT '成交笔数',
   PRIMARY KEY (`id`),
-  UNIQUE KEY `idx_symbol_interval_open` (`symbol`, `interval`, `open_time`)
+  UNIQUE KEY `idx_kline_platform_dim` (`platform_code`, `symbol`, `interval`, `open_time`),
+  KEY `idx_platform_code` (`platform_code`),
+  KEY `idx_symbol` (`symbol`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='交易K线';
 
 CREATE TABLE IF NOT EXISTS `trade_detail` (

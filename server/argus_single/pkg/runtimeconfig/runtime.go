@@ -63,19 +63,27 @@ func Initialize(ctx context.Context) (*Manager, RuntimeConfig, error) {
 	if db.Db == nil {
 		return nil, RuntimeConfig{}, fmt.Errorf("argus configuration database is not initialized")
 	}
-	if _, err := commonRedis.GetContext(ctx, commonRedis.ArgusConfigVersionKey); err != nil && !errors.Is(err, goRedis.Nil) {
+	// 实例键决定所有配置读写的命名空间，必须在读 Redis / DB 之前确定。
+	instanceID := strings.TrimSpace(vipper.GetString("argus.instance.id"))
+	if instanceID == "" {
+		return nil, RuntimeConfig{}, fmt.Errorf("argus.instance.id is required to resolve the instance configuration namespace")
+	}
+	if _, err := commonRedis.GetContext(ctx, commonRedis.ArgusConfigVersionKey(instanceID)); err != nil && !errors.Is(err, goRedis.Nil) {
 		return nil, RuntimeConfig{}, fmt.Errorf("read argus redis configuration: %w", err)
 	}
 
-	runtime, err := loadCurrent(ctx)
+	runtime, err := loadCurrent(ctx, instanceID)
 	if err != nil {
 		return nil, RuntimeConfig{}, err
 	}
-	instanceID := vipper.GetString("argus.instance.id")
-	if instanceID == "" {
-		instanceID = "default"
-	}
 	return &Manager{current: runtime, instanceID: instanceID}, runtime, nil
+}
+
+// InstanceID 返回本进程绑定的实例键。
+func (m *Manager) InstanceID() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.instanceID
 }
 
 func (m *Manager) Start(ctx context.Context) error {
@@ -145,7 +153,11 @@ func (m *Manager) handleVersionMessage(ctx context.Context, payload string) {
 		m.notifyReload(0, err)
 		return
 	}
-	next, err := loadCurrent(ctx)
+	// 版本频道是三实例共用的，不属于本实例的消息直接丢弃；空实例键视为历史消息放行。
+	if message.InstanceID != "" && message.InstanceID != m.instanceID {
+		return
+	}
+	next, err := loadCurrent(ctx, m.instanceID)
 	if err != nil {
 		logrus.Errorf("Argus 新配置校验失败，继续使用当前配置: %v", err)
 		m.notifyReload(0, err)
@@ -193,7 +205,7 @@ func (m *Manager) handleControlMessage(ctx context.Context, payload string) {
 }
 
 func (m *Manager) Reload(ctx context.Context) error {
-	next, err := loadCurrent(ctx)
+	next, err := loadCurrent(ctx, m.instanceID)
 	if err != nil {
 		m.notifyReload(0, err)
 		return err
@@ -226,8 +238,11 @@ func (m *Manager) notifyReload(version uint64, err error) {
 	}
 }
 
-func loadCurrent(ctx context.Context) (RuntimeConfig, error) {
-	envelope, err := commonRedis.ReadConfigSnapshot(ctx)
+func loadCurrent(ctx context.Context, instanceKey string) (RuntimeConfig, error) {
+	if strings.TrimSpace(instanceKey) == "" {
+		return RuntimeConfig{}, commonRedis.ErrInstanceKeyRequired
+	}
+	envelope, err := commonRedis.ReadConfigSnapshot(ctx, instanceKey)
 	if err == nil {
 		runtime, err := runtimeFromEnvelope(envelope)
 		if err != nil {
@@ -239,24 +254,24 @@ func loadCurrent(ctx context.Context) (RuntimeConfig, error) {
 		return RuntimeConfig{}, fmt.Errorf("read redis config snapshot: %w", err)
 	}
 
-	snapshot, err := loadPublishedSnapshot()
+	snapshot, err := loadPublishedSnapshot(instanceKey)
 	if err != nil {
 		return RuntimeConfig{}, fmt.Errorf("restore config snapshot from database: %w", err)
 	}
-	envelope, err = commonRedis.WriteConfigSnapshot(ctx, snapshot.Version.Version, snapshot, 24*time.Hour)
+	envelope, err = commonRedis.WriteConfigSnapshot(ctx, instanceKey, snapshot.Version.Version, snapshot, 24*time.Hour)
 	if err != nil {
 		return RuntimeConfig{}, fmt.Errorf("restore redis config snapshot: %w", err)
 	}
 	return runtimeFromSnapshot(snapshot, envelope.Checksum)
 }
 
-func loadPublishedSnapshot() (Snapshot, error) {
+func loadPublishedSnapshot(instanceKey string) (Snapshot, error) {
 	repo := db.GetRepository[repository.ArgusConfigRepository]()
-	version, err := repo.FindPublished()
+	version, err := repo.FindPublished(instanceKey)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	loadedVersion, config, accounts, risks, symbols, notification, sessions, err := repo.LoadSnapshot(uint64(version.Id))
+	loadedVersion, config, accounts, risks, symbols, notification, sessions, err := repo.LoadSnapshot(instanceKey, uint64(version.Id))
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -467,18 +482,23 @@ func ApplyInitial(runtime RuntimeConfig) error {
 	return nil
 }
 
-func InstallSessionWriteBack() {
+// InstallSessionWriteBack 把会话回写钉在本实例上，避免刷新到别的实例的版本。
+func (m *Manager) InstallSessionWriteBack() {
+	instanceKey := m.InstanceID()
 	trade.SetSessionSaveHook(func(account trade.AccountConfig, session trade.SessionAccountData) error {
-		return persistSession(context.Background(), account, session)
+		return persistSession(context.Background(), instanceKey, account, session)
 	})
 }
 
-func persistSession(ctx context.Context, account trade.AccountConfig, session trade.SessionAccountData) error {
+func persistSession(ctx context.Context, instanceKey string, account trade.AccountConfig, session trade.SessionAccountData) error {
+	if strings.TrimSpace(instanceKey) == "" {
+		return commonRedis.ErrInstanceKeyRequired
+	}
 	if db.Db == nil {
 		return fmt.Errorf("database is not initialized")
 	}
 	var version repository.ArgusConfigVersion
-	if err := db.Db.Where("published_slot = ? AND active = ?", 1, 1).First(&version).Error; err != nil {
+	if err := db.Db.Where("instance_key = ? AND published_slot = ? AND active = ?", instanceKey, 1, 1).First(&version).Error; err != nil {
 		return err
 	}
 	var storedAccount repository.ArgusAccount
@@ -504,13 +524,13 @@ func persistSession(ctx context.Context, account trade.AccountConfig, session tr
 	}); err != nil {
 		return err
 	}
-	snapshot, err := loadPublishedSnapshot()
+	snapshot, err := loadPublishedSnapshot(instanceKey)
 	if err != nil {
 		return err
 	}
-	envelope, err := commonRedis.WriteConfigSnapshot(ctx, snapshot.Version.Version, snapshot, 24*time.Hour)
+	envelope, err := commonRedis.WriteConfigSnapshot(ctx, instanceKey, snapshot.Version.Version, snapshot, 24*time.Hour)
 	if err != nil {
 		return err
 	}
-	return commonRedis.PublishConfigVersion(ctx, envelope.Version, envelope.Checksum)
+	return commonRedis.PublishConfigVersion(ctx, instanceKey, envelope.Version, envelope.Checksum)
 }

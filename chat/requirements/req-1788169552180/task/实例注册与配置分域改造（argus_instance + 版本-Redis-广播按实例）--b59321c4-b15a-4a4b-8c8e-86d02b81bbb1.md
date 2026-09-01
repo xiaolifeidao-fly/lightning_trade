@@ -1,0 +1,218 @@
+---
+format: "delivery-task-planner-chat/v1"
+resourceType: "task"
+resourceKey: "r1-ab25892542"
+requirementKey: "req-1788169552180"
+resourceName: "实例注册与配置分域改造（argus_instance + 版本/Redis/广播按实例）"
+conversationTitle: "实例注册与配置分域改造（argus_instance + 版本/Redis/广播按实例）"
+threadId: "b59321c4-b15a-4a4b-8c8e-86d02b81bbb1"
+provider: "claude"
+phase: "development"
+lastTurnStatus: "completed"
+archivedAt: "2026-09-01T09:45:59.038098+00:00"
+---
+
+# 任务聊天 · 实例注册与配置分域改造（argus_instance + 版本/Redis/广播按实例）
+
+## 第 1 轮 · completed · q0Y_M-r1PGyEbo-DBewEEA
+
+### 用户
+
+执行「动作执行」阶段：实例注册与配置分域改造（argus_instance + 版本/Redis/广播按实例）
+
+### 助手
+
+I'll start by loading the delivery-action-execution skill as instructed.
+
+### 助手
+
+I'll start by reading the requirement document and understanding the project structure.
+
+### 助手
+
+Requirement doc for this task doesn't exist yet — only `item-n466643` has one. I'll proceed from the detailed task description and verify everything against real code. Let me load the project skill and explore.
+
+### 助手
+
+Now let me explore the actual argus config code.
+
+### 助手
+
+Now let me look at the tests, initialization, and BaseEntity.
+
+### 助手
+
+Now let me look at the existing tests to understand the test conventions and what I'll need to update.
+
+### 助手
+
+Now I have the full picture. Starting implementation with the Redis layer.
+
+### 助手
+
+Now the write/read/publish functions:
+
+### 助手
+
+Now update the redis test, then move to the repository layer.
+
+### 助手
+
+Now the repository layer — new `ArgusInstance` entity and instance-scoped version indexes.
+
+### 助手
+
+Now the repository — instance-scoped queries plus index migration:
+
+### 助手
+
+Now the DTOs:
+
+### 助手
+
+Now the service layer — threading `instanceKey` through save/publish/rollback:
+
+### 助手
+
+Now the importer — accept the three per-instance properties filenames and surface the instance key:
+
+### 助手
+
+Now update the service and repository tests:
+
+### 助手
+
+Now `argus_single/pkg/runtimeconfig/runtime.go` — the instance filter and instance-scoped loads:
+
+### 助手
+
+Now add a runtime test for the instance filter, then handle manager-api:
+
+### 助手
+
+Now the manager-api handler and the import command:
+
+### 助手
+
+Now the import command:
+
+### 助手
+
+Now full build and test across all modules:
+
+### 助手
+
+All green. Let me add importer coverage for the per-instance properties:
+
+### 助手
+
+Let me make `DuplicateInstanceKeys` use an unambiguous scan, then verify formatting:
+
+### 助手
+
+These belong to a concurrent task (backtest/kline) — not mine, leaving untouched. Now let me write the requirement and design docs.
+
+### 助手
+
+Final verification across all modules:
+
+### 助手
+
+All my touched files are gofmt-clean (the long list is pre-existing repo-wide formatting, none of it mine). Let me confirm my diff scope:
+
+### 助手
+
+实例注册与配置分域改造已落地。需求文档在梳理阶段缺失（`doc/module/r1-ab25892542/` 整个目录不存在），我按任务说明 + 代码现状补齐了全篇，再据此实现。
+
+## 1. 改了什么
+
+**新增**
+- `server/service/argus_config/instance.go` — 实例注册表 Service：`NormalizeInstanceKey`（限 `[A-Za-z0-9_.-]{1,64}`，禁冒号避免 Redis 键被拼歪）、`ResolveInstanceKey`（默认实例回落链）、`RegisterInstance`（撞键拒绝+告警）、`EnsureInstance`（幂等+告警）、`warnDuplicateInstanceKeys`（历史库缺索引的兜底检测）。
+- `doc/module/r1-ab25892542/文档.md`、`doc/module/r1-ab25892542/design/实例分域落地记录.md`
+
+**Redis 分域** `server/common/middleware/redis/ArgusConfig.go`
+- 三个全局常量键 → `ArgusConfigVersionKey/SnapshotKey/SnapshotVersionKey(instanceKey)` 三个构造函数，键形如 `argus:config:{instanceKey}:snapshot`。
+- `WriteConfigSnapshot`/`ReadConfigSnapshot`/`PublishConfigVersion` 加 `instanceKey` 首参 + `ErrInstanceKeyRequired`；新增 `DeleteConfigSnapshot`。
+- `ConfigVersionMessage` 与 `ConfigSnapshotEnvelope` 加 `InstanceID`（读取时兜底校验错读）。
+- 频道仍共用 `argus:config:changed`，靠消息内实例键定向 —— 照 `handleControlMessage` 既有范式，新增实例不用改订阅代码。
+
+**数据模型** `repository/model.go`
+- 新增 `ArgusInstance`（`instance_key` 唯一 / `instance_name` / `description` / `config_source` / `enabled`）。
+- `ArgusConfigVersion` 加 `instance_key`；`idx_argus_single_published` → `(instance_key, published_slot)`；`idx_argus_config_version` → `(instance_key, version)`。
+
+**Repository** `repository/repository.go`
+- `FindPublished(Context)` / `FindByVersion` / `NextVersion` / `LoadSnapshot(Context)` 全部带实例参数（`LoadSnapshot` 用实例键做版本归属校验）；`NextVersion` 改为实例内递增。
+- 实例注册表查询：`ListInstances` / `FindInstanceByKey` / `CreateInstance` / `SaveInstance` / `DuplicateInstanceKeys`。
+- **`EnsureInstanceScopedIndexes()`** —— 这是本次唯一的真实迁移风险：GORM AutoMigrate 对「索引名存在但列集已变」什么都不做，历史库会静默保留单列唯一索引，第二个实例发布就撞唯一键。改为查 `information_schema.statistics` 比对列集，不符就 DROP + CREATE（幂等）。
+- `BackfillInstanceKey(defaultKey)` 补齐历史行。
+- 带实例键的方法把实例键校验提到 `Db == nil` 之前（刻意偏离文件既有顺序：缺实例键是调用方编码错误，与 DB 连通性无关，也让单测不需要真实 DB）。
+
+**Service** `service.go`
+- `GetPublished` / `SaveDraft` / `Publish` 及内部 `mergePublishedSecrets` / `validateVersion` / `rollbackPublishedVersion` / `restoreRedisSnapshot` / `snapshotDTO` 全部带实例参数。
+- 归档 SQL 加 `instance_key = ?` —— 一次发布只翻自己实例的 published 槽位。
+- `EnsureTable()` 追加索引迁移 + `instance_key` 历史补齐（读 `argus.instance.default_key` / `argus.instance.id`）。
+
+**argus_single** `pkg/runtimeconfig/runtime.go`
+- `handleVersionMessage` 补实例过滤（`runtime.go:156`），照 `handleControlMessage` 写法：空 `instanceId` 视为历史消息放行。
+- `Initialize` 改为强制要求 `argus.instance.id`，缺失直接启动失败（原来静默回落 `default`，在分域后会读到错的命名空间）。
+- `loadCurrent` / `loadPublishedSnapshot` / `persistSession` 带实例键；`persistSession` 的版本查询加 `instance_key = ?`。
+- `InstallSessionWriteBack()` 从包函数改为 `Manager` 方法，把实例键钉进回写钩子；`initialization.go` 的心跳实例键改用 `runtimeManager.InstanceID()`，与配置实例键同源。
+
+**manager-api**
+- `pkg/argus_config/argus_config.go`：三个原接口支持 `?instanceKey=` / `X-Argus-Instance` / 请求体；新增 `GET|POST /argus-config/instances`。
+- `cmd/argus-config-import/main.go`：新增 `--instance` / `--instance-name`（省略则读 properties 的 `argus.instance.id`）；导入前 `EnsureInstance` 登记实例；已发布检查改为按实例判断，第二、三份不再被挡。
+- `importer.go`：`validateInstancePropertiesFile` 接受 `application[_suffix].properties`（覆盖 `application_1/_2`），其余文件名仍拒绝；实例键写入 `ImportSummary` 与 `SaveConfigRequest`。
+- `configs/application_dev.properties`：新增 `argus.instance.default_key`。
+
+**DTO**：新增 `InstanceDTO` / `SaveInstanceRequest`；`ConfigVersionDTO`、`ConfigSnapshotDTO`、`SaveConfigRequest`、`PublishConfigRequest` 加 `instanceKey`（纯新增字段，现有前端类型不受影响）。
+
+## 2. 怎么验的
+
+`common` / `service` / `manager-api` / `argus_single` 四个模块 `go build ./...` + `go vet ./...` + `go test ./...` **全部通过**，无失败项。我改动的 16 个文件 `gofmt -l` 全部干净（仓库里另有约 50 个未格式化文件，是改造前既有状态，未触碰）。
+
+新增测试：
+- `ArgusConfig_test.go`：键跨实例不碰撞 + 具体键格式断言；四个入口缺实例键均返回 `ErrInstanceKeyRequired`。
+- `repository_test.go`：`assertIndexColumns` 断言两个唯一索引的**列序**就是 `(instance_key, published_slot)` / `(instance_key, version)`；5 个实例参数入口的缺键守卫。
+- `runtime_test.go`：**其他实例的版本消息被静默丢弃**（不加载、不上报 reload），本实例消息进入加载分支；`loadCurrent` / `persistSession` 缺键守卫。
+- `importer_test.go`：三份 properties 各自读出正确实例键与源文件名；`other.properties` / `application.txt` / `app_application.properties` 仍被拒。
+- `service_test.go`：实例键格式校验、`ResolveInstanceKey` 无默认时报错、`versionDTO` 透传实例键。
+
+**未验的部分（无 DB/Redis 环境）**：索引 DROP/CREATE 迁移、`instance_key` 补齐、三实例并发发布互不干扰，都需要真实 MySQL + Redis，属成品测试阶段。
+
+## 3. 对照验收标准
+
+| 标准 | 结论 |
+| --- | --- |
+| A1 `argus_instance` 表 + 三份 properties 各导一份 | 已满足（代码+命令齐备，实际导入待测试阶段） |
+| A2 `instance_key` + 两个复合唯一索引 | 已满足，单测断言列序 |
+| A3 三实例各有一条 published | 已满足（索引与归档 SQL 均实例内收口），需 DB 实测 |
+| A4 Redis 键按实例隔离 | 已满足，单测覆盖 |
+| A5 消息带 `instanceId` + 订阅端过滤 | 已满足，单测覆盖 |
+| A6 三层接口带实例参数、缺键报错 | 已满足，单测覆盖 |
+| A7 实例键格式/重复校验与告警 | 已满足 |
+| A8 四模块 build/vet/test 全绿 | 已满足 |
+
+## 4. 测试交接信息
+
+- 环境：MySQL（`sqlconn`）、Redis（`redis.addr`/`redis.password`），配置写 `server/manager-api/configs/application.properties`（模板见 `application_dev.properties`，真实 DSN 不要入库）。
+- 环境变量 `ARGUS_CONFIG_ENCRYPTION_KEY`：base64 编码 32 字节，`--apply` 时必需。
+- 导入序列（在 `server/manager-api` 下，每份 properties 各跑一次，先干跑再 `--apply`），完整命令见设计文档 §5。
+- 可观察结果：`argus_instance` 三行；`argus_config_version` 三条 `published_slot=1` 且 `instance_key` 各异；Redis 存在 `argus:config:argus-single-{1,roc,ives}:snapshot` 三个键；发布任一实例，只有对应 argus_single 进程日志出现「配置已热加载」。
+- 清理：`DELETE FROM argus_config_version/argus_instance` 及子表 + `DEL argus:config:*`。旧全局键 `argus:config:snapshot`/`:version` 改造后无人读写，会等 24h TTL 过期，可手动 DEL。
+
+## 5. 遗留与风险
+
+1. **前端无实例选择器**（任务范围明确「不做」）。三实例并存时前端不传 `instanceKey`，只能操作 `argus.instance.default_key` 指定的那一个 —— 需要一个后续前端任务。
+2. `manager-api/pkg/argus_runtime`（心跳/控制）未纳入本次分域，仍读 `argus.instance.id` 且缺失时回落 `"default"`。这是改造前既有行为，属运行时控制任务范围；注意它与新增的 `argus.instance.default_key` **不是同一个键**，部署时两者都要配。
+3. 工作区里另有 `server/service/trade`、`server/argus_single/pkg/trade/market_data.go`、`server/manager-api/pkg/strategy` 等回测/K线相关改动，**不是本任务产物**（并发的另一条任务），我未触碰。
+4. 索引迁移用了 MySQL 的 `information_schema`，与仓库 GORM MySQL 驱动一致，但换库需另写。
+
+交付文档：
+- [doc/module/r1-ab25892542/文档.md](doc/module/r1-ab25892542/文档.md)
+- [doc/module/r1-ab25892542/design/实例分域落地记录.md](doc/module/r1-ab25892542/design/实例分域落地记录.md)
+
+批量判定：完成
+
+<!-- delivery-task-planner-chat-data
+eyJ0dXJucyI6W3siaWQiOiJxMFlfTS1yMVBHeUViby1EQmV3RUVBIiwic3RhdHVzIjoiY29tcGxldGVkIiwiY3JlYXRlZEF0IjoiMjAyNi0wOS0wMVQwOTozMDozNS44MDEwMjIrMDA6MDAiLCJjb21wbGV0ZWRBdCI6IjIwMjYtMDktMDFUMDk6NDU6NTguNjU5MDYyKzAwOjAwIiwiaXRlbXMiOlt7InR5cGUiOiJ1c2VyTWVzc2FnZSIsImNvbnRlbnQiOlt7InR5cGUiOiJ0ZXh0IiwidGV4dCI6IuaJp+ihjOOAjOWKqOS9nOaJp+ihjOOAjemYtuaute+8muWunuS+i+azqOWGjOS4jumFjee9ruWIhuWfn+aUuemAoO+8iGFyZ3VzX2luc3RhbmNlICsg54mI5pysL1JlZGlzL+W5v+aSreaMieWunuS+i++8iSJ9XX0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6IkknbGwgc3RhcnQgYnkgbG9hZGluZyB0aGUgZGVsaXZlcnktYWN0aW9uLWV4ZWN1dGlvbiBza2lsbCBhcyBpbnN0cnVjdGVkLiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6IkknbGwgc3RhcnQgYnkgcmVhZGluZyB0aGUgcmVxdWlyZW1lbnQgZG9jdW1lbnQgYW5kIHVuZGVyc3RhbmRpbmcgdGhlIHByb2plY3Qgc3RydWN0dXJlLiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6IlJlcXVpcmVtZW50IGRvYyBmb3IgdGhpcyB0YXNrIGRvZXNuJ3QgZXhpc3QgeWV0IOKAlCBvbmx5IGBpdGVtLW40NjY2NDNgIGhhcyBvbmUuIEknbGwgcHJvY2VlZCBmcm9tIHRoZSBkZXRhaWxlZCB0YXNrIGRlc2NyaXB0aW9uIGFuZCB2ZXJpZnkgZXZlcnl0aGluZyBhZ2FpbnN0IHJlYWwgY29kZS4gTGV0IG1lIGxvYWQgdGhlIHByb2plY3Qgc2tpbGwgYW5kIGV4cGxvcmUuIiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiTm93IGxldCBtZSBleHBsb3JlIHRoZSBhY3R1YWwgYXJndXMgY29uZmlnIGNvZGUuIiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiTm93IGxldCBtZSBsb29rIGF0IHRoZSB0ZXN0cywgaW5pdGlhbGl6YXRpb24sIGFuZCBCYXNlRW50aXR5LiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6Ik5vdyBsZXQgbWUgbG9vayBhdCB0aGUgZXhpc3RpbmcgdGVzdHMgdG8gdW5kZXJzdGFuZCB0aGUgdGVzdCBjb252ZW50aW9ucyBhbmQgd2hhdCBJJ2xsIG5lZWQgdG8gdXBkYXRlLiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6Ik5vdyBJIGhhdmUgdGhlIGZ1bGwgcGljdHVyZS4gU3RhcnRpbmcgaW1wbGVtZW50YXRpb24gd2l0aCB0aGUgUmVkaXMgbGF5ZXIuIiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiTm93IHRoZSB3cml0ZS9yZWFkL3B1Ymxpc2ggZnVuY3Rpb25zOiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6Ik5vdyB1cGRhdGUgdGhlIHJlZGlzIHRlc3QsIHRoZW4gbW92ZSB0byB0aGUgcmVwb3NpdG9yeSBsYXllci4iLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJwaGFzZSI6IiJ9LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiJOb3cgdGhlIHJlcG9zaXRvcnkgbGF5ZXIg4oCUIG5ldyBgQXJndXNJbnN0YW5jZWAgZW50aXR5IGFuZCBpbnN0YW5jZS1zY29wZWQgdmVyc2lvbiBpbmRleGVzLiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6Ik5vdyB0aGUgcmVwb3NpdG9yeSDigJQgaW5zdGFuY2Utc2NvcGVkIHF1ZXJpZXMgcGx1cyBpbmRleCBtaWdyYXRpb246Iiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiTm93IHRoZSBEVE9zOiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6Ik5vdyB0aGUgc2VydmljZSBsYXllciDigJQgdGhyZWFkaW5nIGBpbnN0YW5jZUtleWAgdGhyb3VnaCBzYXZlL3B1Ymxpc2gvcm9sbGJhY2s6Iiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiTm93IHRoZSBpbXBvcnRlciDigJQgYWNjZXB0IHRoZSB0aHJlZSBwZXItaW5zdGFuY2UgcHJvcGVydGllcyBmaWxlbmFtZXMgYW5kIHN1cmZhY2UgdGhlIGluc3RhbmNlIGtleToiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJwaGFzZSI6IiJ9LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiJOb3cgdXBkYXRlIHRoZSBzZXJ2aWNlIGFuZCByZXBvc2l0b3J5IHRlc3RzOiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6Ik5vdyBgYXJndXNfc2luZ2xlL3BrZy9ydW50aW1lY29uZmlnL3J1bnRpbWUuZ29gIOKAlCB0aGUgaW5zdGFuY2UgZmlsdGVyIGFuZCBpbnN0YW5jZS1zY29wZWQgbG9hZHM6Iiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiTm93IGFkZCBhIHJ1bnRpbWUgdGVzdCBmb3IgdGhlIGluc3RhbmNlIGZpbHRlciwgdGhlbiBoYW5kbGUgbWFuYWdlci1hcGk6Iiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiTm93IHRoZSBtYW5hZ2VyLWFwaSBoYW5kbGVyIGFuZCB0aGUgaW1wb3J0IGNvbW1hbmQ6Iiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiTm93IHRoZSBpbXBvcnQgY29tbWFuZDoiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJwaGFzZSI6IiJ9LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiJOb3cgZnVsbCBidWlsZCBhbmQgdGVzdCBhY3Jvc3MgYWxsIG1vZHVsZXM6Iiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiQWxsIGdyZWVuLiBMZXQgbWUgYWRkIGltcG9ydGVyIGNvdmVyYWdlIGZvciB0aGUgcGVyLWluc3RhbmNlIHByb3BlcnRpZXM6Iiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiTGV0IG1lIG1ha2UgYER1cGxpY2F0ZUluc3RhbmNlS2V5c2AgdXNlIGFuIHVuYW1iaWd1b3VzIHNjYW4sIHRoZW4gdmVyaWZ5IGZvcm1hdHRpbmc6Iiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiVGhlc2UgYmVsb25nIHRvIGEgY29uY3VycmVudCB0YXNrIChiYWNrdGVzdC9rbGluZSkg4oCUIG5vdCBtaW5lLCBsZWF2aW5nIHVudG91Y2hlZC4gTm93IGxldCBtZSB3cml0ZSB0aGUgcmVxdWlyZW1lbnQgYW5kIGRlc2lnbiBkb2NzLiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6IkZpbmFsIHZlcmlmaWNhdGlvbiBhY3Jvc3MgYWxsIG1vZHVsZXM6Iiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiQWxsIG15IHRvdWNoZWQgZmlsZXMgYXJlIGdvZm10LWNsZWFuICh0aGUgbG9uZyBsaXN0IGlzIHByZS1leGlzdGluZyByZXBvLXdpZGUgZm9ybWF0dGluZywgbm9uZSBvZiBpdCBtaW5lKS4gTGV0IG1lIGNvbmZpcm0gbXkgZGlmZiBzY29wZToiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJwaGFzZSI6IiJ9LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiLlrp7kvovms6jlhozkuI7phY3nva7liIbln5/mlLnpgKDlt7LokL3lnLDjgILpnIDmsYLmlofmoaPlnKjmorPnkIbpmLbmrrXnvLrlpLHvvIhgZG9jL21vZHVsZS9yMS1hYjI1ODkyNTQyL2Ag5pW05Liq55uu5b2V5LiN5a2Y5Zyo77yJ77yM5oiR5oyJ5Lu75Yqh6K+05piOICsg5Luj56CB546w54q26KGl6b2Q5LqG5YWo56+H77yM5YaN5o2u5q2k5a6e546w44CCXG5cbiMjIDEuIOaUueS6huS7gOS5iFxuXG4qKuaWsOWinioqXG4tIGBzZXJ2ZXIvc2VydmljZS9hcmd1c19jb25maWcvaW5zdGFuY2UuZ29gIOKAlCDlrp7kvovms6jlhozooaggU2VydmljZe+8mmBOb3JtYWxpemVJbnN0YW5jZUtleWDvvIjpmZAgYFtBLVphLXowLTlfLi1dezEsNjR9YO+8jOemgeWGkuWPt+mBv+WFjSBSZWRpcyDplK7ooqvmi7zmrarvvInjgIFgUmVzb2x2ZUluc3RhbmNlS2V5YO+8iOm7mOiupOWunuS+i+WbnuiQvemTvu+8ieOAgWBSZWdpc3Rlckluc3RhbmNlYO+8iOaSnumUruaLkue7nSvlkYrorabvvInjgIFgRW5zdXJlSW5zdGFuY2Vg77yI5bmC562JK+WRiuitpu+8ieOAgWB3YXJuRHVwbGljYXRlSW5zdGFuY2VLZXlzYO+8iOWOhuWPsuW6k+e8uue0ouW8leeahOWFnOW6leajgOa1i++8ieOAglxuLSBgZG9jL21vZHVsZS9yMS1hYjI1ODkyNTQyL+aWh+ahoy5tZGDjgIFgZG9jL21vZHVsZS9yMS1hYjI1ODkyNTQyL2Rlc2lnbi/lrp7kvovliIbln5/okL3lnLDorrDlvZUubWRgXG5cbioqUmVkaXMg5YiG5Z+fKiogYHNlcnZlci9jb21tb24vbWlkZGxld2FyZS9yZWRpcy9Bcmd1c0NvbmZpZy5nb2Bcbi0g5LiJ5Liq5YWo5bGA5bi46YeP6ZSuIOKGkiBgQXJndXNDb25maWdWZXJzaW9uS2V5L1NuYXBzaG90S2V5L1NuYXBzaG90VmVyc2lvbktleShpbnN0YW5jZUtleSlgIOS4ieS4quaehOmAoOWHveaVsO+8jOmUruW9ouWmgiBgYXJndXM6Y29uZmlnOntpbnN0YW5jZUtleX06c25hcHNob3Rg44CCXG4tIGBXcml0ZUNvbmZpZ1NuYXBzaG90YC9gUmVhZENvbmZpZ1NuYXBzaG90YC9gUHVibGlzaENvbmZpZ1ZlcnNpb25gIOWKoCBgaW5zdGFuY2VLZXlgIOmmluWPgiArIGBFcnJJbnN0YW5jZUtleVJlcXVpcmVkYO+8m+aWsOWiniBgRGVsZXRlQ29uZmlnU25hcHNob3Rg44CCXG4tIGBDb25maWdWZXJzaW9uTWVzc2FnZWAg5LiOIGBDb25maWdTbmFwc2hvdEVudmVsb3BlYCDliqAgYEluc3RhbmNlSURg77yI6K+75Y+W5pe25YWc5bqV5qCh6aqM6ZSZ6K+777yJ44CCXG4tIOmikemBk+S7jeWFseeUqCBgYXJndXM6Y29uZmlnOmNoYW5nZWRg77yM6Z2g5raI5oGv5YaF5a6e5L6L6ZSu5a6a5ZCRIOKAlOKAlCDnhacgYGhhbmRsZUNvbnRyb2xNZXNzYWdlYCDml6LmnInojIPlvI/vvIzmlrDlop7lrp7kvovkuI3nlKjmlLnorqLpmIXku6PnoIHjgIJcblxuKirmlbDmja7mqKHlnosqKiBgcmVwb3NpdG9yeS9tb2RlbC5nb2Bcbi0g5paw5aKeIGBBcmd1c0luc3RhbmNlYO+8iGBpbnN0YW5jZV9rZXlgIOWUr+S4gCAvIGBpbnN0YW5jZV9uYW1lYCAvIGBkZXNjcmlwdGlvbmAgLyBgY29uZmlnX3NvdXJjZWAgLyBgZW5hYmxlZGDvvInjgIJcbi0gYEFyZ3VzQ29uZmlnVmVyc2lvbmAg5YqgIGBpbnN0YW5jZV9rZXlg77ybYGlkeF9hcmd1c19zaW5nbGVfcHVibGlzaGVkYCDihpIgYChpbnN0YW5jZV9rZXksIHB1Ymxpc2hlZF9zbG90KWDvvJtgaWR4X2FyZ3VzX2NvbmZpZ192ZXJzaW9uYCDihpIgYChpbnN0YW5jZV9rZXksIHZlcnNpb24pYOOAglxuXG4qKlJlcG9zaXRvcnkqKiBgcmVwb3NpdG9yeS9yZXBvc2l0b3J5LmdvYFxuLSBgRmluZFB1Ymxpc2hlZChDb250ZXh0KWAgLyBgRmluZEJ5VmVyc2lvbmAgLyBgTmV4dFZlcnNpb25gIC8gYExvYWRTbmFwc2hvdChDb250ZXh0KWAg5YWo6YOo5bim5a6e5L6L5Y+C5pWw77yIYExvYWRTbmFwc2hvdGAg55So5a6e5L6L6ZSu5YGa54mI5pys5b2S5bGe5qCh6aqM77yJ77ybYE5leHRWZXJzaW9uYCDmlLnkuLrlrp7kvovlhoXpgJLlop7jgIJcbi0g5a6e5L6L5rOo5YaM6KGo5p+l6K+i77yaYExpc3RJbnN0YW5jZXNgIC8gYEZpbmRJbnN0YW5jZUJ5S2V5YCAvIGBDcmVhdGVJbnN0YW5jZWAgLyBgU2F2ZUluc3RhbmNlYCAvIGBEdXBsaWNhdGVJbnN0YW5jZUtleXNg44CCXG4tICoqYEVuc3VyZUluc3RhbmNlU2NvcGVkSW5kZXhlcygpYCoqIOKAlOKAlCDov5nmmK/mnKzmrKHllK/kuIDnmoTnnJ/lrp7ov4Hnp7vpo47pmanvvJpHT1JNIEF1dG9NaWdyYXRlIOWvueOAjOe0ouW8leWQjeWtmOWcqOS9huWIl+mbhuW3suWPmOOAjeS7gOS5iOmDveS4jeWBmu+8jOWOhuWPsuW6k+S8mumdmem7mOS/neeVmeWNleWIl+WUr+S4gOe0ouW8le+8jOesrOS6jOS4quWunuS+i+WPkeW4g+WwseaSnuWUr+S4gOmUruOAguaUueS4uuafpSBgaW5mb3JtYXRpb25fc2NoZW1hLnN0YXRpc3RpY3NgIOavlOWvueWIl+mbhu+8jOS4jeespuWwsSBEUk9QICsgQ1JFQVRF77yI5bmC562J77yJ44CCXG4tIGBCYWNrZmlsbEluc3RhbmNlS2V5KGRlZmF1bHRLZXkpYCDooaXpvZDljoblj7LooYzjgIJcbi0g5bim5a6e5L6L6ZSu55qE5pa55rOV5oqK5a6e5L6L6ZSu5qCh6aqM5o+Q5YiwIGBEYiA9PSBuaWxgIOS5i+WJje+8iOWIu+aEj+WBj+emu+aWh+S7tuaXouaciemhuuW6j++8mue8uuWunuS+i+mUruaYr+iwg+eUqOaWuee8lueggemUmeivr++8jOS4jiBEQiDov57pgJrmgKfml6DlhbPvvIzkuZ/orqnljZXmtYvkuI3pnIDopoHnnJ/lrp4gRELvvInjgIJcblxuKipTZXJ2aWNlKiogYHNlcnZpY2UuZ29gXG4tIGBHZXRQdWJsaXNoZWRgIC8gYFNhdmVEcmFmdGAgLyBgUHVibGlzaGAg5Y+K5YaF6YOoIGBtZXJnZVB1Ymxpc2hlZFNlY3JldHNgIC8gYHZhbGlkYXRlVmVyc2lvbmAgLyBgcm9sbGJhY2tQdWJsaXNoZWRWZXJzaW9uYCAvIGByZXN0b3JlUmVkaXNTbmFwc2hvdGAgLyBgc25hcHNob3REVE9gIOWFqOmDqOW4puWunuS+i+WPguaVsOOAglxuLSDlvZLmoaMgU1FMIOWKoCBgaW5zdGFuY2Vfa2V5ID0gP2Ag4oCU4oCUIOS4gOasoeWPkeW4g+WPque/u+iHquW3seWunuS+i+eahCBwdWJsaXNoZWQg5qe95L2N44CCXG4tIGBFbnN1cmVUYWJsZSgpYCDov73liqDntKLlvJXov4Hnp7sgKyBgaW5zdGFuY2Vfa2V5YCDljoblj7LooaXpvZDvvIjor7sgYGFyZ3VzLmluc3RhbmNlLmRlZmF1bHRfa2V5YCAvIGBhcmd1cy5pbnN0YW5jZS5pZGDvvInjgIJcblxuKiphcmd1c19zaW5nbGUqKiBgcGtnL3J1bnRpbWVjb25maWcvcnVudGltZS5nb2Bcbi0gYGhhbmRsZVZlcnNpb25NZXNzYWdlYCDooaXlrp7kvovov4fmu6TvvIhgcnVudGltZS5nbzoxNTZg77yJ77yM54WnIGBoYW5kbGVDb250cm9sTWVzc2FnZWAg5YaZ5rOV77ya56m6IGBpbnN0YW5jZUlkYCDop4bkuLrljoblj7Lmtojmga/mlL7ooYzjgIJcbi0gYEluaXRpYWxpemVgIOaUueS4uuW8uuWItuimgeaxgiBgYXJndXMuaW5zdGFuY2UuaWRg77yM57y65aSx55u05o6l5ZCv5Yqo5aSx6LSl77yI5Y6f5p2l6Z2Z6buY5Zue6JC9IGBkZWZhdWx0YO+8jOWcqOWIhuWfn+WQjuS8muivu+WIsOmUmeeahOWRveWQjeepuumXtO+8ieOAglxuLSBgbG9hZEN1cnJlbnRgIC8gYGxvYWRQdWJsaXNoZWRTbmFwc2hvdGAgLyBgcGVyc2lzdFNlc3Npb25gIOW4puWunuS+i+mUru+8m2BwZXJzaXN0U2Vzc2lvbmAg55qE54mI5pys5p+l6K+i5YqgIGBpbnN0YW5jZV9rZXkgPSA/YOOAglxuLSBgSW5zdGFsbFNlc3Npb25Xcml0ZUJhY2soKWAg5LuO5YyF5Ye95pWw5pS55Li6IGBNYW5hZ2VyYCDmlrnms5XvvIzmiorlrp7kvovplK7pkonov5vlm57lhpnpkqnlrZDvvJtgaW5pdGlhbGl6YXRpb24uZ29gIOeahOW/g+i3s+WunuS+i+mUruaUueeUqCBgcnVudGltZU1hbmFnZXIuSW5zdGFuY2VJRCgpYO+8jOS4jumFjee9ruWunuS+i+mUruWQjOa6kOOAglxuXG4qKm1hbmFnZXItYXBpKipcbi0gYHBrZy9hcmd1c19jb25maWcvYXJndXNfY29uZmlnLmdvYO+8muS4ieS4quWOn+aOpeWPo+aUr+aMgSBgP2luc3RhbmNlS2V5PWAgLyBgWC1Bcmd1cy1JbnN0YW5jZWAgLyDor7fmsYLkvZPvvJvmlrDlop4gYEdFVHxQT1NUIC9hcmd1cy1jb25maWcvaW5zdGFuY2VzYOOAglxuLSBgY21kL2FyZ3VzLWNvbmZpZy1pbXBvcnQvbWFpbi5nb2DvvJrmlrDlop4gYC0taW5zdGFuY2VgIC8gYC0taW5zdGFuY2UtbmFtZWDvvIjnnIHnlaXliJnor7sgcHJvcGVydGllcyDnmoQgYGFyZ3VzLmluc3RhbmNlLmlkYO+8ie+8m+WvvOWFpeWJjSBgRW5zdXJlSW5zdGFuY2VgIOeZu+iusOWunuS+i++8m+W3suWPkeW4g+ajgOafpeaUueS4uuaMieWunuS+i+WIpOaWre+8jOesrOS6jOOAgeS4ieS7veS4jeWGjeiiq+aMoeOAglxuLSBgaW1wb3J0ZXIuZ29g77yaYHZhbGlkYXRlSW5zdGFuY2VQcm9wZXJ0aWVzRmlsZWAg5o6l5Y+XIGBhcHBsaWNhdGlvbltfc3VmZml4XS5wcm9wZXJ0aWVzYO+8iOimhuebliBgYXBwbGljYXRpb25fMS9fMmDvvInvvIzlhbbkvZnmlofku7blkI3ku43mi5Lnu53vvJvlrp7kvovplK7lhpnlhaUgYEltcG9ydFN1bW1hcnlgIOS4jiBgU2F2ZUNvbmZpZ1JlcXVlc3Rg44CCXG4tIGBjb25maWdzL2FwcGxpY2F0aW9uX2Rldi5wcm9wZXJ0aWVzYO+8muaWsOWiniBgYXJndXMuaW5zdGFuY2UuZGVmYXVsdF9rZXlg44CCXG5cbioqRFRPKirvvJrmlrDlop4gYEluc3RhbmNlRFRPYCAvIGBTYXZlSW5zdGFuY2VSZXF1ZXN0YO+8m2BDb25maWdWZXJzaW9uRFRPYOOAgWBDb25maWdTbmFwc2hvdERUT2DjgIFgU2F2ZUNvbmZpZ1JlcXVlc3Rg44CBYFB1Ymxpc2hDb25maWdSZXF1ZXN0YCDliqAgYGluc3RhbmNlS2V5YO+8iOe6r+aWsOWinuWtl+aute+8jOeOsOacieWJjeerr+exu+Wei+S4jeWPl+W9seWTje+8ieOAglxuXG4jIyAyLiDmgI7kuYjpqoznmoRcblxuYGNvbW1vbmAgLyBgc2VydmljZWAgLyBgbWFuYWdlci1hcGlgIC8gYGFyZ3VzX3NpbmdsZWAg5Zub5Liq5qih5Z2XIGBnbyBidWlsZCAuLy4uLmAgKyBgZ28gdmV0IC4vLi4uYCArIGBnbyB0ZXN0IC4vLi4uYCAqKuWFqOmDqOmAmui/hyoq77yM5peg5aSx6LSl6aG544CC5oiR5pS55Yqo55qEIDE2IOS4quaWh+S7tiBgZ29mbXQgLWxgIOWFqOmDqOW5suWHgO+8iOS7k+W6k+mHjOWPpuaciee6piA1MCDkuKrmnKrmoLzlvI/ljJbmlofku7bvvIzmmK/mlLnpgKDliY3ml6LmnInnirbmgIHvvIzmnKrop6bnorDvvInjgIJcblxu5paw5aKe5rWL6K+V77yaXG4tIGBBcmd1c0NvbmZpZ190ZXN0LmdvYO+8mumUrui3qOWunuS+i+S4jeeisOaSniArIOWFt+S9k+mUruagvOW8j+aWreiogO+8m+Wbm+S4quWFpeWPo+e8uuWunuS+i+mUruWdh+i/lOWbniBgRXJySW5zdGFuY2VLZXlSZXF1aXJlZGDjgIJcbi0gYHJlcG9zaXRvcnlfdGVzdC5nb2DvvJpgYXNzZXJ0SW5kZXhDb2x1bW5zYCDmlq3oqIDkuKTkuKrllK/kuIDntKLlvJXnmoQqKuWIl+W6jyoq5bCx5pivIGAoaW5zdGFuY2Vfa2V5LCBwdWJsaXNoZWRfc2xvdClgIC8gYChpbnN0YW5jZV9rZXksIHZlcnNpb24pYO+8mzUg5Liq5a6e5L6L5Y+C5pWw5YWl5Y+j55qE57y66ZSu5a6I5Y2r44CCXG4tIGBydW50aW1lX3Rlc3QuZ29g77yaKirlhbbku5blrp7kvovnmoTniYjmnKzmtojmga/ooqvpnZnpu5jkuKLlvIMqKu+8iOS4jeWKoOi9veOAgeS4jeS4iuaKpSByZWxvYWTvvInvvIzmnKzlrp7kvovmtojmga/ov5vlhaXliqDovb3liIbmlK/vvJtgbG9hZEN1cnJlbnRgIC8gYHBlcnNpc3RTZXNzaW9uYCDnvLrplK7lrojljavjgIJcbi0gYGltcG9ydGVyX3Rlc3QuZ29g77ya5LiJ5Lu9IHByb3BlcnRpZXMg5ZCE6Ieq6K+75Ye65q2j56Gu5a6e5L6L6ZSu5LiO5rqQ5paH5Lu25ZCN77ybYG90aGVyLnByb3BlcnRpZXNgIC8gYGFwcGxpY2F0aW9uLnR4dGAgLyBgYXBwX2FwcGxpY2F0aW9uLnByb3BlcnRpZXNgIOS7jeiiq+aLkuOAglxuLSBgc2VydmljZV90ZXN0LmdvYO+8muWunuS+i+mUruagvOW8j+agoemqjOOAgWBSZXNvbHZlSW5zdGFuY2VLZXlgIOaXoOm7mOiupOaXtuaKpemUmeOAgWB2ZXJzaW9uRFRPYCDpgI/kvKDlrp7kvovplK7jgIJcblxuKirmnKrpqoznmoTpg6jliIbvvIjml6AgREIvUmVkaXMg546v5aKD77yJKirvvJrntKLlvJUgRFJPUC9DUkVBVEUg6L+B56e744CBYGluc3RhbmNlX2tleWAg6KGl6b2Q44CB5LiJ5a6e5L6L5bm25Y+R5Y+R5biD5LqS5LiN5bmy5omw77yM6YO96ZyA6KaB55yf5a6eIE15U1FMICsgUmVkaXPvvIzlsZ7miJDlk4HmtYvor5XpmLbmrrXjgIJcblxuIyMgMy4g5a+554Wn6aqM5pS25qCH5YeGXG5cbnwg5qCH5YeGIHwg57uT6K66IHxcbnwgLS0tIHwgLS0tIHxcbnwgQTEgYGFyZ3VzX2luc3RhbmNlYCDooaggKyDkuInku70gcHJvcGVydGllcyDlkITlr7zkuIDku70gfCDlt7Lmu6HotrPvvIjku6PnoIEr5ZG95Luk6b2Q5aSH77yM5a6e6ZmF5a+85YWl5b6F5rWL6K+V6Zi25q6177yJIHxcbnwgQTIgYGluc3RhbmNlX2tleWAgKyDkuKTkuKrlpI3lkIjllK/kuIDntKLlvJUgfCDlt7Lmu6HotrPvvIzljZXmtYvmlq3oqIDliJfluo8gfFxufCBBMyDkuInlrp7kvovlkITmnInkuIDmnaEgcHVibGlzaGVkIHwg5bey5ruh6Laz77yI57Si5byV5LiO5b2S5qGjIFNRTCDlnYflrp7kvovlhoXmlLblj6PvvInvvIzpnIAgREIg5a6e5rWLIHxcbnwgQTQgUmVkaXMg6ZSu5oyJ5a6e5L6L6ZqU56a7IHwg5bey5ruh6Laz77yM5Y2V5rWL6KaG55uWIHxcbnwgQTUg5raI5oGv5bimIGBpbnN0YW5jZUlkYCArIOiuoumYheerr+i/h+a7pCB8IOW3sua7oei2s++8jOWNlea1i+imhuebliB8XG58IEE2IOS4ieWxguaOpeWPo+W4puWunuS+i+WPguaVsOOAgee8uumUruaKpemUmSB8IOW3sua7oei2s++8jOWNlea1i+imhuebliB8XG58IEE3IOWunuS+i+mUruagvOW8jy/ph43lpI3moKHpqozkuI7lkYroraYgfCDlt7Lmu6HotrMgfFxufCBBOCDlm5vmqKHlnZcgYnVpbGQvdmV0L3Rlc3Qg5YWo57u/IHwg5bey5ruh6LazIHxcblxuIyMgNC4g5rWL6K+V5Lqk5o6l5L+h5oGvXG5cbi0g546v5aKD77yaTXlTUUzvvIhgc3FsY29ubmDvvInjgIFSZWRpc++8iGByZWRpcy5hZGRyYC9gcmVkaXMucGFzc3dvcmRg77yJ77yM6YWN572u5YaZIGBzZXJ2ZXIvbWFuYWdlci1hcGkvY29uZmlncy9hcHBsaWNhdGlvbi5wcm9wZXJ0aWVzYO+8iOaooeadv+ingSBgYXBwbGljYXRpb25fZGV2LnByb3BlcnRpZXNg77yM55yf5a6eIERTTiDkuI3opoHlhaXlupPvvInjgIJcbi0g546v5aKD5Y+Y6YePIGBBUkdVU19DT05GSUdfRU5DUllQVElPTl9LRVlg77yaYmFzZTY0IOe8lueggSAzMiDlrZfoioLvvIxgLS1hcHBseWAg5pe25b+F6ZyA44CCXG4tIOWvvOWFpeW6j+WIl++8iOWcqCBgc2VydmVyL21hbmFnZXItYXBpYCDkuIvvvIzmr4/ku70gcHJvcGVydGllcyDlkITot5HkuIDmrKHvvIzlhYjlubLot5Hlho0gYC0tYXBwbHlg77yJ77yM5a6M5pW05ZG95Luk6KeB6K6+6K6h5paH5qGjIMKnNeOAglxuLSDlj6/op4Llr5/nu5PmnpzvvJpgYXJndXNfaW5zdGFuY2VgIOS4ieihjO+8m2Bhcmd1c19jb25maWdfdmVyc2lvbmAg5LiJ5p2hIGBwdWJsaXNoZWRfc2xvdD0xYCDkuJQgYGluc3RhbmNlX2tleWAg5ZCE5byC77ybUmVkaXMg5a2Y5ZyoIGBhcmd1czpjb25maWc6YXJndXMtc2luZ2xlLXsxLHJvYyxpdmVzfTpzbmFwc2hvdGAg5LiJ5Liq6ZSu77yb5Y+R5biD5Lu75LiA5a6e5L6L77yM5Y+q5pyJ5a+55bqUIGFyZ3VzX3NpbmdsZSDov5vnqIvml6Xlv5flh7rnjrDjgIzphY3nva7lt7Lng63liqDovb3jgI3jgIJcbi0g5riF55CG77yaYERFTEVURSBGUk9NIGFyZ3VzX2NvbmZpZ192ZXJzaW9uL2FyZ3VzX2luc3RhbmNlYCDlj4rlrZDooaggKyBgREVMIGFyZ3VzOmNvbmZpZzoqYOOAguaXp+WFqOWxgOmUriBgYXJndXM6Y29uZmlnOnNuYXBzaG90YC9gOnZlcnNpb25gIOaUuemAoOWQjuaXoOS6uuivu+WGme+8jOS8muetiSAyNGggVFRMIOi/h+acn++8jOWPr+aJi+WKqCBERUzjgIJcblxuIyMgNS4g6YGX55WZ5LiO6aOO6ZmpXG5cbjEuICoq5YmN56uv5peg5a6e5L6L6YCJ5oup5ZmoKirvvIjku7vliqHojIPlm7TmmI7noa7jgIzkuI3lgZrjgI3vvInjgILkuInlrp7kvovlubblrZjml7bliY3nq6/kuI3kvKAgYGluc3RhbmNlS2V5YO+8jOWPquiDveaTjeS9nCBgYXJndXMuaW5zdGFuY2UuZGVmYXVsdF9rZXlgIOaMh+WumueahOmCo+S4gOS4qiDigJTigJQg6ZyA6KaB5LiA5Liq5ZCO57ut5YmN56uv5Lu75Yqh44CCXG4yLiBgbWFuYWdlci1hcGkvcGtnL2FyZ3VzX3J1bnRpbWVg77yI5b+D6LezL+aOp+WItu+8ieacque6s+WFpeacrOasoeWIhuWfn++8jOS7jeivuyBgYXJndXMuaW5zdGFuY2UuaWRgIOS4lOe8uuWkseaXtuWbnuiQvSBgXCJkZWZhdWx0XCJg44CC6L+Z5piv5pS56YCg5YmN5pei5pyJ6KGM5Li677yM5bGe6L+Q6KGM5pe25o6n5Yi25Lu75Yqh6IyD5Zu077yb5rOo5oSP5a6D5LiO5paw5aKe55qEIGBhcmd1cy5pbnN0YW5jZS5kZWZhdWx0X2tleWAgKirkuI3mmK/lkIzkuIDkuKrplK4qKu+8jOmDqOe9suaXtuS4pOiAhemDveimgemFjeOAglxuMy4g5bel5L2c5Yy66YeM5Y+m5pyJIGBzZXJ2ZXIvc2VydmljZS90cmFkZWDjgIFgc2VydmVyL2FyZ3VzX3NpbmdsZS9wa2cvdHJhZGUvbWFya2V0X2RhdGEuZ29g44CBYHNlcnZlci9tYW5hZ2VyLWFwaS9wa2cvc3RyYXRlZ3lgIOetieWbnua1iy9L57q/55u45YWz5pS55Yqo77yMKirkuI3mmK/mnKzku7vliqHkuqfniakqKu+8iOW5tuWPkeeahOWPpuS4gOadoeS7u+WKoe+8ie+8jOaIkeacquinpueisOOAglxuNC4g57Si5byV6L+B56e755So5LqGIE15U1FMIOeahCBgaW5mb3JtYXRpb25fc2NoZW1hYO+8jOS4juS7k+W6kyBHT1JNIE15U1FMIOmpseWKqOS4gOiHtO+8jOS9huaNouW6k+mcgOWPpuWGmeOAglxuXG7kuqTku5jmlofmoaPvvJpcbi0gW2RvYy9tb2R1bGUvcjEtYWIyNTg5MjU0Mi/mlofmoaMubWRdKGRvYy9tb2R1bGUvcjEtYWIyNTg5MjU0Mi/mlofmoaMubWQpXG4tIFtkb2MvbW9kdWxlL3IxLWFiMjU4OTI1NDIvZGVzaWduL+WunuS+i+WIhuWfn+iQveWcsOiusOW9lS5tZF0oZG9jL21vZHVsZS9yMS1hYjI1ODkyNTQyL2Rlc2lnbi/lrp7kvovliIbln5/okL3lnLDorrDlvZUubWQpXG5cbuaJuemHj+WIpOWumu+8muWujOaIkCIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiZmluYWxfYW5zd2VyIn1dfV19
+-->

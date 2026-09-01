@@ -304,9 +304,10 @@ func (c *marketDataClient) getDeepcoinKlines(ctx context.Context, req MarketKlin
 		return nil, fmt.Errorf("[deepcoin] instId 不能为空")
 	}
 	interval := marketDataInterval(req.Interval)
+	// DeepCoin 的 bar 走 OKX 口径：分钟小写、小时/天/周大写，1h/1d 直接透传会被判为非法周期。
 	params := url.Values{
 		"instId": {instID},
-		"bar":    {interval},
+		"bar":    {deepcoinMarketBar(interval)},
 		"limit":  {strconv.Itoa(normalizeMarketLimit(req.Limit, 100, 1000))},
 	}
 	var payload struct {
@@ -415,6 +416,23 @@ func marketDataInterval(interval string) string {
 		return value
 	}
 	return "1m"
+}
+
+// deepcoinMarketBar 把统一周期串转成 DeepCoin(OKX 口径)的 bar 参数。
+// 分钟保持小写(1m=1分钟)，小时/天/周需大写(1H/1D/1W)；未知周期原样透传，交由服务端报错。
+func deepcoinMarketBar(interval string) string {
+	switch strings.TrimSpace(interval) {
+	case "1h", "2h", "4h", "6h", "12h":
+		return strings.ToUpper(strings.TrimSpace(interval))
+	case "8h":
+		return "8H"
+	case "1d":
+		return "1D"
+	case "1w":
+		return "1W"
+	default:
+		return strings.TrimSpace(interval)
+	}
 }
 
 func normalizeMarketLimit(limit, defaultLimit, maxLimit int) int {

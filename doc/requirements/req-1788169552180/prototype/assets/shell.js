@@ -50,6 +50,7 @@ const NAV = [
     { key: 'market',   href: 'market.html',   icon: '📈', label: '行情与触发点', badge: '新' },
     { key: 'signals',  href: 'signals.html',  icon: '🎯', label: '信号复盘',     badge: '新' },
     { key: 'backtest', href: 'backtest.html', icon: '🧪', label: '信号回测',     badge: '新' },
+    { key: 'optimizer', href: 'optimizer.html', icon: '🎚', label: '后台自动寻优', badge: '新' },
     { key: 'params',   href: 'params.html',   icon: '🎛', label: '参数与运行控制' },
   ]},
   { group: '既有模块（不在本次重构范围）', items: [
@@ -66,6 +67,7 @@ const TITLES = {
   market: '历史行情与触发点',
   signals: '信号复盘与持仓生命周期',
   backtest: '盘口信号回测',
+  optimizer: '后台自动寻优（参数联合搜索）',
   params: 'Argus 参数与运行控制',
 };
 
@@ -75,6 +77,7 @@ const QUICK = [
   { key: 'market', href: 'market.html', icon: '📈', label: '行情触发点' },
   { key: 'signals', href: 'signals.html', icon: '🎯', label: '信号复盘' },
   { key: 'backtest', href: 'backtest.html', icon: '🧪', label: '回测' },
+  { key: 'optimizer', href: 'optimizer.html', icon: '🎚', label: '寻优' },
   { key: 'params', href: 'params.html', icon: '🎛', label: '参数' },
 ];
 

@@ -70,7 +70,7 @@ func (s *TradeService) computeBacktest(run *tradeRepository.TradeBacktestRun) ([
 
 	// K 线窗口右侧多取 rightPad，保证临近结束时间的交易也有足够行情走完生命周期。
 	klines, err := s.tradeKlineRepository.ListBySymbolIntervalTimeRange(
-		run.Symbol, run.PriceInterval, run.StartTime, run.EndTime.Add(rightPad))
+		run.PlatformCode, run.Symbol, run.PriceInterval, run.StartTime, run.EndTime.Add(rightPad))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -480,7 +480,7 @@ func (s *TradeService) markOpenBacktestTrades(run *tradeRepository.TradeBacktest
 	if !hasOpen {
 		return
 	}
-	latest, err := s.tradeKlineRepository.LatestKline(run.Symbol, run.PriceInterval)
+	latest, err := s.tradeKlineRepository.LatestKline(run.PlatformCode, run.Symbol, run.PriceInterval)
 	if err != nil || latest == nil || latest.ClosePrice <= 0 {
 		return
 	}

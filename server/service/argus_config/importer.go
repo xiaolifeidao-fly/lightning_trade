@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,11 +16,19 @@ import (
 )
 
 const (
-	mainPropertiesFilename = "application.properties"
-	mainSessionFilename    = "session.json"
+	mainSessionFilename = "session.json"
+	// instanceIDPropertyKey 是 properties 里的实例键，三份部署配置各自不同。
+	instanceIDPropertyKey = "argus.instance.id"
 )
 
+// instancePropertiesPattern 匹配三份部署实例的配置文件名，例如
+// application.properties / application_1.properties / application_2.properties。
+var instancePropertiesPattern = regexp.MustCompile(`^application(_[A-Za-z0-9]+)?\.properties$`)
+
 type ImportSummary struct {
+	// InstanceKey 取自 properties 的 argus.instance.id，标识本份配置属于哪个实例。
+	InstanceKey    string
+	SourceFile     string
 	Accounts       int
 	Sessions       int
 	MonitorSymbols int
@@ -29,7 +38,7 @@ type ImportSummary struct {
 // LoadMainConfigImport parses only BADelay's main application.properties and
 // session.json. It returns DTOs suitable for SaveDraft without logging secrets.
 func LoadMainConfigImport(propertiesPath, sessionPath string) (*argusDTO.SaveConfigRequest, ImportSummary, error) {
-	if err := validateImportFile(propertiesPath, mainPropertiesFilename); err != nil {
+	if err := validateInstancePropertiesFile(propertiesPath); err != nil {
 		return nil, ImportSummary{}, err
 	}
 	if err := validateImportFile(sessionPath, mainSessionFilename); err != nil {
@@ -48,7 +57,10 @@ func LoadMainConfigImport(propertiesPath, sessionPath string) (*argusDTO.SaveCon
 	if err != nil {
 		return nil, ImportSummary{}, err
 	}
+	request.InstanceKey = strings.TrimSpace(properties[instanceIDPropertyKey])
 	return request, ImportSummary{
+		InstanceKey:    request.InstanceKey,
+		SourceFile:     filepath.Base(propertiesPath),
 		Accounts:       len(request.Accounts),
 		Sessions:       len(request.Sessions),
 		MonitorSymbols: len(request.MonitorSymbols),
@@ -82,6 +94,14 @@ type importSession struct {
 	LoginURL        string `json:"loginURL"`
 	FinalURL        string `json:"finalURL"`
 	UpdatedAt       string `json:"updatedAt"`
+}
+
+// validateInstancePropertiesFile 允许三份实例配置文件名，仍拒绝任意路径。
+func validateInstancePropertiesFile(path string) error {
+	if !instancePropertiesPattern.MatchString(filepath.Base(path)) {
+		return fmt.Errorf("import only accepts application[_suffix].properties, got %s", filepath.Base(path))
+	}
+	return validateImportFile(path, filepath.Base(path))
 }
 
 func validateImportFile(path, filename string) error {

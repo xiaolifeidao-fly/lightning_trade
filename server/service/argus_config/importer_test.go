@@ -92,3 +92,47 @@ func TestLoadMainConfigImportRejectsUnexpectedFilesAndOrphanSessions(t *testing.
 		t.Fatalf("expected orphan-session rejection, got %v", err)
 	}
 }
+
+func TestLoadMainConfigImportAcceptsPerInstancePropertiesAndReadsInstanceKey(t *testing.T) {
+	baseProperties := "server.port=8855\nposition.monitor.interval_seconds=5\ntrade.account_count=1\ntrade.account1.name=primary\ntrade.account1.url=https://example.test\ntrade.account1.uid=1\nmonitor.symbols.BTCUSDT.deep_inst=BTCUSDT\nmonitor.symbols.BTCUSDT.trade_inst=BTC-USDT\nmonitor.symbols.BTCUSDT.threshold=0.01\n"
+
+	// 三份部署配置各自带 argus.instance.id，导入时按此归属实例。
+	for filename, wantInstance := range map[string]string{
+		"application.properties":   "argus-single-1",
+		"application_1.properties": "argus-single-roc",
+		"application_2.properties": "argus-single-ives",
+	} {
+		directory := t.TempDir()
+		propertiesPath := filepath.Join(directory, filename)
+		sessionPath := filepath.Join(directory, "session.json")
+		if err := os.WriteFile(propertiesPath, []byte(baseProperties+"argus.instance.id="+wantInstance+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(sessionPath, []byte(`{"accounts":{}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		request, summary, err := LoadMainConfigImport(propertiesPath, sessionPath)
+		if err != nil {
+			t.Fatalf("%s: %v", filename, err)
+		}
+		if summary.InstanceKey != wantInstance || request.InstanceKey != wantInstance {
+			t.Fatalf("%s: instance key = %q/%q, want %q", filename, summary.InstanceKey, request.InstanceKey, wantInstance)
+		}
+		if summary.SourceFile != filename {
+			t.Fatalf("%s: source file = %q", filename, summary.SourceFile)
+		}
+	}
+}
+
+func TestLoadMainConfigImportStillRejectsForeignPropertiesNames(t *testing.T) {
+	directory := t.TempDir()
+	sessionPath := filepath.Join(directory, "session.json")
+	if err := os.WriteFile(sessionPath, []byte(`{"accounts":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, filename := range []string{"other.properties", "application.txt", "app_application.properties"} {
+		if _, _, err := LoadMainConfigImport(filepath.Join(directory, filename), sessionPath); err == nil {
+			t.Fatalf("%s was accepted as an instance properties file", filename)
+		}
+	}
+}

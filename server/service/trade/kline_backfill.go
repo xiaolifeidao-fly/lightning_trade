@@ -25,7 +25,8 @@ const klineFetchMax = 1500
 //     DB 原本没有数据时则按请求的 N 根全量拉取；
 //  3. 实际拉取数 = min(需补, N, 交易所单次上限)。
 //
-// 入库按唯一键 (symbol, interval, open_time) 幂等，重复时只刷新行情值。
+// 入库按唯一键 (platform_code, symbol, interval, open_time) 幂等，重复时只刷新行情值；
+// 同一 symbol 的 DeepCoin 与币安行情各存一份，互不覆盖。
 func (s *TradeService) BackfillKlines(ctx context.Context, dto tradeDTO.BackfillKlineDTO) (*tradeDTO.BackfillKlineResultDTO, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -38,10 +39,7 @@ func (s *TradeService) BackfillKlines(ctx context.Context, dto tradeDTO.Backfill
 	if interval == "" {
 		interval = "1m"
 	}
-	platform := strings.TrimSpace(dto.PlatformCode)
-	if platform == "" {
-		platform = "binance"
-	}
+	platform := tradeRepository.NormalizeKlinePlatform(dto.PlatformCode)
 	want := dto.Limit
 	if want <= 0 {
 		return nil, fmt.Errorf("limit 必须大于 0")
@@ -52,11 +50,11 @@ func (s *TradeService) BackfillKlines(ctx context.Context, dto tradeDTO.Backfill
 	}
 
 	// 1) 查现有最新一条，推算需要补多少根。
-	latest, err := s.tradeKlineRepository.LatestKline(symbol, interval)
+	latest, err := s.tradeKlineRepository.LatestKline(platform, symbol, interval)
 	if err != nil {
 		return nil, err
 	}
-	result := &tradeDTO.BackfillKlineResultDTO{Symbol: symbol, Interval: interval, Requested: want}
+	result := &tradeDTO.BackfillKlineResultDTO{PlatformCode: platform, Symbol: symbol, Interval: interval, Requested: want}
 	need := want
 	if latest != nil {
 		result.LatestBefore = fmtTime(latest.OpenTime)
@@ -83,10 +81,86 @@ func (s *TradeService) BackfillKlines(ctx context.Context, dto tradeDTO.Backfill
 	result.Fetched = fetched
 	result.Upserted = affected
 
-	if after, err := s.tradeKlineRepository.LatestKline(symbol, interval); err == nil && after != nil {
+	if after, err := s.tradeKlineRepository.LatestKline(platform, symbol, interval); err == nil && after != nil {
 		result.LatestAfter = fmtTime(after.OpenTime)
 	}
 	return result, nil
+}
+
+// klineBatchMaxCombos 单次批量回填允许的最大组合数(平台×币种×周期)，防止一次请求打爆交易所限频。
+const klineBatchMaxCombos = 200
+
+// defaultBackfillIntervals 未指定周期时的默认回填周期集合(容量结论按这四档估算)。
+var defaultBackfillIntervals = []string{"1m", "5m", "1h", "1d"}
+
+// BackfillKlinesBatch 按 平台 × 币种 × 周期 笛卡尔积逐组合回填，单组合失败不影响其它组合。
+// 复数字段为空时回落到单数字段，兼容老的单组合请求体。
+func (s *TradeService) BackfillKlinesBatch(ctx context.Context, dto tradeDTO.BatchBackfillKlineDTO) (*tradeDTO.BackfillKlineBatchResultDTO, error) {
+	platforms := normalizeStringList(dto.PlatformCodes, dto.PlatformCode, []string{tradeRepository.KlinePlatformBinance}, tradeRepository.NormalizeKlinePlatform)
+	symbols := normalizeStringList(dto.Symbols, dto.Symbol, nil, func(v string) string { return strings.ToUpper(strings.TrimSpace(v)) })
+	intervals := normalizeStringList(dto.Intervals, dto.Interval, defaultBackfillIntervals, strings.TrimSpace)
+	if len(symbols) == 0 {
+		return nil, fmt.Errorf("symbol 不能为空")
+	}
+	if dto.Limit <= 0 {
+		return nil, fmt.Errorf("limit 必须大于 0")
+	}
+	total := len(platforms) * len(symbols) * len(intervals)
+	if total > klineBatchMaxCombos {
+		return nil, fmt.Errorf("组合数 %d 超过单次上限 %d，请拆分请求", total, klineBatchMaxCombos)
+	}
+
+	result := &tradeDTO.BackfillKlineBatchResultDTO{Total: total, Items: make([]tradeDTO.BackfillKlineResultDTO, 0, total)}
+	for _, platform := range platforms {
+		for _, symbol := range symbols {
+			for _, interval := range intervals {
+				item, err := s.BackfillKlines(ctx, tradeDTO.BackfillKlineDTO{
+					PlatformCode: platform,
+					Symbol:       symbol,
+					Interval:     interval,
+					Limit:        dto.Limit,
+				})
+				if err != nil {
+					// 单组合失败(周期不支持/交易所限频等)只记录原因，继续跑完剩余组合。
+					result.Failed++
+					result.Items = append(result.Items, tradeDTO.BackfillKlineResultDTO{
+						PlatformCode: platform, Symbol: symbol, Interval: interval,
+						Requested: dto.Limit, Error: err.Error(),
+					})
+					logrus.Warnf("[kline] 批量回填失败 platform=%s symbol=%s interval=%s: %v", platform, symbol, interval, err)
+					continue
+				}
+				result.Succeeded++
+				result.Items = append(result.Items, *item)
+			}
+		}
+	}
+	return result, nil
+}
+
+// normalizeStringList 把「复数字段 → 单数字段 → 默认值」按优先级归一成去重后的列表。
+func normalizeStringList(list []string, single string, fallback []string, normalize func(string) string) []string {
+	raw := list
+	if len(raw) == 0 && strings.TrimSpace(single) != "" {
+		raw = []string{single}
+	}
+	if len(raw) == 0 {
+		raw = fallback
+	}
+	out := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, item := range raw {
+		item = normalize(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
 }
 
 // fetchAndStoreRecentKlines 从交易所拉取“最近 limit 根”并幂等入库，返回(实拉根数, 入库影响行数)。
@@ -106,7 +180,7 @@ func (s *TradeService) fetchAndStoreRecentKlines(ctx context.Context, platform, 
 	if err != nil {
 		return 0, 0, fmt.Errorf("拉取%s行情失败: %w", platform, err)
 	}
-	models, err := klinesToModels(symbol, interval, rows)
+	models, err := klinesToModels(platform, symbol, interval, rows)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -138,7 +212,7 @@ func (s *TradeService) ensureBacktestKlines(run *tradeRepository.TradeBacktestRu
 		return // 窗口在未来或为空，无可补
 	}
 	expected := int(effEnd.Sub(run.StartTime) / dur)
-	have, err := s.tradeKlineRepository.CountBySymbolIntervalRange(run.Symbol, run.PriceInterval, run.StartTime, effEnd)
+	have, err := s.tradeKlineRepository.CountBySymbolIntervalRange(run.PlatformCode, run.Symbol, run.PriceInterval, run.StartTime, effEnd)
 	if err != nil {
 		logrus.Warnf("[backtest] run=%d 统计已有K线失败(继续): %v", run.Id, err)
 		return
@@ -157,8 +231,10 @@ func (s *TradeService) ensureBacktestKlines(run *tradeRepository.TradeBacktestRu
 	logrus.Infof("[backtest] run=%d 自动回填K线: 期望=%d 已有=%d 实拉=%d 入库=%d", run.Id, expected, have, fetched, upserted)
 }
 
-// ListKlinesInRange 拉取某 symbol+interval 在 [start,end] 内的 K 线，供回测逐笔的“K线详情”弹窗。
-func (s *TradeService) ListKlinesInRange(symbol, interval, startStr, endStr string) ([]tradeDTO.KlinePointDTO, error) {
+// ListKlinesInRange 拉取某平台+symbol+interval 在 [start,end] 内的 K 线，供回测逐笔的“K线详情”弹窗。
+// platform 为空时按币安兜底，与历史数据口径一致。
+func (s *TradeService) ListKlinesInRange(platform, symbol, interval, startStr, endStr string) ([]tradeDTO.KlinePointDTO, error) {
+	platform = tradeRepository.NormalizeKlinePlatform(platform)
 	symbol = strings.ToUpper(strings.TrimSpace(symbol))
 	if symbol == "" {
 		return nil, fmt.Errorf("symbol 不能为空")
@@ -174,7 +250,7 @@ func (s *TradeService) ListKlinesInRange(symbol, interval, startStr, endStr stri
 	if err != nil {
 		return nil, fmt.Errorf("end: %w", err)
 	}
-	rows, err := s.tradeKlineRepository.ListBySymbolIntervalTimeRange(symbol, interval, start, end)
+	rows, err := s.tradeKlineRepository.ListBySymbolIntervalTimeRange(platform, symbol, interval, start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +304,8 @@ func intervalDuration(interval string) (time.Duration, bool) {
 
 // klinesToModels 把交易所返回的 K 线(字符串价 + 毫秒时间)映射成入库模型。
 // 时间用 time.UnixMilli(本地时区)，与模拟分析的取数口径(fetchSimulationKlines)保持一致。
-func klinesToModels(symbol, interval string, rows []argusTrade.MarketKline) ([]*tradeRepository.TradeKline, error) {
+func klinesToModels(platform, symbol, interval string, rows []argusTrade.MarketKline) ([]*tradeRepository.TradeKline, error) {
+	platform = tradeRepository.NormalizeKlinePlatform(platform)
 	out := make([]*tradeRepository.TradeKline, 0, len(rows))
 	for _, r := range rows {
 		open, err := parseMarketFloat(r.OpenPrice)
@@ -254,17 +331,18 @@ func klinesToModels(symbol, interval string, rows []argusTrade.MarketKline) ([]*
 			tradeCount = uint64(r.TradeCount)
 		}
 		out = append(out, &tradeRepository.TradeKline{
-			Symbol:     symbol,
-			Interval:   interval,
-			OpenTime:   time.UnixMilli(r.OpenTime),
-			CloseTime:  time.UnixMilli(r.CloseTime),
-			OpenPrice:  open,
-			HighPrice:  high,
-			LowPrice:   low,
-			ClosePrice: closePrice,
-			Volume:     volume,
-			Turnover:   turnover,
-			TradeCount: tradeCount,
+			PlatformCode: platform,
+			Symbol:       symbol,
+			Interval:     interval,
+			OpenTime:     time.UnixMilli(r.OpenTime),
+			CloseTime:    time.UnixMilli(r.CloseTime),
+			OpenPrice:    open,
+			HighPrice:    high,
+			LowPrice:     low,
+			ClosePrice:   closePrice,
+			Volume:       volume,
+			Turnover:     turnover,
+			TradeCount:   tradeCount,
 		})
 	}
 	return out, nil

@@ -79,6 +79,33 @@ func TestMarketDataClientDeepcoinKlinesAndTicker(t *testing.T) {
 	}
 }
 
+// DeepCoin 的 bar 走 OKX 口径：1h/1d 必须转成 1H/1D，否则多周期回填会被服务端判为非法周期。
+func TestMarketDataClientDeepcoinBarInterval(t *testing.T) {
+	var gotBars []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/deepcoin/market/candles" {
+			http.NotFound(w, r)
+			return
+		}
+		gotBars = append(gotBars, r.URL.Query().Get("bar"))
+		_, _ = w.Write([]byte(`{"code":"0","data":[[1710000000000,"100","110","90","105","2",1710000059999,"210"]]}`))
+	}))
+	defer server.Close()
+
+	client := newMarketDataClient(server.Client(), server.URL, server.URL)
+	for _, interval := range []string{"1m", "5m", "1h", "1d"} {
+		if _, err := client.getKlines(context.Background(), PlatformDeepcoin, MarketKlineRequest{Symbol: "BTCUSDT", Interval: interval}); err != nil {
+			t.Fatalf("getKlines(%s): %v", interval, err)
+		}
+	}
+	want := []string{"1m", "5m", "1H", "1D"}
+	for i := range want {
+		if gotBars[i] != want[i] {
+			t.Fatalf("bar[%d] = %q, want %q", i, gotBars[i], want[i])
+		}
+	}
+}
+
 func TestMarketDataClientRejectsUnsupportedPlatform(t *testing.T) {
 	client := newMarketDataClient(nil, "https://example.invalid", "https://example.invalid")
 	if got := marketDataPlatform(""); got != PlatformDeepcoin {

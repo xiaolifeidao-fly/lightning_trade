@@ -255,13 +255,15 @@ func (h *StrategyHandler) getPredictionDetail(c *gin.Context) {
 
 // ─── Kline backfill handler ────────────────────────────────────────────────────
 
+// backfillKlines 支持单组合与批量：请求体可用 platformCodes/symbols/intervals 传多值，
+// 也兼容老的 platformCode/symbol/interval 单值写法。
 func (h *StrategyHandler) backfillKlines(c *gin.Context) {
-	var dto tradeDTO.BackfillKlineDTO
+	var dto tradeDTO.BatchBackfillKlineDTO
 	if err := c.ShouldBindJSON(&dto); err != nil {
 		commonRouter.ToError(c, "参数错误: "+err.Error())
 		return
 	}
-	result, err := h.tradeService.BackfillKlines(c.Request.Context(), dto)
+	result, err := h.tradeService.BackfillKlinesBatch(c.Request.Context(), dto)
 	commonRouter.ToJson(c, result, err)
 }
 
@@ -271,7 +273,7 @@ func (h *StrategyHandler) listKlineRange(c *gin.Context) {
 		commonRouter.ToError(c, "参数错误")
 		return
 	}
-	result, err := h.tradeService.ListKlinesInRange(q.Symbol, q.Interval, q.Start, q.End)
+	result, err := h.tradeService.ListKlinesInRange(q.PlatformCode, q.Symbol, q.Interval, q.Start, q.End)
 	commonRouter.ToJson(c, result, err)
 }
 

@@ -65,17 +65,19 @@ func (m *TradeMatch) TableName() string {
 
 type TradeKline struct {
 	db.BaseEntity
-	Symbol     string    `gorm:"column:symbol;type:varchar(32);uniqueIndex:idx_symbol_interval_open,priority:1" orm:"column(symbol);size(32);null" description:"交易对"`
-	Interval   string    `gorm:"column:interval;type:varchar(8);uniqueIndex:idx_symbol_interval_open,priority:2" orm:"column(interval);size(8);null" description:"周期 1m/5m/15m/1h/4h/1d"`
-	OpenTime   time.Time `gorm:"column:open_time;type:datetime;uniqueIndex:idx_symbol_interval_open,priority:3" orm:"column(open_time);null" description:"开始时间"`
-	CloseTime  time.Time `gorm:"column:close_time;type:datetime" orm:"column(close_time);null" description:"结束时间"`
-	OpenPrice  float64   `gorm:"column:open_price;type:decimal(36,18);default:0" orm:"column(open_price);null" description:"开盘价"`
-	HighPrice  float64   `gorm:"column:high_price;type:decimal(36,18);default:0" orm:"column(high_price);null" description:"最高价"`
-	LowPrice   float64   `gorm:"column:low_price;type:decimal(36,18);default:0" orm:"column(low_price);null" description:"最低价"`
-	ClosePrice float64   `gorm:"column:close_price;type:decimal(36,18);default:0" orm:"column(close_price);null" description:"收盘价"`
-	Volume     float64   `gorm:"column:volume;type:decimal(36,18);default:0" orm:"column(volume);null" description:"成交量"`
-	Turnover   float64   `gorm:"column:turnover;type:decimal(36,18);default:0" orm:"column(turnover);null" description:"成交额"`
-	TradeCount uint64    `gorm:"column:trade_count;type:bigint unsigned;default:0" orm:"column(trade_count);null" description:"成交笔数"`
+	// platform_code 并入唯一键：同一 symbol+周期 下 DeepCoin 与币安两条行情各存一份，互不覆盖。
+	PlatformCode string    `gorm:"column:platform_code;type:varchar(32);not null;default:binance;uniqueIndex:idx_kline_platform_dim,priority:1;index:idx_platform_code" orm:"column(platform_code);size(32);null" description:"行情平台代码 binance/deepcoin"`
+	Symbol       string    `gorm:"column:symbol;type:varchar(32);uniqueIndex:idx_kline_platform_dim,priority:2;index:idx_symbol" orm:"column(symbol);size(32);null" description:"交易对"`
+	Interval     string    `gorm:"column:interval;type:varchar(8);uniqueIndex:idx_kline_platform_dim,priority:3" orm:"column(interval);size(8);null" description:"周期 1m/5m/15m/1h/4h/1d"`
+	OpenTime     time.Time `gorm:"column:open_time;type:datetime;uniqueIndex:idx_kline_platform_dim,priority:4" orm:"column(open_time);null" description:"开始时间"`
+	CloseTime    time.Time `gorm:"column:close_time;type:datetime" orm:"column(close_time);null" description:"结束时间"`
+	OpenPrice    float64   `gorm:"column:open_price;type:decimal(36,18);default:0" orm:"column(open_price);null" description:"开盘价"`
+	HighPrice    float64   `gorm:"column:high_price;type:decimal(36,18);default:0" orm:"column(high_price);null" description:"最高价"`
+	LowPrice     float64   `gorm:"column:low_price;type:decimal(36,18);default:0" orm:"column(low_price);null" description:"最低价"`
+	ClosePrice   float64   `gorm:"column:close_price;type:decimal(36,18);default:0" orm:"column(close_price);null" description:"收盘价"`
+	Volume       float64   `gorm:"column:volume;type:decimal(36,18);default:0" orm:"column(volume);null" description:"成交量"`
+	Turnover     float64   `gorm:"column:turnover;type:decimal(36,18);default:0" orm:"column(turnover);null" description:"成交额"`
+	TradeCount   uint64    `gorm:"column:trade_count;type:bigint unsigned;default:0" orm:"column(trade_count);null" description:"成交笔数"`
 }
 
 func (k *TradeKline) TableName() string {

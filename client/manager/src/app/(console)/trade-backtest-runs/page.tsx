@@ -343,7 +343,15 @@ export default function TradeBacktestRunsPage() {
     const entry = trade.openPrice > 0 ? trade.openPrice : trade.plannedEntryPrice;
     try {
       // 只拉价格周期(细，如1m/15m)走势；预测周期走势用「预测K线」单独展示。
-      setKlineData(await fetchKlineRange({ symbol: run.symbol, interval: run.priceInterval, start, end }));
+      setKlineData(
+        await fetchKlineRange({
+          platformCode: run.platformCode,
+          symbol: run.symbol,
+          interval: run.priceInterval,
+          start,
+          end,
+        }),
+      );
     } catch (err) {
       message.error(err instanceof Error ? err.message : "K线加载失败");
     } finally {
