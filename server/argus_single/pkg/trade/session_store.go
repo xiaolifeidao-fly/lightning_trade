@@ -200,6 +200,12 @@ func (s *SessionStore) Save(acc AccountConfig, entry SessionAccountData) error {
 	if entry.ResourceID == "" {
 		entry.ResourceID = acc.Username
 	}
+	// baggage 原来只写不读：AccountConfig 没有这个字段，DB 快照恢复出来的值到不了
+	// 运行时，本地 session.json 一旦不在（换机器/只有 DB）就永久丢失。补上回填后
+	// 它跟 cookie/token 一样能在「DB → 运行时 → 再回写」里存活。
+	if entry.Baggage == "" {
+		entry.Baggage = acc.Baggage
+	}
 	if entry.UpdatedAt == "" {
 		entry.UpdatedAt = time.Now().Format(time.RFC3339)
 	}
@@ -327,6 +333,7 @@ func applySessionAccountData(acc *AccountConfig, entry SessionAccountData) {
 	acc.Token = firstNonEmpty(firstNonEmpty(entry.OToken, entry.Token), acc.Token)
 	acc.SentryRelease = firstNonEmpty(entry.SentryRelease, acc.SentryRelease)
 	acc.SentryPublicKey = firstNonEmpty(entry.SentryPublicKey, acc.SentryPublicKey)
+	acc.Baggage = firstNonEmpty(entry.Baggage, acc.Baggage)
 	acc.LoginURL = firstNonEmpty(entry.LoginURL, acc.LoginURL)
 	if entry.InitialBalance != nil {
 		acc.InitialBalance = *entry.InitialBalance

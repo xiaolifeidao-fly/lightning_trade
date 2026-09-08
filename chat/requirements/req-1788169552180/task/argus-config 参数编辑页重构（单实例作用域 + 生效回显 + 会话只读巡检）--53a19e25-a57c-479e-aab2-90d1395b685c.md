@@ -1,0 +1,154 @@
+---
+format: "delivery-task-planner-chat/v1"
+resourceType: "task"
+resourceKey: "r7-f74ca0f149"
+requirementKey: "req-1788169552180"
+resourceName: "argus-config 参数编辑页重构（单实例作用域 + 生效回显 + 会话只读巡检）"
+conversationTitle: "argus-config 参数编辑页重构（单实例作用域 + 生效回显 + 会话只读巡检）"
+threadId: "53a19e25-a57c-479e-aab2-90d1395b685c"
+provider: "claude"
+phase: "development"
+lastTurnStatus: "completed"
+archivedAt: "2026-09-01T16:05:48.712971+00:00"
+---
+
+# 任务聊天 · argus-config 参数编辑页重构（单实例作用域 + 生效回显 + 会话只读巡检）
+
+## 第 1 轮 · completed · eFUj9xNUhwoAkChmlsCQ1Q
+
+### 用户
+
+执行「动作执行」阶段：argus-config 参数编辑页重构（单实例作用域 + 生效回显 + 会话只读巡检）
+
+### 助手
+
+I'll start by loading the delivery-action-execution skill as instructed.
+
+### 助手
+
+Now let me load the permission resources skill and check the repository layer.
+
+### 助手
+
+Now I'll start implementing. Backend first — heartbeat checksum:
+
+### 助手
+
+Now removing start/stop/restart from the runtime service:
+
+### 助手
+
+Now the manager-api runtime handler (instance-scoped, reload-only):
+
+### 助手
+
+Now refactor `Publish` to share its core with a new `Rollback`:
+
+### 助手
+
+Now update `sessionDTO` to fill lengths, and add `ListVersions` to the service:
+
+### 助手
+
+Now the config handler routes:
+
+### 助手
+
+Now let me build the backend:
+
+### 助手
+
+Now the frontend. Starting with the API layer:
+
+### 助手
+
+Now the parameter catalog — the core of the grouped editor:
+
+### 助手
+
+Now the coverage audit data:
+
+### 助手
+
+Now the change preview / publish panel:
+
+### 助手
+
+Now the version history with rollback, and the session audit + coverage panels:
+
+### 助手
+
+Now the CSS for the new components:
+
+### 助手
+
+Now let's typecheck the frontend:
+
+### 助手
+
+Now update the shell menu labels:
+
+### 助手
+
+All my touched packages verify clean. Now the design document:
+
+### 助手
+
+All work is complete and verified. Here's the delivery report.
+
+## 改了什么
+
+设计过程文档：[`doc/module/r7-f74ca0f149/design/设计过程.md`](doc/module/r7-f74ca0f149/design/设计过程.md)
+权限资源 SQL：[`doc/module/r7-f74ca0f149/权限资源.sql`](doc/module/r7-f74ca0f149/权限资源.sql)
+
+**后端**
+
+| 文件 | 意图 |
+|---|---|
+| `server/common/middleware/redis/ArgusConfig.go` | `ArgusHeartbeat` 增 `ConfigChecksum`——生效判定的第二个条件 |
+| `server/argus_single/pkg/runtimehealth/heartbeat.go` | `SetVersion`→`SetConfigState(version, checksum)`；`RecordReload` 带 checksum，失败的 reload 不推进运行中配置 |
+| `server/argus_single/initialization/initialization.go` | 观察者用 `runtimeManager.Current().Checksum` 上报（不改 observer 签名，避免波及 r4 的 eventstore 回调） |
+| `server/service/argus_runtime/service.go` | 删 `Control()`/start/stop/restart/control.sh 校验，只留 `Status` + `Reload` |
+| `server/manager-api/pkg/argus_runtime/argus_runtime.go` | 只留 `GET status` / `POST reload`；实例键改为每请求解析，修「配置发给 A、心跳读的是 B」；构造函数不再 panic |
+| `server/service/argus_config/service.go` | `Publish` 主体抽成 `activateVersion(…, fromStatus, …)`，新增 `Rollback`（复用同一条发布链路，只把源状态从 draft 换成 archived）、`ListVersions`、`secretLength()` |
+| `…/repository/repository.go`、`…/dto/dto.go`、`…/pkg/argus_config/argus_config.go` | `ListVersions` 查询、`RollbackConfigRequest`、会话长度字段、`GET /argus-config/versions` + `POST /argus-config/versions/:id/rollback` |
+
+**前端**（`client/manager/src/app/(console)/argus-config/`）
+新增 `params/catalog.ts`（六域 25 项参数目录：真实 properties 键 + DB 落点 + 热/需重启/关键/运行时待打通标记）、`params/coverage.ts`，以及 `ParamConsole` / `ParamForm` / `ChangePreview` / `QuickActions` / `CoveragePanel` / `SessionAudit` / `VersionHistory` 七个组件；改写 `page.tsx`、`hooks`、`api`、`RuntimeOverview`；`ConfigEditor` 删掉会话编辑页签（数据仍原样透传，否则热加载后登录态会丢）；删 `VersionRecord.tsx`。
+
+顺手修了一个存量 bug：前端读 `heartbeat.reloadedAt`，Go 侧字段是 `lastReloadAt`，「最后热加载」那一格从来没显示过真实值。
+
+## 怎么验的
+
+- `go build`/`go vet`/`go test`：`common`、`service/argus_config`、`service/argus_runtime`、`argus_single` 全量，`manager-api/pkg/argus_{config,runtime}` — **全绿**
+- `npx tsc --noEmit` — 本模块 0 错误
+- `npx next dev` + `curl /argus-config` — HTTP 200，`✓ Compiled /argus-config (5962 modules)`，无编译错误
+
+**没验到的**：页面真实渲染与交互。`/argus-config` 有登录门禁，且需要 manager-api + MySQL + Redis + 至少两个已注册实例才有数据，本轮只验到编译通过与路由可达。
+
+## 对照任务范围
+
+单实例强制作用域、默认值跟随实例、按域分组+真实键+需重启标记、五步链路（每步都有真实判定依据）、发布前 diff、关键参数二次确认、快速下发（含 order_size=0）、一键回滚、心跳 version+checksum 判定、跨实例只生成草稿、覆盖度面板、会话只读巡检、下线 start/stop/restart 与 `Control()`、权限 SQL — 全部落地。
+
+## 需要你知道的三件事
+
+**1. 前置任务 r5 实际未完成**，这是最大的悬空项。代码事实：C 类 9 个 DB 列不存在、`runtimeconfig` 里没有任何轮询逻辑、B 类 13 项消费侧没打通。我的处理是把这批参数落到**已存在**的三个 JSON 列（`extra_config_json` / `extra_risk_json` / `trailing_stop_tiers_json`，键名沿用真实 properties 键），零 schema 变更，并给 **25 项里的 17 项**打上「运行时待打通」标记——改动预览里会单独警告「会写进快照但不会改变策略行为」。真正改完立刻生效的只有 8 项。同理，30 秒兜底轮询本轮只做可视化说明，**需求级验收 5 的「断开 Redis 订阅后 30 秒自愈」本轮不成立**。r5 落地时需要把 catalog 里这些参数的 `carrier` 切到新列并去掉标记。
+
+**2. 任务说明里「后端 rollbackPublishedVersion 已有」与代码事实有出入**——它是 `Publish` 内部发布失败时的补偿路径，私有且语义不同。我按「把已归档版本的不可变快照重新推上 published 槽位」实现，与 `Publish` 共用一条链路。
+
+**3. 本分支有并行任务在途，`service` 与 `manager-api` 的全量构建当前是坏的。** 我这轮开始时四个模块全量 `go build ./...` 是全绿的；收尾时 `service/trade/signal_backtest.go`、`service/trade/repository/signal_event_repository.go`、`manager-api/pkg/strategy/strategy.go` 及 `go.mod`/`go.sum` 被别的任务（r4/r6/r8）在 23:59 后写入且尚未编译通过，与本任务文件无交集。另有一个存量问题：`trade-backtest-runs/page.tsx` import `dayjs` 但它不在 `package.json` 里，pnpm 严格模式下解析不到，会让 `next build` 失败——该文件本轮未改动，需求级验收 9 要跑通得先补这个依赖。
+
+## 测试交接
+
+- 入口：管理端 `/argus-config`（菜单「Argus 管理 → 参数与运行控制」）
+- 前置：manager-api + MySQL + Redis；`ARGUS_CONFIG_ENCRYPTION_KEY`（base64 32 字节）；至少两个实例已通过 `argus-config-import` 导入并注册（验实例隔离需要）；至少一个实例的 argus_single 在跑（验心跳）
+- 执行顺序：选实例 → 改一个关键参数 → 看改动预览与二次确认 → 发布 → 看「程序实际读到」从「等待程序确认」翻到「已生效」（应在 15 秒内，等待期轮询是 2.5s）→ 到版本历史回滚 → 切到另一实例确认其 version 与参数未变
+- 可观察结果：`argus:heartbeat:<instance>` 的 `version` + `configChecksum` 与 `argus_config_version.snapshot_checksum` 一致
+- 清理：回滚到测试前的版本即可，版本行本身不可变、保留即审计记录
+- 权限：执行 `权限资源.sql` 前**需确认 `@role_id`**（文件里默认 1，未经确认不要直接跑）。技能要求 role_id 由人给定，本轮没有人给。
+
+批量判定：完成
+
+<!-- delivery-task-planner-chat-data
+eyJ0dXJucyI6W3siaWQiOiJlRlVqOXhOVWh3b0FrQ2htbHNDUTFRIiwic3RhdHVzIjoiY29tcGxldGVkIiwiY3JlYXRlZEF0IjoiMjAyNi0wOS0wMVQxNTozMzo0MS41MDQxMTUrMDA6MDAiLCJjb21wbGV0ZWRBdCI6IjIwMjYtMDktMDFUMTY6MDU6NDguMjY5MjMyKzAwOjAwIiwiaXRlbXMiOlt7InR5cGUiOiJ1c2VyTWVzc2FnZSIsImNvbnRlbnQiOlt7InR5cGUiOiJ0ZXh0IiwidGV4dCI6IuaJp+ihjOOAjOWKqOS9nOaJp+ihjOOAjemYtuaute+8mmFyZ3VzLWNvbmZpZyDlj4LmlbDnvJbovpHpobXph43mnoTvvIjljZXlrp7kvovkvZznlKjln58gKyDnlJ/mlYjlm57mmL4gKyDkvJror53lj6ror7vlt6Hmo4DvvIkifV19LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiJJJ2xsIHN0YXJ0IGJ5IGxvYWRpbmcgdGhlIGRlbGl2ZXJ5LWFjdGlvbi1leGVjdXRpb24gc2tpbGwgYXMgaW5zdHJ1Y3RlZC4iLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJwaGFzZSI6IiJ9LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiJOb3cgbGV0IG1lIGxvYWQgdGhlIHBlcm1pc3Npb24gcmVzb3VyY2VzIHNraWxsIGFuZCBjaGVjayB0aGUgcmVwb3NpdG9yeSBsYXllci4iLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJwaGFzZSI6IiJ9LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiJOb3cgSSdsbCBzdGFydCBpbXBsZW1lbnRpbmcuIEJhY2tlbmQgZmlyc3Qg4oCUIGhlYXJ0YmVhdCBjaGVja3N1bToiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJwaGFzZSI6IiJ9LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiJOb3cgcmVtb3Zpbmcgc3RhcnQvc3RvcC9yZXN0YXJ0IGZyb20gdGhlIHJ1bnRpbWUgc2VydmljZToiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJwaGFzZSI6IiJ9LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiJOb3cgdGhlIG1hbmFnZXItYXBpIHJ1bnRpbWUgaGFuZGxlciAoaW5zdGFuY2Utc2NvcGVkLCByZWxvYWQtb25seSk6Iiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiTm93IHJlZmFjdG9yIGBQdWJsaXNoYCB0byBzaGFyZSBpdHMgY29yZSB3aXRoIGEgbmV3IGBSb2xsYmFja2A6Iiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiTm93IHVwZGF0ZSBgc2Vzc2lvbkRUT2AgdG8gZmlsbCBsZW5ndGhzLCBhbmQgYWRkIGBMaXN0VmVyc2lvbnNgIHRvIHRoZSBzZXJ2aWNlOiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6Ik5vdyB0aGUgY29uZmlnIGhhbmRsZXIgcm91dGVzOiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6Ik5vdyBsZXQgbWUgYnVpbGQgdGhlIGJhY2tlbmQ6Iiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiTm93IHRoZSBmcm9udGVuZC4gU3RhcnRpbmcgd2l0aCB0aGUgQVBJIGxheWVyOiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6Ik5vdyB0aGUgcGFyYW1ldGVyIGNhdGFsb2cg4oCUIHRoZSBjb3JlIG9mIHRoZSBncm91cGVkIGVkaXRvcjoiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJwaGFzZSI6IiJ9LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiJOb3cgdGhlIGNvdmVyYWdlIGF1ZGl0IGRhdGE6Iiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiTm93IHRoZSBjaGFuZ2UgcHJldmlldyAvIHB1Ymxpc2ggcGFuZWw6Iiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiTm93IHRoZSB2ZXJzaW9uIGhpc3Rvcnkgd2l0aCByb2xsYmFjaywgYW5kIHRoZSBzZXNzaW9uIGF1ZGl0ICsgY292ZXJhZ2UgcGFuZWxzOiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6Ik5vdyB0aGUgQ1NTIGZvciB0aGUgbmV3IGNvbXBvbmVudHM6Iiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiTm93IGxldCdzIHR5cGVjaGVjayB0aGUgZnJvbnRlbmQ6Iiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiTm93IHVwZGF0ZSB0aGUgc2hlbGwgbWVudSBsYWJlbHM6Iiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiQWxsIG15IHRvdWNoZWQgcGFja2FnZXMgdmVyaWZ5IGNsZWFuLiBOb3cgdGhlIGRlc2lnbiBkb2N1bWVudDoiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJwaGFzZSI6IiJ9LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiJBbGwgd29yayBpcyBjb21wbGV0ZSBhbmQgdmVyaWZpZWQuIEhlcmUncyB0aGUgZGVsaXZlcnkgcmVwb3J0LlxuXG4jIyDmlLnkuobku4DkuYhcblxu6K6+6K6h6L+H56iL5paH5qGj77yaW2Bkb2MvbW9kdWxlL3I3LWY3NGNhMGYxNDkvZGVzaWduL+iuvuiuoei/h+eoiy5tZGBdKGRvYy9tb2R1bGUvcjctZjc0Y2EwZjE0OS9kZXNpZ24v6K6+6K6h6L+H56iLLm1kKVxu5p2D6ZmQ6LWE5rqQIFNRTO+8mltgZG9jL21vZHVsZS9yNy1mNzRjYTBmMTQ5L+adg+mZkOi1hOa6kC5zcWxgXShkb2MvbW9kdWxlL3I3LWY3NGNhMGYxNDkv5p2D6ZmQ6LWE5rqQLnNxbClcblxuKirlkI7nq68qKlxuXG58IOaWh+S7tiB8IOaEj+WbviB8XG58LS0tfC0tLXxcbnwgYHNlcnZlci9jb21tb24vbWlkZGxld2FyZS9yZWRpcy9Bcmd1c0NvbmZpZy5nb2AgfCBgQXJndXNIZWFydGJlYXRgIOWiniBgQ29uZmlnQ2hlY2tzdW1g4oCU4oCU55Sf5pWI5Yik5a6a55qE56ys5LqM5Liq5p2h5Lu2IHxcbnwgYHNlcnZlci9hcmd1c19zaW5nbGUvcGtnL3J1bnRpbWVoZWFsdGgvaGVhcnRiZWF0LmdvYCB8IGBTZXRWZXJzaW9uYOKGkmBTZXRDb25maWdTdGF0ZSh2ZXJzaW9uLCBjaGVja3N1bSlg77ybYFJlY29yZFJlbG9hZGAg5bimIGNoZWNrc3Vt77yM5aSx6LSl55qEIHJlbG9hZCDkuI3mjqjov5vov5DooYzkuK3phY3nva4gfFxufCBgc2VydmVyL2FyZ3VzX3NpbmdsZS9pbml0aWFsaXphdGlvbi9pbml0aWFsaXphdGlvbi5nb2AgfCDop4Llr5/ogIXnlKggYHJ1bnRpbWVNYW5hZ2VyLkN1cnJlbnQoKS5DaGVja3N1bWAg5LiK5oql77yI5LiN5pS5IG9ic2VydmVyIOetvuWQje+8jOmBv+WFjeazouWPiiByNCDnmoQgZXZlbnRzdG9yZSDlm57osIPvvIkgfFxufCBgc2VydmVyL3NlcnZpY2UvYXJndXNfcnVudGltZS9zZXJ2aWNlLmdvYCB8IOWIoCBgQ29udHJvbCgpYC9zdGFydC9zdG9wL3Jlc3RhcnQvY29udHJvbC5zaCDmoKHpqozvvIzlj6rnlZkgYFN0YXR1c2AgKyBgUmVsb2FkYCB8XG58IGBzZXJ2ZXIvbWFuYWdlci1hcGkvcGtnL2FyZ3VzX3J1bnRpbWUvYXJndXNfcnVudGltZS5nb2AgfCDlj6rnlZkgYEdFVCBzdGF0dXNgIC8gYFBPU1QgcmVsb2FkYO+8m+WunuS+i+mUruaUueS4uuavj+ivt+axguino+aekO+8jOS/ruOAjOmFjee9ruWPkee7mSBB44CB5b+D6Lez6K+755qE5pivIELjgI3vvJvmnoTpgKDlh73mlbDkuI3lho0gcGFuaWMgfFxufCBgc2VydmVyL3NlcnZpY2UvYXJndXNfY29uZmlnL3NlcnZpY2UuZ29gIHwgYFB1Ymxpc2hgIOS4u+S9k+aKveaIkCBgYWN0aXZhdGVWZXJzaW9uKOKApiwgZnJvbVN0YXR1cywg4oCmKWDvvIzmlrDlop4gYFJvbGxiYWNrYO+8iOWkjeeUqOWQjOS4gOadoeWPkeW4g+mTvui3r++8jOWPquaKiua6kOeKtuaAgeS7jiBkcmFmdCDmjaLmiJAgYXJjaGl2ZWTvvInjgIFgTGlzdFZlcnNpb25zYOOAgWBzZWNyZXRMZW5ndGgoKWAgfFxufCBg4oCmL3JlcG9zaXRvcnkvcmVwb3NpdG9yeS5nb2DjgIFg4oCmL2R0by9kdG8uZ29g44CBYOKApi9wa2cvYXJndXNfY29uZmlnL2FyZ3VzX2NvbmZpZy5nb2AgfCBgTGlzdFZlcnNpb25zYCDmn6Xor6LjgIFgUm9sbGJhY2tDb25maWdSZXF1ZXN0YOOAgeS8muivnemVv+W6puWtl+auteOAgWBHRVQgL2FyZ3VzLWNvbmZpZy92ZXJzaW9uc2AgKyBgUE9TVCAvYXJndXMtY29uZmlnL3ZlcnNpb25zLzppZC9yb2xsYmFja2AgfFxuXG4qKuWJjeerryoq77yIYGNsaWVudC9tYW5hZ2VyL3NyYy9hcHAvKGNvbnNvbGUpL2FyZ3VzLWNvbmZpZy9g77yJXG7mlrDlop4gYHBhcmFtcy9jYXRhbG9nLnRzYO+8iOWFreWfnyAyNSDpobnlj4LmlbDnm67lvZXvvJrnnJ/lrp4gcHJvcGVydGllcyDplK4gKyBEQiDokL3ngrkgKyDng60v6ZyA6YeN5ZCvL+WFs+mUri/ov5DooYzml7blvoXmiZPpgJrmoIforrDvvInjgIFgcGFyYW1zL2NvdmVyYWdlLnRzYO+8jOS7peWPiiBgUGFyYW1Db25zb2xlYCAvIGBQYXJhbUZvcm1gIC8gYENoYW5nZVByZXZpZXdgIC8gYFF1aWNrQWN0aW9uc2AgLyBgQ292ZXJhZ2VQYW5lbGAgLyBgU2Vzc2lvbkF1ZGl0YCAvIGBWZXJzaW9uSGlzdG9yeWAg5LiD5Liq57uE5Lu277yb5pS55YaZIGBwYWdlLnRzeGDjgIFgaG9va3Ng44CBYGFwaWDjgIFgUnVudGltZU92ZXJ2aWV3YO+8m2BDb25maWdFZGl0b3JgIOWIoOaOieS8muivnee8lui+kemhteetvu+8iOaVsOaNruS7jeWOn+agt+mAj+S8oO+8jOWQpuWImeeDreWKoOi9veWQjueZu+W9leaAgeS8muS4ou+8ie+8m+WIoCBgVmVyc2lvblJlY29yZC50c3hg44CCXG5cbumhuuaJi+S/ruS6huS4gOS4quWtmOmHjyBidWfvvJrliY3nq6/or7sgYGhlYXJ0YmVhdC5yZWxvYWRlZEF0YO+8jEdvIOS+p+Wtl+auteaYryBgbGFzdFJlbG9hZEF0YO+8jOOAjOacgOWQjueDreWKoOi9veOAjemCo+S4gOagvOS7juadpeayoeaYvuekuui/h+ecn+WunuWAvOOAglxuXG4jIyDmgI7kuYjpqoznmoRcblxuLSBgZ28gYnVpbGRgL2BnbyB2ZXRgL2BnbyB0ZXN0YO+8mmBjb21tb25g44CBYHNlcnZpY2UvYXJndXNfY29uZmlnYOOAgWBzZXJ2aWNlL2FyZ3VzX3J1bnRpbWVg44CBYGFyZ3VzX3NpbmdsZWAg5YWo6YeP77yMYG1hbmFnZXItYXBpL3BrZy9hcmd1c197Y29uZmlnLHJ1bnRpbWV9YCDigJQgKirlhajnu78qKlxuLSBgbnB4IHRzYyAtLW5vRW1pdGAg4oCUIOacrOaooeWdlyAwIOmUmeivr1xuLSBgbnB4IG5leHQgZGV2YCArIGBjdXJsIC9hcmd1cy1jb25maWdgIOKAlCBIVFRQIDIwMO+8jGDinJMgQ29tcGlsZWQgL2FyZ3VzLWNvbmZpZyAoNTk2MiBtb2R1bGVzKWDvvIzml6DnvJbor5HplJnor69cblxuKirmsqHpqozliLDnmoQqKu+8mumhtemdouecn+Wunua4suafk+S4juS6pOS6kuOAgmAvYXJndXMtY29uZmlnYCDmnInnmbvlvZXpl6jnpoHvvIzkuJTpnIDopoEgbWFuYWdlci1hcGkgKyBNeVNRTCArIFJlZGlzICsg6Iez5bCR5Lik5Liq5bey5rOo5YaM5a6e5L6L5omN5pyJ5pWw5o2u77yM5pys6L2u5Y+q6aqM5Yiw57yW6K+R6YCa6L+H5LiO6Lev55Sx5Y+v6L6+44CCXG5cbiMjIOWvueeFp+S7u+WKoeiMg+WbtFxuXG7ljZXlrp7kvovlvLrliLbkvZznlKjln5/jgIHpu5jorqTlgLzot5/pmo/lrp7kvovjgIHmjInln5/liIbnu4Qr55yf5a6e6ZSuK+mcgOmHjeWQr+agh+iusOOAgeS6lOatpemTvui3r++8iOavj+atpemDveacieecn+WunuWIpOWumuS+neaNru+8ieOAgeWPkeW4g+WJjSBkaWZm44CB5YWz6ZSu5Y+C5pWw5LqM5qyh56Gu6K6k44CB5b+r6YCf5LiL5Y+R77yI5ZCrIG9yZGVyX3NpemU9MO+8ieOAgeS4gOmUruWbnua7muOAgeW/g+i3syB2ZXJzaW9uK2NoZWNrc3VtIOWIpOWumuOAgei3qOWunuS+i+WPqueUn+aIkOiNieeov+OAgeimhuebluW6pumdouadv+OAgeS8muivneWPquivu+W3oeajgOOAgeS4i+e6vyBzdGFydC9zdG9wL3Jlc3RhcnQg5LiOIGBDb250cm9sKClg44CB5p2D6ZmQIFNRTCDigJQg5YWo6YOo6JC95Zyw44CCXG5cbiMjIOmcgOimgeS9oOefpemBk+eahOS4ieS7tuS6i1xuXG4qKjEuIOWJjee9ruS7u+WKoSByNSDlrp7pmYXmnKrlrozmiJAqKu+8jOi/meaYr+acgOWkp+eahOaCrOepuumhueOAguS7o+eggeS6i+Wunu+8mkMg57G7IDkg5LiqIERCIOWIl+S4jeWtmOWcqOOAgWBydW50aW1lY29uZmlnYCDph4zmsqHmnInku7vkvZXova7or6LpgLvovpHjgIFCIOexuyAxMyDpobnmtojotLnkvqfmsqHmiZPpgJrjgILmiJHnmoTlpITnkIbmmK/miorov5nmibnlj4LmlbDokL3liLAqKuW3suWtmOWcqCoq55qE5LiJ5LiqIEpTT04g5YiX77yIYGV4dHJhX2NvbmZpZ19qc29uYCAvIGBleHRyYV9yaXNrX2pzb25gIC8gYHRyYWlsaW5nX3N0b3BfdGllcnNfanNvbmDvvIzplK7lkI3msr/nlKjnnJ/lrp4gcHJvcGVydGllcyDplK7vvInvvIzpm7Ygc2NoZW1hIOWPmOabtO+8jOW5tue7mSAqKjI1IOmhuemHjOeahCAxNyDpobkqKuaJk+S4iuOAjOi/kOihjOaXtuW+heaJk+mAmuOAjeagh+iusOKAlOKAlOaUueWKqOmihOiniOmHjOS8muWNleeLrOitpuWRiuOAjOS8muWGmei/m+W/q+eFp+S9huS4jeS8muaUueWPmOetlueVpeihjOS4uuOAjeOAguecn+ato+aUueWujOeri+WIu+eUn+aViOeahOWPquaciSA4IOmhueOAguWQjOeQhu+8jDMwIOenkuWFnOW6lei9ruivouacrOi9ruWPquWBmuWPr+inhuWMluivtOaYju+8jCoq6ZyA5rGC57qn6aqM5pS2IDUg55qE44CM5pat5byAIFJlZGlzIOiuoumYheWQjiAzMCDnp5Loh6rmhIjjgI3mnKzova7kuI3miJDnq4sqKuOAgnI1IOiQveWcsOaXtumcgOimgeaKiiBjYXRhbG9nIOmHjOi/meS6m+WPguaVsOeahCBgY2FycmllcmAg5YiH5Yiw5paw5YiX5bm25Y675o6J5qCH6K6w44CCXG5cbioqMi4g5Lu75Yqh6K+05piO6YeM44CM5ZCO56uvIHJvbGxiYWNrUHVibGlzaGVkVmVyc2lvbiDlt7LmnInjgI3kuI7ku6PnoIHkuovlrp7mnInlh7rlhaUqKuKAlOKAlOWug+aYryBgUHVibGlzaGAg5YaF6YOo5Y+R5biD5aSx6LSl5pe255qE6KGl5YG/6Lev5b6E77yM56eB5pyJ5LiU6K+t5LmJ5LiN5ZCM44CC5oiR5oyJ44CM5oqK5bey5b2S5qGj54mI5pys55qE5LiN5Y+v5Y+Y5b+r54Wn6YeN5paw5o6o5LiKIHB1Ymxpc2hlZCDmp73kvY3jgI3lrp7njrDvvIzkuI4gYFB1Ymxpc2hgIOWFseeUqOS4gOadoemTvui3r+OAglxuXG4qKjMuIOacrOWIhuaUr+acieW5tuihjOS7u+WKoeWcqOmAlO+8jGBzZXJ2aWNlYCDkuI4gYG1hbmFnZXItYXBpYCDnmoTlhajph4/mnoTlu7rlvZPliY3mmK/lnY/nmoTjgIIqKiDmiJHov5nova7lvIDlp4vml7blm5vkuKrmqKHlnZflhajph48gYGdvIGJ1aWxkIC4vLi4uYCDmmK/lhajnu7/nmoTvvJvmlLblsL7ml7YgYHNlcnZpY2UvdHJhZGUvc2lnbmFsX2JhY2t0ZXN0LmdvYOOAgWBzZXJ2aWNlL3RyYWRlL3JlcG9zaXRvcnkvc2lnbmFsX2V2ZW50X3JlcG9zaXRvcnkuZ29g44CBYG1hbmFnZXItYXBpL3BrZy9zdHJhdGVneS9zdHJhdGVneS5nb2Ag5Y+KIGBnby5tb2RgL2Bnby5zdW1gIOiiq+WIq+eahOS7u+WKoe+8iHI0L3I2L3I477yJ5ZyoIDIzOjU5IOWQjuWGmeWFpeS4lOWwmuacque8luivkemAmui/h++8jOS4juacrOS7u+WKoeaWh+S7tuaXoOS6pOmbhuOAguWPpuacieS4gOS4quWtmOmHj+mXrumimO+8mmB0cmFkZS1iYWNrdGVzdC1ydW5zL3BhZ2UudHN4YCBpbXBvcnQgYGRheWpzYCDkvYblroPkuI3lnKggYHBhY2thZ2UuanNvbmAg6YeM77yMcG5wbSDkuKXmoLzmqKHlvI/kuIvop6PmnpDkuI3liLDvvIzkvJrorqkgYG5leHQgYnVpbGRgIOWksei0peKAlOKAlOivpeaWh+S7tuacrOi9ruacquaUueWKqO+8jOmcgOaxgue6p+mqjOaUtiA5IOimgei3kemAmuW+l+WFiOihpei/meS4quS+nei1luOAglxuXG4jIyDmtYvor5XkuqTmjqVcblxuLSDlhaXlj6PvvJrnrqHnkIbnq68gYC9hcmd1cy1jb25maWdg77yI6I+c5Y2V44CMQXJndXMg566h55CGIOKGkiDlj4LmlbDkuI7ov5DooYzmjqfliLbjgI3vvIlcbi0g5YmN572u77yabWFuYWdlci1hcGkgKyBNeVNRTCArIFJlZGlz77ybYEFSR1VTX0NPTkZJR19FTkNSWVBUSU9OX0tFWWDvvIhiYXNlNjQgMzIg5a2X6IqC77yJ77yb6Iez5bCR5Lik5Liq5a6e5L6L5bey6YCa6L+HIGBhcmd1cy1jb25maWctaW1wb3J0YCDlr7zlhaXlubbms6jlhozvvIjpqozlrp7kvovpmpTnprvpnIDopoHvvInvvJvoh7PlsJHkuIDkuKrlrp7kvovnmoQgYXJndXNfc2luZ2xlIOWcqOi3ke+8iOmqjOW/g+i3s++8iVxuLSDmiafooYzpobrluo/vvJrpgInlrp7kvosg4oaSIOaUueS4gOS4quWFs+mUruWPguaVsCDihpIg55yL5pS55Yqo6aKE6KeI5LiO5LqM5qyh56Gu6K6kIOKGkiDlj5HluIMg4oaSIOeci+OAjOeoi+W6j+WunumZheivu+WIsOOAjeS7juOAjOetieW+heeoi+W6j+ehruiupOOAjee/u+WIsOOAjOW3sueUn+aViOOAje+8iOW6lOWcqCAxNSDnp5LlhoXvvIznrYnlvoXmnJ/ova7or6LmmK8gMi41c++8ieKGkiDliLDniYjmnKzljoblj7Llm57mu5og4oaSIOWIh+WIsOWPpuS4gOWunuS+i+ehruiupOWFtiB2ZXJzaW9uIOS4juWPguaVsOacquWPmFxuLSDlj6/op4Llr5/nu5PmnpzvvJpgYXJndXM6aGVhcnRiZWF0OjxpbnN0YW5jZT5gIOeahCBgdmVyc2lvbmAgKyBgY29uZmlnQ2hlY2tzdW1gIOS4jiBgYXJndXNfY29uZmlnX3ZlcnNpb24uc25hcHNob3RfY2hlY2tzdW1gIOS4gOiHtFxuLSDmuIXnkIbvvJrlm57mu5rliLDmtYvor5XliY3nmoTniYjmnKzljbPlj6/vvIzniYjmnKzooYzmnKzouqvkuI3lj6/lj5jjgIHkv53nlZnljbPlrqHorqHorrDlvZVcbi0g5p2D6ZmQ77ya5omn6KGMIGDmnYPpmZDotYTmupAuc3FsYCDliY0qKumcgOehruiupCBgQHJvbGVfaWRgKirvvIjmlofku7bph4zpu5jorqQgMe+8jOacque7j+ehruiupOS4jeimgeebtOaOpei3ke+8ieOAguaKgOiDveimgeaxgiByb2xlX2lkIOeUseS6uue7meWumu+8jOacrOi9ruayoeacieS6uue7meOAglxuXG7mibnph4/liKTlrprvvJrlrozmiJAiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJwaGFzZSI6ImZpbmFsX2Fuc3dlciJ9XX1dfQ==
+-->

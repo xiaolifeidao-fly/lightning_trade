@@ -26,6 +26,14 @@ const (
 	TPModeTrailing = "trailing" // 新策略：分级移动止盈 + 仓位上限 + 兜底止损
 )
 
+// 账户止损模式（argus_account_risk.stop_loss_mode）
+const (
+	// StopLossModeCatastrophic 是目前唯一实现：只在 ROI 触及 catastrophe_stop_pct
+	// 时兜底止损。紧止损已被实测否定（−150% 会杀死全部 22 个反转获利 episode），
+	// 因此这里不接受别的取值，非法值一律告警后回退。
+	StopLossModeCatastrophic = "catastrophic"
+)
+
 // 盘口信号方向
 const (
 	OrderBookSignalUp   = "UP"
@@ -59,6 +67,8 @@ type AccountConfig struct {
 	TPMode               string  `json:"tpMode"`          // 止盈模式: fixed=现状(默认), trailing=移动止盈+上限+兜底止损
 	ReverseGate          string  `json:"reverseGate"`     // 反向减仓门控: on/off(默认off); 仅 tp_mode=trailing 时生效
 	Variant              string  `json:"variant"`         // 策略变体标签（JSONL 事件用），如 champion/default
+	StopLossMode         string  `json:"stopLossMode"`    // 止损模式: catastrophic=兜底止损(默认，且目前唯一实现)
+	Baggage              string  `json:"baggage"`         // Sentry baggage（登录回写，随会话持久化；不参与交易签名）
 	RiskBudget           float64 `json:"riskBudget"`
 	CatastrophicStopLoss float64 `json:"catastrophicStopLoss"`
 	MaxContracts         int     `json:"maxContracts"`
@@ -132,37 +142,7 @@ func LoadConfigFromProperties() (*TradingSystemConfig, error) {
 		}
 
 		// 设置默认值
-		if account.PositionMode == "" {
-			account.PositionMode = "bidirectional"
-		}
-		if account.CloseStrategy == "" {
-			account.CloseStrategy = "sltp"
-		}
-		if account.LoginType == "" {
-			if account.HasLoginCredentials() {
-				account.LoginType = WebCredentialModePassword
-			} else {
-				account.LoginType = WebCredentialModeConfig
-			}
-		}
-		if account.LoginURL == "" {
-			account.LoginURL = DefaultDeepCoinLoginURL
-		}
-		if account.TradeDirection == "" {
-			account.TradeDirection = TradeDirectionForward
-		} else if account.TradeDirection != TradeDirectionForward && account.TradeDirection != TradeDirectionReverse {
-			logrus.Warnf("账户%d trade_direction 非法(%s)，回退为 %s", i, account.TradeDirection, TradeDirectionForward)
-			account.TradeDirection = TradeDirectionForward
-		}
-		account.TradeLogic = normalizeTradeLogic(account.TradeLogic)
-		account.TPMode = normalizeTPMode(account.TPMode)
-		if normalizeOnOff(account.ReverseGate) && account.TPMode != TPModeTrailing {
-			logrus.Warnf("账户%d reverse_gate=on 但 tp_mode=%s（非 trailing），缺少 cap+兜底止损保护，已强制关闭 reverse_gate", i, account.TPMode)
-		}
-		if account.IsSignalLogic() && account.PositionMode != "net" {
-			logrus.Warnf("账户%d 使用盘口信号逻辑时要求净仓模式，position_mode 从 %s 调整为 net", i, account.PositionMode)
-			account.PositionMode = "net"
-		}
+		NormalizeAccountConfig(&account)
 
 		config.Accounts = append(config.Accounts, account)
 	}
@@ -189,6 +169,60 @@ func LoadConfigFromProperties() (*TradingSystemConfig, error) {
 	}
 
 	return config, nil
+}
+
+// NormalizeAccountConfig 统一补齐账户配置的默认值并归一化枚举取值。
+//
+// properties 与 DB 配置快照两条加载路径都必须走它。DB 路径一旦漏掉这一段，
+// trade_logic 会停在空串、被 normalizeTradeLogic 归一化成 spread，
+// manager.go 的 IsSignalLogic() 分支永远不进——整套盘口信号策略静默失效
+// 且不报任何错，这正是配置面收敛到 DB 时最先踩到的坑。
+func NormalizeAccountConfig(account *AccountConfig) {
+	if account == nil {
+		return
+	}
+	if account.PositionMode == "" {
+		account.PositionMode = "bidirectional"
+	}
+	if account.CloseStrategy == "" {
+		account.CloseStrategy = "sltp"
+	}
+	if account.LoginType == "" {
+		if account.HasLoginCredentials() {
+			account.LoginType = WebCredentialModePassword
+		} else {
+			account.LoginType = WebCredentialModeConfig
+		}
+	}
+	if account.LoginURL == "" {
+		account.LoginURL = DefaultDeepCoinLoginURL
+	}
+	if account.TradeDirection == "" {
+		account.TradeDirection = TradeDirectionForward
+	} else if account.TradeDirection != TradeDirectionForward && account.TradeDirection != TradeDirectionReverse {
+		logrus.Warnf("账户%d trade_direction 非法(%s)，回退为 %s", account.Index, account.TradeDirection, TradeDirectionForward)
+		account.TradeDirection = TradeDirectionForward
+	}
+	account.TradeLogic = normalizeTradeLogic(account.TradeLogic)
+	account.TPMode = normalizeTPMode(account.TPMode)
+	account.StopLossMode = normalizeStopLossMode(account.StopLossMode)
+	if normalizeOnOff(account.ReverseGate) && account.TPMode != TPModeTrailing {
+		logrus.Warnf("账户%d reverse_gate=on 但 tp_mode=%s（非 trailing），缺少 cap+兜底止损保护，已强制关闭 reverse_gate", account.Index, account.TPMode)
+	}
+	if account.IsSignalLogic() && account.PositionMode != "net" {
+		logrus.Warnf("账户%d 使用盘口信号逻辑时要求净仓模式，position_mode 从 %s 调整为 net", account.Index, account.PositionMode)
+		account.PositionMode = "net"
+	}
+}
+
+func normalizeStopLossMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", StopLossModeCatastrophic:
+		return StopLossModeCatastrophic
+	default:
+		logrus.Warnf("stop_loss_mode 非法(%s)，回退为 %s", value, StopLossModeCatastrophic)
+		return StopLossModeCatastrophic
+	}
 }
 
 func normalizeTradeLogic(value string) string {

@@ -6,6 +6,8 @@ import {
   BellOutlined,
   CompassOutlined,
   ControlOutlined,
+  DashboardOutlined,
+  ExperimentOutlined,
   GlobalOutlined,
   LogoutOutlined,
   SafetyCertificateOutlined,
@@ -16,6 +18,7 @@ import { Avatar, Badge, Button, Layout, Menu, Space, Tag, Typography } from "ant
 import type { MenuProps } from "antd";
 import { usePathname, useRouter } from "next/navigation";
 import { PropsWithChildren, useEffect, useMemo, useState } from "react";
+import { ArgusInstanceSelector } from "@/components/argus/ArgusInstanceSelector";
 import { clearAuthToken } from "@/utils/auth";
 
 const { Content, Header, Sider } = Layout;
@@ -24,6 +27,21 @@ const { Text } = Typography;
 interface ManagerShellProps extends PropsWithChildren {}
 
 type MenuItem = Required<MenuProps>["items"][number];
+
+/**
+ * Argus 七个页面的路由表。allowAll 决定顶栏的全局实例选择器给不给「全部实例」：
+ * 参数编辑与行情主视图必须落到具体实例，前者一次发布会波及多个实例、毁掉
+ * champion/challenger 对照组，后者的阈值线与净持仓阶梯跨实例混排读不出结论。
+ */
+const argusRoutes: { path: string; title: string; allowAll: boolean }[] = [
+  { path: "/argus-dashboard", title: "Argus 总览", allowAll: true },
+  { path: "/argus-instances", title: "实例与参数对比", allowAll: true },
+  { path: "/argus-market", title: "历史行情与触发点", allowAll: false },
+  { path: "/argus-signals", title: "信号复盘与持仓生命周期", allowAll: true },
+  { path: "/argus-backtest", title: "盘口信号回测", allowAll: false },
+  { path: "/argus-optimizer", title: "自动参数寻优", allowAll: false },
+  { path: "/argus-config", title: "Argus 参数与运行控制", allowAll: false },
+];
 
 const pageTitleMap: Record<string, string> = {
   "/manager-dashboard": "数据总览",
@@ -37,8 +55,12 @@ const pageTitleMap: Record<string, string> = {
   "/trade-strategy-backtest": "策略回测",
   "/trade-strategy": "策略管理",
   "/trade-backtest-runs": "回测对比",
-  "/argus-config": "Argus 配置与运行控制",
+  ...Object.fromEntries(argusRoutes.map((route) => [route.path, route.title])),
 };
+
+function matchArgusRoute(pathname: string) {
+  return argusRoutes.find((route) => pathname.startsWith(route.path)) ?? null;
+}
 
 function getOpenKeys(pathname: string) {
   if (pathname.startsWith("/user") || pathname.startsWith("/permission")) {
@@ -47,7 +69,7 @@ function getOpenKeys(pathname: string) {
   if (pathname.startsWith("/platform") || pathname.startsWith("/coin")) {
     return ["/exchange-group"];
   }
-  if (pathname.startsWith("/argus-config")) {
+  if (matchArgusRoute(pathname)) {
     return ["/argus-group"];
   }
   if (
@@ -73,6 +95,11 @@ export function ManagerShell({ children }: ManagerShellProps) {
         key: "/manager-dashboard",
         label: "总览",
         icon: <AppstoreOutlined />,
+      },
+      {
+        key: "/argus-dashboard",
+        label: "Argus 总览",
+        icon: <DashboardOutlined />,
       },
       {
         key: "/coin-user",
@@ -108,6 +135,44 @@ export function ManagerShell({ children }: ManagerShellProps) {
         key: "/coin-user",
         icon: <WalletOutlined />,
         label: "币用户管理",
+      },
+      {
+        key: "/argus-group",
+        icon: <ControlOutlined />,
+        label: "Argus 管理",
+        children: [
+          {
+            key: "/argus-dashboard",
+            icon: <DashboardOutlined />,
+            label: "Argus 总览",
+          },
+          {
+            key: "/argus-instances",
+            label: "实例与参数对比",
+          },
+          {
+            key: "/argus-market",
+            label: "历史行情与触发点",
+          },
+          {
+            key: "/argus-signals",
+            label: "信号复盘",
+          },
+          {
+            key: "/argus-backtest",
+            icon: <BarChartOutlined />,
+            label: "盘口信号回测",
+          },
+          {
+            key: "/argus-optimizer",
+            icon: <ExperimentOutlined />,
+            label: "自动参数寻优",
+          },
+          {
+            key: "/argus-config",
+            label: "参数与运行控制",
+          },
+        ],
       },
       {
         key: "/trade-group",
@@ -152,17 +217,6 @@ export function ManagerShell({ children }: ManagerShellProps) {
         ],
       },
       {
-        key: "/argus-group",
-        icon: <ControlOutlined />,
-        label: "Argus 管理",
-        children: [
-          {
-            key: "/argus-config",
-            label: "配置与运行控制",
-          },
-        ],
-      },
-      {
         key: "/system-group",
         icon: <SafetyCertificateOutlined />,
         label: "系统设置",
@@ -199,6 +253,8 @@ export function ManagerShell({ children }: ManagerShellProps) {
   const pageTitle =
     Object.entries(pageTitleMap).find(([path]) => activePath.startsWith(path))?.[1] ??
     "管理工作台";
+  // 实例选择器只在 Argus 页面出现：别的模块没有实例维度，常驻一个空选择器只会误导。
+  const argusRoute = matchArgusRoute(activePath);
 
   return (
     <div className="manager-app-frame">
@@ -316,6 +372,7 @@ export function ManagerShell({ children }: ManagerShellProps) {
                 </div>
 
                 <Space size={12} wrap>
+                  {argusRoute ? <ArgusInstanceSelector allowAll={argusRoute.allowAll} /> : null}
                   <Badge dot offset={[-2, 2]}>
                     <div
                       className="manager-icon-button"

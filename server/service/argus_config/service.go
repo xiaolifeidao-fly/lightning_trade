@@ -22,6 +22,9 @@ import (
 var (
 	ErrConfigValidation = errors.New("argus config validation failed")
 	ErrDraftNotFound    = errors.New("argus config draft not found")
+	// ErrArchivedVersionNotFound 表示回滚目标不是该实例下的已归档版本：可能是
+	// 版本号打错、属于别的实例，或者就是当前正在生效的版本（无需回滚）。
+	ErrArchivedVersionNotFound = errors.New("argus config archived version not found")
 )
 
 type ArgusConfigService struct {
@@ -48,7 +51,17 @@ func (s *ArgusConfigService) EnsureTable() error {
 		defaultKey = strings.TrimSpace(vipper.GetString("argus.instance.id"))
 	}
 	if defaultKey == "" {
-		logrus.Warn("未配置 argus.instance.default_key/argus.instance.id，跳过 instance_key 历史数据补齐")
+		// 缺实例键时不能一律跳过：全新部署没有存量行，跳过是对的；升级部署有存量行
+		// 却跳过，这些行的 instance_key 会一直留空，FindPublished 按实例查不到任何
+		// 已发布版本——三个实例全都加载不到配置，而现场只看得到一条 warn。
+		pending, err := s.repository.CountMissingInstanceKey()
+		if err != nil {
+			return err
+		}
+		if pending > 0 {
+			return fmt.Errorf("有 %d 行历史配置版本待归属实例，但 argus.instance.default_key/argus.instance.id 都没配置；补齐配置后重启，否则按实例查不到已发布版本", pending)
+		}
+		logrus.Info("未配置 argus.instance.default_key/argus.instance.id，且没有待归属的历史配置版本，跳过 instance_key 补齐")
 		return nil
 	}
 	rows, err := s.repository.BackfillInstanceKey(defaultKey)
@@ -77,6 +90,23 @@ func (s *ArgusConfigService) GetPublished(ctx context.Context, instanceKey strin
 		return nil, err
 	}
 	return s.snapshotDTOContext(ctx, resolvedKey, uint64(version.Id))
+}
+
+// ListVersions 返回某个实例的版本历史，供参数页展示与一键回滚。跨实例不可见。
+func (s *ArgusConfigService) ListVersions(instanceKey string, limit int) ([]argusDTO.ConfigVersionDTO, error) {
+	resolvedKey, err := s.ResolveInstanceKey(instanceKey)
+	if err != nil {
+		return nil, err
+	}
+	versions, err := s.repository.ListVersions(resolvedKey, limit)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]argusDTO.ConfigVersionDTO, 0, len(versions))
+	for _, version := range versions {
+		result = append(result, versionDTO(version))
+	}
+	return result, nil
 }
 
 // SaveDraft 把草稿写入指定实例；instanceKey 为空时回落到 req.InstanceKey，
@@ -225,22 +255,49 @@ func preserveSecret(value string, previous repository.EncryptedString, resultErr
 
 // Publish 只影响目标实例：归档、快照键、广播消息全部带实例键。
 func (s *ArgusConfigService) Publish(ctx context.Context, instanceKey string, versionID uint64, req *argusDTO.PublishConfigRequest, actor string) (*argusDTO.ConfigVersionDTO, error) {
+	if strings.TrimSpace(instanceKey) == "" && req != nil {
+		instanceKey = req.InstanceKey
+	}
+	releaseNote := ""
+	if req != nil {
+		releaseNote = req.ReleaseNote
+	}
+	return s.activateVersion(ctx, instanceKey, versionID, repository.ConfigVersionStatusDraft, releaseNote, actor)
+}
+
+// Rollback 把某个已归档版本重新推上 published 槽位。版本快照是不可变的，回滚
+// 不生成新版本号，页面上「生效中」会直接退回到该历史版本，与 Publish 共用同一
+// 条「写 Redis 快照 → 翻 published 槽位 → 广播」链路。
+func (s *ArgusConfigService) Rollback(ctx context.Context, instanceKey string, versionID uint64, req *argusDTO.RollbackConfigRequest, actor string) (*argusDTO.ConfigVersionDTO, error) {
+	if strings.TrimSpace(instanceKey) == "" && req != nil {
+		instanceKey = req.InstanceKey
+	}
+	releaseNote := ""
+	if req != nil {
+		releaseNote = req.ReleaseNote
+	}
+	return s.activateVersion(ctx, instanceKey, versionID, repository.ConfigVersionStatusArchived, releaseNote, actor)
+}
+
+// activateVersion 是发布与回滚的共同实现。fromStatus 限定源版本的合法状态，
+// 避免「回滚到一个还没发布过的草稿」或「重复发布已生效版本」。
+func (s *ArgusConfigService) activateVersion(ctx context.Context, instanceKey string, versionID uint64, fromStatus, releaseNote, actor string) (*argusDTO.ConfigVersionDTO, error) {
 	if versionID == 0 {
 		return nil, fmt.Errorf("version id is required")
 	}
 	if s.repository.Db == nil {
 		return nil, fmt.Errorf("database is not initialized")
 	}
-	if strings.TrimSpace(instanceKey) == "" && req != nil {
-		instanceKey = req.InstanceKey
-	}
 	resolvedKey, err := s.ResolveInstanceKey(instanceKey)
 	if err != nil {
 		return nil, err
 	}
-	var draft repository.ArgusConfigVersion
-	if err := s.repository.Db.Where("id = ? AND instance_key = ? AND status = ? AND active = 1", versionID, resolvedKey, repository.ConfigVersionStatusDraft).First(&draft).Error; err != nil {
+	var source repository.ArgusConfigVersion
+	if err := s.repository.Db.Where("id = ? AND instance_key = ? AND status = ? AND active = 1", versionID, resolvedKey, fromStatus).First(&source).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if fromStatus == repository.ConfigVersionStatusArchived {
+				return nil, ErrArchivedVersionNotFound
+			}
 			return nil, ErrDraftNotFound
 		}
 		return nil, err
@@ -255,8 +312,8 @@ func (s *ArgusConfigService) Publish(ctx context.Context, instanceKey string, ve
 		return nil, err
 	}
 	version.PublishedBy = strings.TrimSpace(actor)
-	if req != nil && strings.TrimSpace(req.ReleaseNote) != "" {
-		version.ReleaseNote = strings.TrimSpace(req.ReleaseNote)
+	if strings.TrimSpace(releaseNote) != "" {
+		version.ReleaseNote = strings.TrimSpace(releaseNote)
 	}
 	payload := repositorySnapshot{Version: *version, Config: *config, Accounts: accounts, AccountRisks: risks, MonitorSymbols: symbols, Notification: *notification, Sessions: sessions}
 	envelope, err := commonRedis.WriteConfigSnapshot(ctx, resolvedKey, version.Version, payload, s.redisTTL)
@@ -505,7 +562,7 @@ func (s *ArgusConfigService) saveChildren(tx *gorm.DB, version *repository.Argus
 }
 
 func configEntity(versionID int, value argusDTO.ConfigDTO) repository.ArgusConfig {
-	return repository.ArgusConfig{ConfigVersionID: uint64(versionID), ServerPort: value.ServerPort, RequestPath: value.RequestPath, LogDir: value.LogDir, Enabled: value.Enabled, TradeEnabled: value.TradeEnabled, DefaultOrderSize: value.DefaultOrderSize, MonitorIntervalSecond: value.MonitorIntervalSecond, ProfitThreshold: value.ProfitThreshold, LossThreshold: value.LossThreshold, AICloseEnabled: value.AICloseEnabled, AICloseProvider: value.AICloseProvider, AICloseAPIURL: value.AICloseAPIURL, AICloseAPIKey: repository.NewEncryptedString(value.AICloseAPIKey), AICloseModel: value.AICloseModel, AICloseTimeoutSecond: value.AICloseTimeoutSecond, AICloseMaxTokens: value.AICloseMaxTokens, AICloseTemperature: value.AICloseTemperature, AICloseIntervalMinute: value.AICloseIntervalMinute, AICloseMinInterval: value.AICloseMinInterval, AICloseMaxInterval: value.AICloseMaxInterval, AIOpenEnabled: value.AIOpenEnabled, AIOpenAutoTrade: value.AIOpenAutoTrade, AIOpenAPIURL: value.AIOpenAPIURL, AIOpenAPIKey: repository.NewEncryptedString(value.AIOpenAPIKey), AIOpenModel: value.AIOpenModel, AIOpenTimeoutSecond: value.AIOpenTimeoutSecond, AIOpenMaxTokens: value.AIOpenMaxTokens, AIOpenTemperature: value.AIOpenTemperature, AIOpenIntervalMinute: value.AIOpenIntervalMinute, AIOpenMinInterval: value.AIOpenMinInterval, AIOpenMaxInterval: value.AIOpenMaxInterval, AIOpenMinLiqDistancePercent: value.AIOpenMinLiqDistancePercent, AIOpenMinLiqDistanceUSD: value.AIOpenMinLiqDistanceUSD, AIOpenMaxBalancePercent: value.AIOpenMaxBalancePercent, AIOpenMinOrderContracts: value.AIOpenMinOrderContracts, AIOpenMaxOrderContracts: value.AIOpenMaxOrderContracts, AIOpenMaxTotalContracts: value.AIOpenMaxTotalContracts, AIOpenCooldownMinute: value.AIOpenCooldownMinute, AIOpenLiqSafetyFactor: value.AIOpenLiqSafetyFactor, LoginScheduledEnabled: value.LoginScheduledEnabled, LoginScheduledHour: value.LoginScheduledHour, LoginScheduledMinute: value.LoginScheduledMinute, SessionMaxAgeDay: value.SessionMaxAgeDay, ExtraConfigJSON: value.ExtraConfigJSON}
+	return repository.ArgusConfig{ConfigVersionID: uint64(versionID), ServerPort: value.ServerPort, RequestPath: value.RequestPath, LogDir: value.LogDir, Enabled: value.Enabled, TradeEnabled: value.TradeEnabled, DefaultOrderSize: value.DefaultOrderSize, MonitorIntervalSecond: value.MonitorIntervalSecond, ProfitThreshold: value.ProfitThreshold, LossThreshold: value.LossThreshold, AICloseEnabled: value.AICloseEnabled, AICloseProvider: value.AICloseProvider, AICloseAPIURL: value.AICloseAPIURL, AICloseAPIKey: repository.NewEncryptedString(value.AICloseAPIKey), AICloseModel: value.AICloseModel, AICloseTimeoutSecond: value.AICloseTimeoutSecond, AICloseMaxTokens: value.AICloseMaxTokens, AICloseTemperature: value.AICloseTemperature, AICloseIntervalMinute: value.AICloseIntervalMinute, AICloseMinInterval: value.AICloseMinInterval, AICloseMaxInterval: value.AICloseMaxInterval, AIOpenEnabled: value.AIOpenEnabled, AIOpenAutoTrade: value.AIOpenAutoTrade, AIOpenAPIURL: value.AIOpenAPIURL, AIOpenAPIKey: repository.NewEncryptedString(value.AIOpenAPIKey), AIOpenModel: value.AIOpenModel, AIOpenTimeoutSecond: value.AIOpenTimeoutSecond, AIOpenMaxTokens: value.AIOpenMaxTokens, AIOpenTemperature: value.AIOpenTemperature, AIOpenIntervalMinute: value.AIOpenIntervalMinute, AIOpenMinInterval: value.AIOpenMinInterval, AIOpenMaxInterval: value.AIOpenMaxInterval, AIOpenMinLiqDistancePercent: value.AIOpenMinLiqDistancePercent, AIOpenMinLiqDistanceUSD: value.AIOpenMinLiqDistanceUSD, AIOpenMaxBalancePercent: value.AIOpenMaxBalancePercent, AIOpenMinOrderContracts: value.AIOpenMinOrderContracts, AIOpenMaxOrderContracts: value.AIOpenMaxOrderContracts, AIOpenMaxTotalContracts: value.AIOpenMaxTotalContracts, AIOpenCooldownMinute: value.AIOpenCooldownMinute, AIOpenLiqSafetyFactor: value.AIOpenLiqSafetyFactor, LoginScheduledEnabled: value.LoginScheduledEnabled, LoginScheduledHour: value.LoginScheduledHour, LoginScheduledMinute: value.LoginScheduledMinute, SessionMaxAgeDay: value.SessionMaxAgeDay, ExtraConfigJSON: value.ExtraConfigJSON, ContractFace: value.ContractFace, SignalDelaySecond: value.SignalDelaySecond, SpreadMaxPriceAgeMs: value.SpreadMaxPriceAgeMs, TrendGateWindowHour: value.TrendGateWindowHour, TrendGateThresholdPct: value.TrendGateThresholdPct, ReverseGateMinProfitPct: value.ReverseGateMinProfitPct}
 }
 func accountEntity(versionID int, value argusDTO.AccountDTO) repository.ArgusAccount {
 	url := value.URL
@@ -515,7 +572,7 @@ func accountEntity(versionID int, value argusDTO.AccountDTO) repository.ArgusAcc
 	return repository.ArgusAccount{ConfigVersionID: uint64(versionID), AccountName: value.AccountName, URL: url, UID: value.UID, LoginType: value.LoginType, LoginHeadless: value.LoginHeadless, Username: repository.NewEncryptedString(value.Username), Password: repository.NewEncryptedString(value.Password), GoogleAuthKey: repository.NewEncryptedString(value.GoogleAuthKey), APIKey: repository.NewEncryptedString(value.APIKey), SecretKey: repository.NewEncryptedString(value.SecretKey), Passphrase: repository.NewEncryptedString(value.Passphrase), ResourceID: value.ResourceID, PositionMode: value.PositionMode, PositionSide: value.PositionSide, CloseStrategy: value.CloseStrategy, InitialBalance: value.InitialBalance, Enabled: value.Enabled}
 }
 func riskEntity(versionID int, value argusDTO.AccountRiskDTO) repository.ArgusAccountRisk {
-	return repository.ArgusAccountRisk{ConfigVersionID: uint64(versionID), AccountID: value.AccountID, TakeProfitMode: value.TakeProfitMode, StopLossMode: value.StopLossMode, TrailingStopTiersJSON: value.TrailingStopTiersJSON, RiskBudget: value.RiskBudget, CatastrophicStopLoss: value.CatastrophicStopLoss, ReverseGateEnabled: value.ReverseGateEnabled, MaxContracts: value.MaxContracts, ExtraRiskJSON: value.ExtraRiskJSON}
+	return repository.ArgusAccountRisk{ConfigVersionID: uint64(versionID), AccountID: value.AccountID, TakeProfitMode: value.TakeProfitMode, StopLossMode: value.StopLossMode, TrailingStopTiersJSON: value.TrailingStopTiersJSON, RiskBudget: value.RiskBudget, CatastrophicStopLoss: value.CatastrophicStopLoss, ReverseGateEnabled: value.ReverseGateEnabled, MaxContracts: value.MaxContracts, ExtraRiskJSON: value.ExtraRiskJSON, OrderSize: value.OrderSize, RiskEquity: value.RiskEquity, ReverseGateMinProfitPct: value.ReverseGateMinProfitPct, TrendGateThresholdPct: value.TrendGateThresholdPct}
 }
 func symbolEntity(versionID int, value argusDTO.MonitorSymbolDTO) repository.ArgusMonitorSymbol {
 	return repository.ArgusMonitorSymbol{ConfigVersionID: uint64(versionID), Symbol: strings.ToUpper(strings.TrimSpace(value.Symbol)), DeepInstrument: value.DeepInstrument, TradeInstrument: value.TradeInstrument, SpreadThreshold: value.SpreadThreshold, SignalThreshold: value.SignalThreshold, Enabled: value.Enabled}
@@ -531,13 +588,13 @@ func versionDTO(v *repository.ArgusConfigVersion) argusDTO.ConfigVersionDTO {
 	return argusDTO.ConfigVersionDTO{ID: uint64(v.Id), InstanceKey: v.InstanceKey, Version: v.Version, Status: v.Status, ReleaseNote: v.ReleaseNote, PublishedBy: v.PublishedBy, PublishedAt: v.PublishedAt, SnapshotChecksum: v.SnapshotChecksum}
 }
 func configDTO(v *repository.ArgusConfig) argusDTO.ConfigDTO {
-	return argusDTO.ConfigDTO{ID: uint64(v.Id), ServerPort: v.ServerPort, RequestPath: v.RequestPath, LogDir: v.LogDir, Enabled: v.Enabled, TradeEnabled: v.TradeEnabled, DefaultOrderSize: v.DefaultOrderSize, MonitorIntervalSecond: v.MonitorIntervalSecond, ProfitThreshold: v.ProfitThreshold, LossThreshold: v.LossThreshold, AICloseEnabled: v.AICloseEnabled, AICloseProvider: v.AICloseProvider, AICloseAPIURL: v.AICloseAPIURL, AICloseAPIKey: maskSecret(v.AICloseAPIKey), AICloseModel: v.AICloseModel, AICloseTimeoutSecond: v.AICloseTimeoutSecond, AICloseMaxTokens: v.AICloseMaxTokens, AICloseTemperature: v.AICloseTemperature, AICloseIntervalMinute: v.AICloseIntervalMinute, AICloseMinInterval: v.AICloseMinInterval, AICloseMaxInterval: v.AICloseMaxInterval, AIOpenEnabled: v.AIOpenEnabled, AIOpenAutoTrade: v.AIOpenAutoTrade, AIOpenAPIURL: v.AIOpenAPIURL, AIOpenAPIKey: maskSecret(v.AIOpenAPIKey), AIOpenModel: v.AIOpenModel, AIOpenTimeoutSecond: v.AIOpenTimeoutSecond, AIOpenMaxTokens: v.AIOpenMaxTokens, AIOpenTemperature: v.AIOpenTemperature, AIOpenIntervalMinute: v.AIOpenIntervalMinute, AIOpenMinInterval: v.AIOpenMinInterval, AIOpenMaxInterval: v.AIOpenMaxInterval, AIOpenMinLiqDistancePercent: v.AIOpenMinLiqDistancePercent, AIOpenMinLiqDistanceUSD: v.AIOpenMinLiqDistanceUSD, AIOpenMaxBalancePercent: v.AIOpenMaxBalancePercent, AIOpenMinOrderContracts: v.AIOpenMinOrderContracts, AIOpenMaxOrderContracts: v.AIOpenMaxOrderContracts, AIOpenMaxTotalContracts: v.AIOpenMaxTotalContracts, AIOpenCooldownMinute: v.AIOpenCooldownMinute, AIOpenLiqSafetyFactor: v.AIOpenLiqSafetyFactor, LoginScheduledEnabled: v.LoginScheduledEnabled, LoginScheduledHour: v.LoginScheduledHour, LoginScheduledMinute: v.LoginScheduledMinute, SessionMaxAgeDay: v.SessionMaxAgeDay, ExtraConfigJSON: v.ExtraConfigJSON}
+	return argusDTO.ConfigDTO{ID: uint64(v.Id), ServerPort: v.ServerPort, RequestPath: v.RequestPath, LogDir: v.LogDir, Enabled: v.Enabled, TradeEnabled: v.TradeEnabled, DefaultOrderSize: v.DefaultOrderSize, MonitorIntervalSecond: v.MonitorIntervalSecond, ProfitThreshold: v.ProfitThreshold, LossThreshold: v.LossThreshold, AICloseEnabled: v.AICloseEnabled, AICloseProvider: v.AICloseProvider, AICloseAPIURL: v.AICloseAPIURL, AICloseAPIKey: maskSecret(v.AICloseAPIKey), AICloseModel: v.AICloseModel, AICloseTimeoutSecond: v.AICloseTimeoutSecond, AICloseMaxTokens: v.AICloseMaxTokens, AICloseTemperature: v.AICloseTemperature, AICloseIntervalMinute: v.AICloseIntervalMinute, AICloseMinInterval: v.AICloseMinInterval, AICloseMaxInterval: v.AICloseMaxInterval, AIOpenEnabled: v.AIOpenEnabled, AIOpenAutoTrade: v.AIOpenAutoTrade, AIOpenAPIURL: v.AIOpenAPIURL, AIOpenAPIKey: maskSecret(v.AIOpenAPIKey), AIOpenModel: v.AIOpenModel, AIOpenTimeoutSecond: v.AIOpenTimeoutSecond, AIOpenMaxTokens: v.AIOpenMaxTokens, AIOpenTemperature: v.AIOpenTemperature, AIOpenIntervalMinute: v.AIOpenIntervalMinute, AIOpenMinInterval: v.AIOpenMinInterval, AIOpenMaxInterval: v.AIOpenMaxInterval, AIOpenMinLiqDistancePercent: v.AIOpenMinLiqDistancePercent, AIOpenMinLiqDistanceUSD: v.AIOpenMinLiqDistanceUSD, AIOpenMaxBalancePercent: v.AIOpenMaxBalancePercent, AIOpenMinOrderContracts: v.AIOpenMinOrderContracts, AIOpenMaxOrderContracts: v.AIOpenMaxOrderContracts, AIOpenMaxTotalContracts: v.AIOpenMaxTotalContracts, AIOpenCooldownMinute: v.AIOpenCooldownMinute, AIOpenLiqSafetyFactor: v.AIOpenLiqSafetyFactor, LoginScheduledEnabled: v.LoginScheduledEnabled, LoginScheduledHour: v.LoginScheduledHour, LoginScheduledMinute: v.LoginScheduledMinute, SessionMaxAgeDay: v.SessionMaxAgeDay, ExtraConfigJSON: v.ExtraConfigJSON, ContractFace: v.ContractFace, SignalDelaySecond: v.SignalDelaySecond, SpreadMaxPriceAgeMs: v.SpreadMaxPriceAgeMs, TrendGateWindowHour: v.TrendGateWindowHour, TrendGateThresholdPct: v.TrendGateThresholdPct, ReverseGateMinProfitPct: v.ReverseGateMinProfitPct}
 }
 func accountDTO(v *repository.ArgusAccount) argusDTO.AccountDTO {
 	return argusDTO.AccountDTO{ID: uint64(v.Id), AccountName: v.AccountName, URL: v.URL, UID: v.UID, LoginType: v.LoginType, LoginHeadless: v.LoginHeadless, Username: maskSecret(v.Username), Password: maskSecret(v.Password), GoogleAuthKey: maskSecret(v.GoogleAuthKey), APIKey: maskSecret(v.APIKey), SecretKey: maskSecret(v.SecretKey), Passphrase: maskSecret(v.Passphrase), ResourceID: v.ResourceID, PositionMode: v.PositionMode, PositionSide: v.PositionSide, CloseStrategy: v.CloseStrategy, InitialBalance: v.InitialBalance, Enabled: v.Enabled}
 }
 func riskDTO(v *repository.ArgusAccountRisk) argusDTO.AccountRiskDTO {
-	return argusDTO.AccountRiskDTO{ID: uint64(v.Id), AccountID: v.AccountID, TakeProfitMode: v.TakeProfitMode, StopLossMode: v.StopLossMode, TrailingStopTiersJSON: v.TrailingStopTiersJSON, RiskBudget: v.RiskBudget, CatastrophicStopLoss: v.CatastrophicStopLoss, ReverseGateEnabled: v.ReverseGateEnabled, MaxContracts: v.MaxContracts, ExtraRiskJSON: v.ExtraRiskJSON}
+	return argusDTO.AccountRiskDTO{ID: uint64(v.Id), AccountID: v.AccountID, TakeProfitMode: v.TakeProfitMode, StopLossMode: v.StopLossMode, TrailingStopTiersJSON: v.TrailingStopTiersJSON, RiskBudget: v.RiskBudget, CatastrophicStopLoss: v.CatastrophicStopLoss, ReverseGateEnabled: v.ReverseGateEnabled, MaxContracts: v.MaxContracts, ExtraRiskJSON: v.ExtraRiskJSON, OrderSize: v.OrderSize, RiskEquity: v.RiskEquity, ReverseGateMinProfitPct: v.ReverseGateMinProfitPct, TrendGateThresholdPct: v.TrendGateThresholdPct}
 }
 func symbolDTO(v *repository.ArgusMonitorSymbol) argusDTO.MonitorSymbolDTO {
 	return argusDTO.MonitorSymbolDTO{ID: uint64(v.Id), Symbol: v.Symbol, DeepInstrument: v.DeepInstrument, TradeInstrument: v.TradeInstrument, SpreadThreshold: v.SpreadThreshold, SignalThreshold: v.SignalThreshold, Enabled: v.Enabled}
@@ -546,7 +603,20 @@ func notificationDTO(v *repository.ArgusNotification) argusDTO.NotificationDTO {
 	return argusDTO.NotificationDTO{ID: uint64(v.Id), TelegramEnabled: v.TelegramEnabled, TelegramBotToken: maskSecret(v.TelegramBotToken), TelegramChatID: maskSecret(v.TelegramChatID)}
 }
 func sessionDTO(v *repository.ArgusRuntimeSession) argusDTO.RuntimeSessionDTO {
-	return argusDTO.RuntimeSessionDTO{ID: uint64(v.Id), AccountID: v.AccountID, Cookie: maskSecret(v.Cookie), Token: maskSecret(v.Token), OToken: maskSecret(v.OToken), SentryRelease: maskSecret(v.SentryRelease), SentryPublicKey: maskSecret(v.SentryPublicKey), Baggage: maskSecret(v.Baggage), LoginURL: v.LoginURL, FinalURL: v.FinalURL, Valid: v.Valid, SessionUpdatedAt: v.SessionUpdatedAt, ExpiresAt: v.ExpiresAt, LastError: v.LastError}
+	return argusDTO.RuntimeSessionDTO{ID: uint64(v.Id), AccountID: v.AccountID, Cookie: maskSecret(v.Cookie), Token: maskSecret(v.Token), OToken: maskSecret(v.OToken), SentryRelease: maskSecret(v.SentryRelease), SentryPublicKey: maskSecret(v.SentryPublicKey), Baggage: maskSecret(v.Baggage), CookieLength: secretLength(v.Cookie), TokenLength: secretLength(v.Token), OTokenLength: secretLength(v.OToken), LoginURL: v.LoginURL, FinalURL: v.FinalURL, Valid: v.Valid, SessionUpdatedAt: v.SessionUpdatedAt, ExpiresAt: v.ExpiresAt, LastError: v.LastError}
+}
+
+// secretLength 只给会话巡检用：回明文长度而不回明文。解密失败返回 0，页面据此
+// 显示「无法读取」，不把解密异常升级成整页加载失败。
+func secretLength(value repository.EncryptedString) int {
+	if value == "" {
+		return 0
+	}
+	plaintext, err := value.Decrypt()
+	if err != nil {
+		return 0
+	}
+	return len(plaintext)
 }
 func maskSecret(value repository.EncryptedString) string {
 	if value == "" {

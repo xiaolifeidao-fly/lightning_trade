@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"argus_single/pkg/eventlog"
+	"argus_single/pkg/eventstore"
 	"argus_single/pkg/monitor"
 	"argus_single/pkg/runtimeconfig"
 	"argus_single/pkg/runtimehealth"
@@ -16,6 +17,8 @@ import (
 	"common/middleware/db"
 	"common/middleware/redis"
 	"common/middleware/vipper"
+
+	"github.com/sirupsen/logrus"
 )
 
 // Init 统一初始化入口
@@ -47,6 +50,23 @@ func Init() error {
 	}
 	eventlog.Init(eventLogDir)
 	log.Printf("Event log initialized at %s", eventLogDir)
+
+	// 策略事件双写 MySQL（JSONL 仍是真源，保留至 eventstore.JSONLDualWriteUntil）。
+	// 必须在任何交易/监控启动前注册 sink，否则早期事件只会落进 JSONL。
+	// 建连接或建表失败都不算启动失败：进程退化成只写 JSONL，交易照常。
+	if _, err := eventstore.Setup(context.Background(), eventstore.Options{
+		DSN:         vipper.GetString("sqlconn"),
+		InstanceKey: runtimeManager.InstanceID(),
+	}); err != nil {
+		if eventstore.IsDisabled(err) {
+			log.Printf("Event store disabled (sqlconn empty), events are written to JSONL only")
+		} else {
+			logrus.Errorf("策略事件双写初始化失败，本次只写 JSONL（不影响交易）: %v", err)
+		}
+	} else {
+		eventstore.SetConfigVersion(runtime.Version)
+		eventstore.SetAccounts(accountIdentities(runtime.Trade))
+	}
 
 	// 初始化路由
 	log.Printf("Initializing Router...")
@@ -103,8 +123,20 @@ func Init() error {
 		time.Duration(vipper.GetInt("argus.heartbeat.interval_seconds"))*time.Second,
 		time.Duration(vipper.GetInt("argus.heartbeat.ttl_seconds"))*time.Second,
 	)
-	heartbeat.SetVersion(runtime.Version)
-	runtimeManager.SetReloadObserver(heartbeat.RecordReload)
+	heartbeat.SetConfigState(runtime.Version, runtime.Checksum)
+	// 配置热加载后事件的 config_version 与 uid 映射都要跟着走：版本号错位会让
+	// 「哪个参数版本产生了这批触发」的归因失真，账户变更后 uid 不更新会让新
+	// 账户的事件永远缺 uid。apply() 是先写 current 再回调，所以这里读到的是新配置。
+	runtimeManager.SetReloadObserver(func(version uint64, err error) {
+		// apply() 先写 current 再回调，成功时 Current() 已是新快照；失败时它
+		// 仍是仍在运行的旧快照，正好是心跳该上报的「程序实际读到什么」。
+		heartbeat.RecordReload(version, runtimeManager.Current().Checksum, err)
+		if err != nil || version == 0 {
+			return
+		}
+		eventstore.SetConfigVersion(version)
+		eventstore.SetAccounts(accountIdentities(runtimeManager.Current().Trade))
+	})
 	heartbeat.Start(context.Background())
 	runtimehealth.SetDefaultReporter(heartbeat)
 	return nil
@@ -145,4 +177,18 @@ func loadSymbolConfigs() map[string]monitor.SymbolConfig {
 		}
 	}
 	return configs
+}
+
+// accountIdentities 从运行时配置抽出 account 标签 → uid 映射。
+// JSONL 的 account 字段存的是人起的标签名（含邮箱），数字 uid 从来没进过事件，
+// 只能从配置补；uid 为空时事件按 (instance_key, account_label) 唯一。
+func accountIdentities(cfg *trade.TradingSystemConfig) []eventstore.Identity {
+	if cfg == nil {
+		return nil
+	}
+	identities := make([]eventstore.Identity, 0, len(cfg.Accounts))
+	for _, acc := range cfg.Accounts {
+		identities = append(identities, eventstore.Identity{Label: acc.Name, UID: acc.UID})
+	}
+	return identities
 }

@@ -7,9 +7,12 @@ import (
 	"argus_single/pkg/eventlog"
 )
 
-// 采样按窗口节流：若每个 tick 都产出事件，日志会从 1440 条/天涨到数十万条。
+// 采样按窗口节流：若每个 tick 都产出事件，日志会从 8640 条/天涨到数十万条。
 // 直接构造 PriceMonitor（不走 NewPriceMonitor）以避开配置与调度器依赖——
 // observeDeviationLocked 只用到这两个 map。
+//
+// 时间偏移一律相对 devSampleInterval 表达：r3 把它从 1min 改成 10s 时，写死的
+// 30s/61s 会静默变成"窗口已满"，测试就不再检验节流了。
 func TestObserveDeviationFlushesOncePerInterval(t *testing.T) {
 	pm := &PriceMonitor{
 		devSamplers:  make(map[string]*DevSampler),
@@ -21,11 +24,11 @@ func TestObserveDeviationFlushesOncePerInterval(t *testing.T) {
 	if _, ok := pm.observeDeviationLocked(t0, "BTCUSDT", cfg, devTickAt(6), devTestMark); ok {
 		t.Error("首个 tick 只起窗口，不应产出事件")
 	}
-	if _, ok := pm.observeDeviationLocked(t0.Add(30*time.Second), "BTCUSDT", cfg, devTickAt(1), devTestMark); ok {
+	if _, ok := pm.observeDeviationLocked(t0.Add(devSampleInterval/2), "BTCUSDT", cfg, devTickAt(1), devTestMark); ok {
 		t.Error("窗口未满不应产出事件")
 	}
 
-	ev, ok := pm.observeDeviationLocked(t0.Add(61*time.Second), "BTCUSDT", cfg, devTickAt(7), devTestMark)
+	ev, ok := pm.observeDeviationLocked(t0.Add(devSampleInterval+time.Second), "BTCUSDT", cfg, devTickAt(7), devTestMark)
 	if !ok {
 		t.Fatal("窗口满应产出事件")
 	}
@@ -43,7 +46,7 @@ func TestObserveDeviationFlushesOncePerInterval(t *testing.T) {
 		t.Errorf("穿越计数 want 2 got %d", got)
 	}
 
-	if _, ok := pm.observeDeviationLocked(t0.Add(62*time.Second), "BTCUSDT", cfg, devTickAt(7), devTestMark); ok {
+	if _, ok := pm.observeDeviationLocked(t0.Add(devSampleInterval+2*time.Second), "BTCUSDT", cfg, devTickAt(7), devTestMark); ok {
 		t.Error("flush 后应开启新窗口，不应立即再产出")
 	}
 }
@@ -60,9 +63,9 @@ func TestObserveDeviationKeepsSymbolsIndependent(t *testing.T) {
 
 	pm.observeDeviationLocked(t0, "BTCUSDT", btc, devTickAt(6), devTestMark)
 	pm.observeDeviationLocked(t0, "ETHUSDT", eth, devTickAt(6), devTestMark)
-	pm.observeDeviationLocked(t0.Add(61*time.Second), "BTCUSDT", btc, devTickAt(6), devTestMark)
+	pm.observeDeviationLocked(t0.Add(devSampleInterval+time.Second), "BTCUSDT", btc, devTickAt(6), devTestMark)
 
-	ev, ok := pm.observeDeviationLocked(t0.Add(61*time.Second), "ETHUSDT", eth, devTickAt(6), devTestMark)
+	ev, ok := pm.observeDeviationLocked(t0.Add(devSampleInterval+time.Second), "ETHUSDT", eth, devTickAt(6), devTestMark)
 	if !ok {
 		t.Fatal("ETHUSDT 自己的窗口也应到期")
 	}

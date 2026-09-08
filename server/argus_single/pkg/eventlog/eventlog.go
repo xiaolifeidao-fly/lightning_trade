@@ -95,11 +95,21 @@ func (l *Logger) filePath(now time.Time) string {
 }
 
 // Log 追加一条事件；Ts 为空时填当前时间。写盘失败仅告警。
+//
+// 双写口径：JSONL 是真源，先落盘再旁路投递给已注册的 sink（MySQL 双写，
+// 见 sink.go）。两条路拿到的是同一个 Ts 已补齐的 Event，因此 event_hash
+// 在直写与回灌两条路径上必然一致。
 func (l *Logger) Log(e Event) {
 	now := time.Now()
 	if e.Ts == "" {
 		e.Ts = now.Format("2006-01-02 15:04:05")
 	}
+	l.writeLine(now, e)
+	emitToSinks(e)
+}
+
+// writeLine 把事件追加进当天的 JSONL 文件；失败只记 error，不影响交易。
+func (l *Logger) writeLine(now time.Time, e Event) {
 	line := Marshal(e)
 	if line == "" {
 		return

@@ -6,7 +6,6 @@ import {
   DeleteOutlined,
   ExperimentOutlined,
   InfoCircleOutlined,
-  KeyOutlined,
   LineChartOutlined,
   LockOutlined,
   PlusOutlined,
@@ -28,7 +27,6 @@ import {
   Row,
   Switch,
   Tabs,
-  Tag,
   Tooltip,
   Typography,
 } from "antd";
@@ -39,7 +37,14 @@ import type { ArgusConfigDraft, ArgusConfigSnapshot } from "../api/argus-config.
 const { Text } = Typography;
 const sensitivePlaceholder = "已安全保存，不回显；输入新值覆盖";
 
+/**
+ * 完整配置表单只维护「静态配置」这部分：instanceKey 与会话由页面层带上，
+ * 前者是作用域、后者是运行时回写状态，都不该由表单编辑。
+ */
+type ConfigFormValues = Omit<ArgusConfigDraft, "instanceKey" | "sessions">;
+
 interface ConfigEditorProps {
+  instanceKey: string;
   snapshot: ArgusConfigSnapshot | null;
   saving: boolean;
   dirty: boolean;
@@ -47,7 +52,7 @@ interface ConfigEditorProps {
   onPublish: (draft: ArgusConfigDraft) => Promise<void>;
 }
 
-type TabKey = "basic" | "ai" | "accounts" | "symbols" | "notification" | "sessions";
+type TabKey = "basic" | "ai" | "accounts" | "symbols" | "notification";
 
 const fieldTabMap: Record<string, TabKey> = {
   config: "basic",
@@ -55,7 +60,6 @@ const fieldTabMap: Record<string, TabKey> = {
   accountRisks: "accounts",
   monitorSymbols: "symbols",
   notification: "notification",
-  sessions: "sessions",
 };
 
 const aiFieldPrefixes = ["aiClose", "aiOpen"];
@@ -143,22 +147,20 @@ function TabLabel({ icon, text, count, active }: { icon: ReactNode; text: string
   );
 }
 
-export function ConfigEditor({ snapshot, saving, dirty, onDirtyChange, onPublish }: ConfigEditorProps) {
-  const [form] = Form.useForm<ArgusConfigDraft>();
+export function ConfigEditor({ instanceKey, snapshot, saving, dirty, onDirtyChange, onPublish }: ConfigEditorProps) {
+  const [form] = Form.useForm<ConfigFormValues>();
   const [activeTab, setActiveTab] = useState<TabKey>("basic");
   const [publishOpen, setPublishOpen] = useState(false);
 
   const watchedAccounts = Form.useWatch("accounts", form);
   const watchedRisks = Form.useWatch("accountRisks", form);
   const watchedSymbols = Form.useWatch("monitorSymbols", form);
-  const watchedSessions = Form.useWatch("sessions", form);
 
   const accounts = watchedAccounts ?? snapshot?.accounts;
   const accountRisks = watchedRisks ?? snapshot?.accountRisks;
   const monitorSymbols = watchedSymbols ?? snapshot?.monitorSymbols;
-  const sessions = watchedSessions ?? snapshot?.sessions;
 
-  const initialValues: ArgusConfigDraft | undefined = useMemo(
+  const initialValues: ConfigFormValues | undefined = useMemo(
     () =>
       snapshot
         ? {
@@ -167,7 +169,6 @@ export function ConfigEditor({ snapshot, saving, dirty, onDirtyChange, onPublish
             accountRisks: snapshot.accountRisks,
             monitorSymbols: snapshot.monitorSymbols,
             notification: snapshot.notification,
-            sessions: snapshot.sessions,
             releaseNote: snapshot.version.releaseNote,
           }
         : undefined,
@@ -188,7 +189,9 @@ export function ConfigEditor({ snapshot, saving, dirty, onDirtyChange, onPublish
   const submit = async () => {
     try {
       const values = await form.validateFields();
-      await onPublish(values);
+      // 会话不在表单里编辑，但必须原样带上：新版本没有会话行时 runtimeAccount 会拿到
+      // 空 cookie / token，热加载后登录态直接丢失。
+      await onPublish({ ...values, instanceKey, sessions: snapshot?.sessions ?? [] });
       setPublishOpen(false);
       onDirtyChange(false);
     } catch (error) {
@@ -235,15 +238,10 @@ export function ConfigEditor({ snapshot, saving, dirty, onDirtyChange, onPublish
       label: <TabLabel icon={<BellOutlined />} text="通知" active={activeTab === "notification"} />,
       children: <NotificationConfig />,
     },
-    {
-      key: "sessions",
-      label: <TabLabel icon={<KeyOutlined />} text="会话状态" count={sessions?.length ?? 0} active={activeTab === "sessions"} />,
-      children: <Sessions />,
-    },
   ];
 
   return (
-    <Form<ArgusConfigDraft>
+    <Form<ConfigFormValues>
       form={form}
       layout="vertical"
       initialValues={initialValues}
@@ -609,56 +607,5 @@ function NotificationConfig() {
         <Col xs={24} md={9}><SecretField name={["notification", "telegramChatId"]} label="Chat ID" /></Col>
       </Row>
     </Section>
-  );
-}
-
-function Sessions() {
-  return (
-    <Form.List name="sessions">
-      {(fields, { add, remove }) => (
-        <Section
-          title="会话状态"
-          desc="由 Argus 自动回写"
-          extra={<Button size="small" icon={<PlusOutlined />} onClick={() => add({ valid: 1 })}>新增会话</Button>}
-        >
-          <Hint>正常情况下无需手工维护；仅在迁移环境或会话失效需要人工覆盖时填写 Cookie / Token。</Hint>
-          {fields.length === 0 ? (
-            <div className="manager-argus-empty">
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无会话记录" />
-            </div>
-          ) : null}
-          {fields.map((field, index) => (
-            <div className="manager-argus-item" key={field.key}>
-              <div className="manager-argus-item__head">
-                <span className="manager-argus-item__index">{index + 1}</span>
-                <Form.Item shouldUpdate noStyle>
-                  {({ getFieldValue }) => (
-                    <span className="manager-argus-item__title" style={{ color: "var(--manager-text)", fontWeight: 600 }}>
-                      账户 #{getFieldValue(["sessions", field.name, "accountId"]) ?? "—"}
-                      {getFieldValue(["sessions", field.name, "valid"]) === 1 ? (
-                        <Tag color="green" style={{ marginLeft: 8 }}>有效</Tag>
-                      ) : (
-                        <Tag style={{ marginLeft: 8 }}>失效</Tag>
-                      )}
-                    </span>
-                  )}
-                </Form.Item>
-                <Popconfirm title="删除该会话记录？" okText="删除" okButtonProps={{ danger: true }} cancelText="取消" onConfirm={() => remove(field.name)}>
-                  <Button type="text" danger icon={<DeleteOutlined />} />
-                </Popconfirm>
-              </div>
-              <Row gutter={12}>
-                <Col xs={24} md={6}><Form.Item name={[field.name, "accountId"]} label="账户 ID"><InputNumber min={0} style={{ width: "100%" }} /></Form.Item></Col>
-                <Col xs={24} md={9}><Form.Item name={[field.name, "loginUrl"]} label="登录回跳地址"><Input /></Form.Item></Col>
-                <Col xs={24} md={9}><Form.Item name={[field.name, "finalUrl"]} label="完成地址"><Input /></Form.Item></Col>
-                <Col xs={24} md={8}><SecretField name={[field.name, "cookie"]} label="Cookie" /></Col>
-                <Col xs={24} md={8}><SecretField name={[field.name, "token"]} label="Token" /></Col>
-                <Col xs={24} md={8}><SecretField name={[field.name, "otoken"]} label="OToken" /></Col>
-              </Row>
-            </div>
-          ))}
-        </Section>
-      )}
-    </Form.List>
   );
 }

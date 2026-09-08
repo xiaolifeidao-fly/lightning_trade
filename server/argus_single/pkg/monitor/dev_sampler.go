@@ -14,9 +14,19 @@ import (
 // 尾部是否仍在变厚。
 var DevSampleThresholdsBp = []float64{0.5, 1, 1.5, 2, 3, 4, 5, 7, 10}
 
-// devSampleInterval dev_sample 落盘间隔。与 balance 事件同频（实测每分钟一条），
-// 约 1440 条/天；离线可把窗口计数求和成任意粒度。
-const devSampleInterval = time.Minute
+// devSampleInterval dev_sample 落盘间隔。r3 把粒度从 1 分钟提到 10 秒：阈值扫描类
+// 回测（λ(θ) 推断）的时间分辨率随之从 60 秒提到 10 秒，8640 条/天、年增 < 100MB
+// （需求大纲 §3.1 已核过容量）。
+//
+// 为什么缩窗不会改变 λ 口径：穿越计数的 edge-trigger 状态（lastDerived）跨窗口
+// 保留，同一段行情切成 6 份小窗与 1 份大窗的穿越总数完全相同——λ 只随窗口边界
+// 分摊得更细，不随窗口大小变化。读侧的窗口步长按相邻窗口间隔的中位数自适应
+// （service/trade/strategy/signal/lambda.go windowStep），所以同一张表里并存
+// 1min 与 10s 两种历史步长也不会算错跨度。
+//
+// 阈值列表（DevSampleThresholdsBp）与 DevCross/DevOver 的结构刻意不动：它是频率级
+// 回测的唯一数据源，改结构会让 study_fine.csv 那套金标准整段失效。
+const devSampleInterval = 10 * time.Second
 
 // DevSampler 无条件偏离采样器：在每个 ticker tick 上累加 DeepCoin last-vs-mark
 // 偏离，按窗口 flush 成一条 dev_sample 事件。

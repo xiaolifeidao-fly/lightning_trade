@@ -347,3 +347,112 @@ func klinesToModels(platform, symbol, interval string, rows []argusTrade.MarketK
 	}
 	return out, nil
 }
+
+// klineRangeCoverageTarget 窗口回填的覆盖率达标线，与 ensureBacktestKlines 同口径。
+const klineRangeCoverageTarget = 95
+
+// BackfillKlineRange 按【窗口覆盖率】回填 K 线：平台 × 周期 逐组合独立处理，
+// 单组合失败不影响其它组合。供行情主视图（r12）的「回填缺口」按钮使用。
+//
+// 交易所只提供「最近 N 根」，所以兜到窗口左界要的是 (now - start)/周期 根；
+// 窗口太老、单次上限够不到左界时不静默截断，挂 Capped 与 Note 让页面显示原因。
+func (s *TradeService) BackfillKlineRange(ctx context.Context, dto tradeDTO.BackfillKlineRangeDTO) (*tradeDTO.BackfillKlineRangeResultDTO, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	symbol := strings.ToUpper(strings.TrimSpace(dto.Symbol))
+	if symbol == "" {
+		return nil, fmt.Errorf("symbol 不能为空")
+	}
+	platforms := normalizeStringList(dto.PlatformCodes, dto.PlatformCode, []string{tradeRepository.KlinePlatformBinance}, tradeRepository.NormalizeKlinePlatform)
+	intervals := normalizeStringList(dto.Intervals, dto.Interval, defaultBackfillIntervals, strings.TrimSpace)
+	start, err := parseTimeFlexible(dto.Start)
+	if err != nil {
+		return nil, fmt.Errorf("start: %w", err)
+	}
+	now := time.Now().UTC()
+	end := now
+	if strings.TrimSpace(dto.End) != "" {
+		if end, err = parseTimeFlexible(dto.End); err != nil {
+			return nil, fmt.Errorf("end: %w", err)
+		}
+	}
+	// K 线最多到「现在」，右界超过现在按现在算。
+	if end.After(now) {
+		end = now
+	}
+	if !end.After(start) {
+		return nil, fmt.Errorf("窗口为空或落在未来：start=%s end=%s", fmtTime(start), fmtTime(end))
+	}
+	total := len(platforms) * len(intervals)
+	if total > klineBatchMaxCombos {
+		return nil, fmt.Errorf("组合数 %d 超过单次上限 %d，请拆分请求", total, klineBatchMaxCombos)
+	}
+
+	result := &tradeDTO.BackfillKlineRangeResultDTO{
+		Start: fmtTime(start), End: fmtTime(end), Total: total,
+		Items: make([]tradeDTO.BackfillKlineRangeItemDTO, 0, total),
+	}
+	for _, platform := range platforms {
+		for _, interval := range intervals {
+			item := s.backfillKlineRangeOne(ctx, platform, symbol, interval, start, end, now)
+			if item.Error != "" {
+				result.Failed++
+			} else {
+				result.Succeeded++
+			}
+			result.Items = append(result.Items, item)
+		}
+	}
+	return result, nil
+}
+
+// backfillKlineRangeOne 单个「平台 × 周期」组合的窗口回填。
+func (s *TradeService) backfillKlineRangeOne(ctx context.Context, platform, symbol, interval string, start, end, now time.Time) tradeDTO.BackfillKlineRangeItemDTO {
+	item := tradeDTO.BackfillKlineRangeItemDTO{PlatformCode: platform, Symbol: symbol, Interval: interval}
+	dur, ok := intervalDuration(interval)
+	if !ok {
+		item.Error = fmt.Sprintf("不支持的周期: %s", interval)
+		return item
+	}
+	item.Expected = int(end.Sub(start)/dur) + 1
+	have, err := s.tradeKlineRepository.CountBySymbolIntervalRange(platform, symbol, interval, start, end)
+	if err != nil {
+		item.Error = err.Error()
+		return item
+	}
+	item.HaveBefore = int(have)
+	item.HaveAfter = item.HaveBefore
+	if item.Expected > 0 && item.HaveBefore >= item.Expected*klineRangeCoverageTarget/100 {
+		item.Skipped = true
+		item.Note = "窗口覆盖率已达标，未向交易所发起请求"
+		return item
+	}
+
+	// 要兜到窗口左界，需要「最近 (now-start)/周期 根」；+2 是边界缓冲。
+	want := int(now.Sub(start)/dur) + 2
+	if want > klineFetchMax {
+		want = klineFetchMax
+		item.Capped = true
+	}
+	item.NeedFetch = want
+	fetched, upserted, err := s.fetchAndStoreRecentKlines(ctx, platform, symbol, interval, want)
+	if err != nil {
+		item.Error = err.Error()
+		logrus.Warnf("[kline] 窗口回填失败 platform=%s symbol=%s interval=%s: %v", platform, symbol, interval, err)
+		return item
+	}
+	item.Fetched = fetched
+	item.Upserted = upserted
+	if after, err := s.tradeKlineRepository.CountBySymbolIntervalRange(platform, symbol, interval, start, end); err == nil {
+		item.HaveAfter = int(after)
+	}
+	if item.Capped && item.HaveAfter < item.Expected {
+		// 单次「最近 N 根」够不到窗口左界——说清楚，不要让页面以为已经补齐。
+		item.Note = fmt.Sprintf("窗口左界距今约 %d 根，超过交易所单次上限 %d 根，只补到能拉到的最早一根；请缩短时间范围或换更长的周期再补",
+			int(now.Sub(start)/dur), klineFetchMax)
+	} else if item.HaveAfter < item.Expected {
+		item.Note = fmt.Sprintf("回填后仍缺 %d 根，多半是交易所该时段本就没有数据", item.Expected-item.HaveAfter)
+	}
+	return item
+}

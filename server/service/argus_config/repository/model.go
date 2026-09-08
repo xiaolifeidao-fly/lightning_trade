@@ -101,6 +101,14 @@ type ArgusConfig struct {
 	LoginScheduledMinute        uint8           `gorm:"column:login_scheduled_minute;type:tinyint unsigned;default:0;check:chk_argus_login_scheduled_minute,login_scheduled_minute <= 59" description:"定时登录分钟"`
 	SessionMaxAgeDay            int             `gorm:"column:session_max_age_day;type:int unsigned;default:0" description:"会话最长天数"`
 	ExtraConfigJSON             string          `gorm:"column:extra_config_json;type:json" description:"未结构化但受支持的扩展配置"`
+	// 以下六项是 r5 收敛进来的全局策略参数，此前只存在于 properties，DB 无列 →
+	// 运行时只能读 vipper，配置面不完整。0 表示未配置，运行时回退 properties 兜底。
+	ContractFace            float64 `gorm:"column:contract_face;type:decimal(20,8);default:0" description:"合约面值 position.risk.contract_face"`
+	SignalDelaySecond       int     `gorm:"column:signal_delay_second;type:int unsigned;default:0" description:"盘口信号延迟下单秒数 trade.signal.delay_seconds"`
+	SpreadMaxPriceAgeMs     int     `gorm:"column:spread_max_price_age_ms;type:int unsigned;default:0" description:"价差判定的行情最大陈旧毫秒 monitor.spread.max_price_age_ms"`
+	TrendGateWindowHour     float64 `gorm:"column:trend_gate_window_hour;type:decimal(10,4);default:0" description:"趋势闸动量窗口小时 trade.trend_gate.window_hours"`
+	TrendGateThresholdPct   float64 `gorm:"column:trend_gate_threshold_pct;type:decimal(10,4);default:0" description:"趋势闸全局阈值% trade.trend_gate.threshold_pct"`
+	ReverseGateMinProfitPct float64 `gorm:"column:reverse_gate_min_profit_pct;type:decimal(20,8);default:0" description:"反向减仓最小盈利% position.risk.reverse_gate_min_profit_pct"`
 }
 
 func (c *ArgusConfig) TableName() string { return "argus_config" }
@@ -141,6 +149,12 @@ type ArgusAccountRisk struct {
 	ReverseGateEnabled    uint8   `gorm:"column:reverse_gate_enabled;type:tinyint unsigned;default:0;check:chk_argus_risk_reverse_gate_enabled,reverse_gate_enabled IN (0,1)" description:"反向开仓门禁"`
 	MaxContracts          int     `gorm:"column:max_contracts;type:int unsigned;default:0" description:"最大合约数"`
 	ExtraRiskJSON         string  `gorm:"column:extra_risk_json;type:json" description:"扩展风控参数"`
+	// 以下四项是 r5 收敛进来的账户级策略参数，此前 DB 无列，champion/challenger
+	// 的差异全靠 properties 手工维护。0 表示未配置，运行时回退 properties 兜底。
+	OrderSize               int     `gorm:"column:order_size;type:int unsigned;default:0" description:"账户级开仓张数 trade.accountN.order_size"`
+	RiskEquity              float64 `gorm:"column:risk_equity;type:decimal(20,8);default:0" description:"风险计算基数 trade.accountN.risk_equity"`
+	ReverseGateMinProfitPct float64 `gorm:"column:reverse_gate_min_profit_pct;type:decimal(20,8);default:0" description:"账户级反向减仓最小盈利%"`
+	TrendGateThresholdPct   float64 `gorm:"column:trend_gate_threshold_pct;type:decimal(10,4);default:0" description:"账户级趋势闸阈值%"`
 }
 
 func (r *ArgusAccountRisk) TableName() string { return "argus_account_risk" }

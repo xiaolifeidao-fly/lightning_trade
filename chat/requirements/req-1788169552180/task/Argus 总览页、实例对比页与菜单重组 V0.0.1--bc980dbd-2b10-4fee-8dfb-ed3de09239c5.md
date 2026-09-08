@@ -1,0 +1,69 @@
+---
+format: "delivery-task-planner-chat/v1"
+resourceType: "task"
+resourceKey: "r15-27b9e2f39a"
+requirementKey: "req-1788169552180"
+resourceName: "Argus 总览页、实例对比页与菜单重组"
+conversationTitle: "Argus 总览页、实例对比页与菜单重组 V0.0.1"
+threadId: "bc980dbd-2b10-4fee-8dfb-ed3de09239c5"
+provider: "claude"
+phase: "development"
+lastTurnStatus: "failed"
+archivedAt: "2026-09-02T01:42:16.591401+00:00"
+---
+
+# 任务聊天 · Argus 总览页、实例对比页与菜单重组 V0.0.1
+
+## 第 1 轮 · failed · cUe2mpxeaZ1BGXNPSk3v9g
+
+### 用户
+
+执行「动作执行」阶段：Argus 总览页、实例对比页与菜单重组
+
+### 助手
+
+I'll start by loading the delivery execution skill and reading the requirement docs.
+
+### 助手
+
+I'll start by reading the requirement doc and surveying the current state.
+
+### 助手
+
+Now I'll implement the backend addition — a single aggregated instance-overview endpoint.
+
+### 助手
+
+Now the overview service:
+
+### 助手
+
+Now register the route:
+
+### 助手
+
+Now a unit test for the pure judgment logic, then build:
+
+### 助手
+
+Now the shared instance overview API and the header selector:
+
+### 助手
+
+Now the menu group reorg, quick action, and header selector mount:
+
+### 助手
+
+Now bind the three existing Argus hooks to the shared scope:
+
+### 助手
+
+Now the dashboard API layer:
+
+### 助手
+
+Now the dashboard hook:
+
+<!-- delivery-task-planner-chat-data
+eyJ0dXJucyI6W3siaWQiOiJjVWUybXB4ZWFaMUJHWE5QU2szdjlnIiwic3RhdHVzIjoiZmFpbGVkIiwiY3JlYXRlZEF0IjoiMjAyNi0wOS0wMlQwMTozMTo0NC45MDMyODkrMDA6MDAiLCJjb21wbGV0ZWRBdCI6IjIwMjYtMDktMDJUMDE6NDI6MTYuMTA4NjM3KzAwOjAwIiwiaXRlbXMiOlt7InR5cGUiOiJ1c2VyTWVzc2FnZSIsImNvbnRlbnQiOlt7InR5cGUiOiJ0ZXh0IiwidGV4dCI6IuaJp+ihjOOAjOWKqOS9nOaJp+ihjOOAjemYtuaute+8mkFyZ3VzIOaAu+iniOmhteOAgeWunuS+i+WvueavlOmhteS4juiPnOWNlemHjee7hCJ9XX0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6IkknbGwgc3RhcnQgYnkgbG9hZGluZyB0aGUgZGVsaXZlcnkgZXhlY3V0aW9uIHNraWxsIGFuZCByZWFkaW5nIHRoZSByZXF1aXJlbWVudCBkb2NzLiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6IkknbGwgc3RhcnQgYnkgcmVhZGluZyB0aGUgcmVxdWlyZW1lbnQgZG9jIGFuZCBzdXJ2ZXlpbmcgdGhlIGN1cnJlbnQgc3RhdGUuIiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiTm93IEknbGwgaW1wbGVtZW50IHRoZSBiYWNrZW5kIGFkZGl0aW9uIOKAlCBhIHNpbmdsZSBhZ2dyZWdhdGVkIGluc3RhbmNlLW92ZXJ2aWV3IGVuZHBvaW50LiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6Ik5vdyB0aGUgb3ZlcnZpZXcgc2VydmljZToiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJwaGFzZSI6IiJ9LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiJOb3cgcmVnaXN0ZXIgdGhlIHJvdXRlOiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6Ik5vdyBhIHVuaXQgdGVzdCBmb3IgdGhlIHB1cmUganVkZ21lbnQgbG9naWMsIHRoZW4gYnVpbGQ6Iiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiTm93IHRoZSBzaGFyZWQgaW5zdGFuY2Ugb3ZlcnZpZXcgQVBJIGFuZCB0aGUgaGVhZGVyIHNlbGVjdG9yOiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6Ik5vdyB0aGUgbWVudSBncm91cCByZW9yZywgcXVpY2sgYWN0aW9uLCBhbmQgaGVhZGVyIHNlbGVjdG9yIG1vdW50OiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6Ik5vdyBiaW5kIHRoZSB0aHJlZSBleGlzdGluZyBBcmd1cyBob29rcyB0byB0aGUgc2hhcmVkIHNjb3BlOiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6Ik5vdyB0aGUgZGFzaGJvYXJkIEFQSSBsYXllcjoiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJwaGFzZSI6IiJ9LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiJOb3cgdGhlIGRhc2hib2FyZCBob29rOiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn1dfV19
+-->

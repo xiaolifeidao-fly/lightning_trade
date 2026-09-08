@@ -64,13 +64,16 @@ func NewTradeManager(config *TradingSystemConfig) *TradeManager {
 				acc.Name, vipper.GetFloat64("trade.trend_gate.window_hours"), th)
 		}
 		// P5：启动校验（fail-fast）+ 静态参数打印（动态行在 cap guard 首次初始化时打）
+		// 打印对全部账户执行——配置面收敛到 DB 后，这一行是「DB 解析出来的值与
+		// properties 原值逐项一致」的唯一现场证据；fail-fast 仍只对 trailing 账户
+		// 生效，避免给 fixed 账户凭空加上拒启动条件。
+		view := resolveRiskParamsView(acc, config.Trade.OrderSize)
 		if acc.IsTrailingTP() {
-			view := resolveRiskParamsView(acc, config.Trade.OrderSize)
 			if err := ValidateRiskParams(view); err != nil {
 				logrus.Fatalf("[风险参数] 账户 %s 配置非法, 拒绝启动: %v", acc.Name, err)
 			}
-			logStaticRiskParams(acc, view)
 		}
+		logStaticRiskParams(acc, view)
 	}
 
 	tm := &TradeManager{

@@ -68,6 +68,59 @@ func LoadMainConfigImport(propertiesPath, sessionPath string) (*argusDTO.SaveCon
 	}, nil
 }
 
+// AccountIdentity 一个账户的身份三元组，只含标签、数字 uid 与实验变体，
+// 不含任何凭证。
+type AccountIdentity struct {
+	Name    string
+	UID     string
+	Variant string
+}
+
+// InstanceAccounts 一份部署 properties 里的实例键与账户身份清单。
+type InstanceAccounts struct {
+	InstanceKey string
+	SourceFile  string
+	Accounts    []AccountIdentity
+}
+
+// LoadInstanceAccounts 只读出实例键与 account 标签 → uid 映射，不碰
+// session.json、不解析任何凭证字段。
+//
+// 历史事件回灌需要它：eventlog 的 account 字段存的是 acc.Name（人起的标签，
+// 含邮箱），数字 uid 从来没进过事件（实测 9.9 万条历史事件里零出现），
+// 任何字符串解析都不可能从标签恢复出 uid，只能从配置构建映射。
+// 映射按实例隔离——不同实例各有一个「账户A-…」，指向不同的真实账户。
+func LoadInstanceAccounts(propertiesPath string) (InstanceAccounts, error) {
+	if err := validateInstancePropertiesFile(propertiesPath); err != nil {
+		return InstanceAccounts{}, err
+	}
+	properties, err := readProperties(propertiesPath)
+	if err != nil {
+		return InstanceAccounts{}, err
+	}
+	accountCount, err := requiredPositiveInt(properties, "trade.account_count")
+	if err != nil {
+		return InstanceAccounts{}, err
+	}
+	result := InstanceAccounts{
+		InstanceKey: strings.TrimSpace(properties[instanceIDPropertyKey]),
+		SourceFile:  filepath.Base(propertiesPath),
+	}
+	for index := 1; index <= accountCount; index++ {
+		prefix := fmt.Sprintf("trade.account%d.", index)
+		name := strings.TrimSpace(properties[prefix+"name"])
+		if name == "" {
+			return InstanceAccounts{}, fmt.Errorf("%sname is required in %s", prefix, result.SourceFile)
+		}
+		result.Accounts = append(result.Accounts, AccountIdentity{
+			Name:    name,
+			UID:     strings.TrimSpace(properties[prefix+"uid"]),
+			Variant: strings.TrimSpace(properties[prefix+"variant"]),
+		})
+	}
+	return result, nil
+}
+
 type importSessionFile struct {
 	Accounts map[string]importSession `json:"accounts"`
 }
@@ -173,6 +226,14 @@ func buildImportRequest(properties map[string]string, sessionByKey map[string]im
 			MonitorIntervalSecond: integer(properties, "position.monitor.interval_seconds", 5),
 			ProfitThreshold:       decimal(properties, "position.monitor.profit_threshold", 0),
 			LossThreshold:         decimal(properties, "position.monitor.loss_threshold", 0),
+			// r5：以下六项此前 DB 无列，只能留在 properties。缺省 0 = 未配置，
+			// 运行时按「DB 优先 vipper 兜底」回退，不会把默认值当成显式配置。
+			ContractFace:            decimal(properties, "position.risk.contract_face", 0),
+			SignalDelaySecond:       integer(properties, "trade.signal.delay_seconds", 0),
+			SpreadMaxPriceAgeMs:     integer(properties, "monitor.spread.max_price_age_ms", 0),
+			TrendGateWindowHour:     decimal(properties, "trade.trend_gate.window_hours", 0),
+			TrendGateThresholdPct:   decimal(properties, "trade.trend_gate.threshold_pct", 0),
+			ReverseGateMinProfitPct: decimal(properties, "position.risk.reverse_gate_min_profit_pct", 0),
 		},
 	}
 	if request.Config.ServerPort == 0 || request.Config.MonitorIntervalSecond <= 0 {
@@ -276,11 +337,19 @@ func importRisk(properties map[string]string, prefix string, index int) argusDTO
 		TakeProfitMode:        stringOr(properties, prefix+"tp_mode", "fixed"),
 		StopLossMode:          "catastrophic",
 		TrailingStopTiersJSON: string(trailJSON),
-		RiskBudget:            decimal(properties, "position.risk.budget_pct", 0),
-		CatastrophicStopLoss:  decimal(properties, "position.monitor.catastrophe_stop_pct", 0),
-		ReverseGateEnabled:    reverseGate,
-		MaxContracts:          integer(properties, prefix+"max_contracts_ceiling", integer(properties, "position.risk.max_contracts_ceiling", 0)),
-		ExtraRiskJSON:         string(extra),
+		// 账户级覆盖优先、全局兜底，与运行时 AccFloat 的解析顺序保持一致；
+		// 原来只读全局键，application_1.properties 的 champion/challenger
+		// 差异（budget_pct 13.3 / catastrophe 400）会在导入时被抹平。
+		RiskBudget:           decimal(properties, prefix+"budget_pct", decimal(properties, "position.risk.budget_pct", 0)),
+		CatastrophicStopLoss: decimal(properties, prefix+"catastrophe_stop_pct", decimal(properties, "position.monitor.catastrophe_stop_pct", 0)),
+		ReverseGateEnabled:   reverseGate,
+		MaxContracts:         integer(properties, prefix+"max_contracts_ceiling", integer(properties, "position.risk.max_contracts_ceiling", 0)),
+		ExtraRiskJSON:        string(extra),
+		// r5：账户级参数此前 DB 无列，champion/challenger 的差异只存在于 properties。
+		OrderSize:               integer(properties, prefix+"order_size", 0),
+		RiskEquity:              decimal(properties, prefix+"risk_equity", 0),
+		ReverseGateMinProfitPct: decimal(properties, prefix+"reverse_gate_min_profit_pct", 0),
+		TrendGateThresholdPct:   decimal(properties, prefix+"trend_gate_threshold_pct", 0),
 	}
 }
 

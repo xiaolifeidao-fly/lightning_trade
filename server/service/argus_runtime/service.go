@@ -3,24 +3,19 @@ package argus_runtime
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strings"
 	"sync"
-	"time"
 
 	commonRedis "common/middleware/redis"
 
 	goRedis "github.com/go-redis/redis"
 )
 
-const (
-	ActionStart   = "start"
-	ActionStop    = "stop"
-	ActionRestart = "restart"
-	ActionReload  = "reload"
-)
+// ActionReload 是本服务唯一保留的运行控制动作。start / stop / restart 已下线：
+// 停进程后持仓仍挂在交易所，但移动止盈、兜底止损与平仓监控全部失效，比不停更
+// 危险；且 Control() 走的是本机 control.sh，对部署在别的机器上的实例根本不可达。
+// 进程启停留在运维侧（SSH + script/control.sh），紧急刹车走参数热更新
+// （order_size = 0，暂停新开仓但继续看管已有持仓）。
+const ActionReload = "reload"
 
 type Status struct {
 	Online    bool                        `json:"online"`
@@ -33,28 +28,11 @@ type ControlResult struct {
 }
 
 type ArgusRuntimeService struct {
-	controlScript string
-	timeout       time.Duration
-	controlMu     sync.Mutex
+	controlMu sync.Mutex
 }
 
-func NewArgusRuntimeService(controlScript string) (*ArgusRuntimeService, error) {
-	resolved, err := filepath.Abs(controlScript)
-	if err != nil {
-		return nil, fmt.Errorf("resolve argus control script: %w", err)
-	}
-	resolved, err = filepath.EvalSymlinks(resolved)
-	if err != nil {
-		return nil, fmt.Errorf("resolve argus control script symlink: %w", err)
-	}
-	info, err := os.Stat(resolved)
-	if err != nil {
-		return nil, fmt.Errorf("stat argus control script: %w", err)
-	}
-	if info.IsDir() || info.Mode()&0111 == 0 || filepath.Base(resolved) != "control.sh" {
-		return nil, fmt.Errorf("argus control script must be an executable control.sh file")
-	}
-	return &ArgusRuntimeService{controlScript: resolved, timeout: 30 * time.Second}, nil
+func NewArgusRuntimeService() *ArgusRuntimeService {
+	return &ArgusRuntimeService{}
 }
 
 func (s *ArgusRuntimeService) Status(ctx context.Context, instanceID string) (*Status, error) {
@@ -68,24 +46,11 @@ func (s *ArgusRuntimeService) Status(ctx context.Context, instanceID string) (*S
 	return &Status{Online: true, Heartbeat: &heartbeat}, nil
 }
 
-func (s *ArgusRuntimeService) Control(ctx context.Context, action string) (*ControlResult, error) {
-	if action != ActionStart && action != ActionStop && action != ActionRestart {
-		return nil, fmt.Errorf("unsupported argus control action: %s", action)
-	}
-	s.controlMu.Lock()
-	defer s.controlMu.Unlock()
-
-	commandCtx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-	output, err := exec.CommandContext(commandCtx, s.controlScript, action).CombinedOutput()
-	result := &ControlResult{Action: action, Output: strings.TrimSpace(string(output))}
-	if err != nil {
-		return result, fmt.Errorf("execute argus %s: %w", action, err)
-	}
-	return result, nil
-}
-
+// Reload 通过 Redis 广播定向到某个实例，是唯一可以跨机器抵达的运行控制通道。
 func (s *ArgusRuntimeService) Reload(ctx context.Context, instanceID string) (*ControlResult, error) {
+	if instanceID == "" {
+		return nil, fmt.Errorf("argus instance id is required")
+	}
 	s.controlMu.Lock()
 	defer s.controlMu.Unlock()
 	if err := commonRedis.PublishArgusControl(ctx, ActionReload, instanceID); err != nil {

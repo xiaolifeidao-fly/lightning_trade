@@ -21,14 +21,16 @@ type RiskParamsView struct {
 	TierSmall, TierLarge float64
 }
 
-// ResolveRiskEquity 风险计算基数：trade.accountN.risk_equity 显式配置优先，
-// 缺省=InitialBalance（零行为变化）。
+// ResolveRiskEquity 风险计算基数：argus_account_risk.risk_equity 显式配置优先，
+// 其次 properties 的 trade.accountN.risk_equity，缺省=InitialBalance（零行为变化）。
 // 制度性护栏（合并设计 P5）：risk_equity 只能来自配置，禁止任何"运行时余额→cap"
 // 的自动路径——cap 变更一律走 challenger/OOS 审批后改配置。
+//
+// r5 之前这里有一条 `RiskBudget > 0 即回 InitialBalance` 的短路，用来防止 DB 驱动
+// 时 properties 的 risk_equity 漏进来；risk_equity 有了自己的列之后，
+// AccFloat 的「DB 优先 vipper 兜底」已经表达了同一件事，短路反而会把 DB 里
+// 显式配置的 risk_equity 挡掉，故移除。
 func ResolveRiskEquity(acc AccountConfig) float64 {
-	if acc.RiskBudget > 0 {
-		return acc.InitialBalance
-	}
 	return AccFloat(acc.Index, "risk_equity", "", acc.InitialBalance)
 }
 
@@ -99,11 +101,33 @@ func ValidateRiskParams(v RiskParamsView) error {
 	return nil
 }
 
+// ValidateAccounts 用当前已安装的参数覆盖层校验一份候选账户配置。
+//
+// 存在的理由：移动止盈档位等参数收敛到 DB 之后就变成了可热更新项，而
+// NewTradeManager 校验不过是 logrus.Fatalf——一次误发布会直接打死正在扛仓的
+// 进程，比不生效危险得多。热加载路径先用它做一次可返回错误的预校验，
+// 不合法就拒绝这份快照、继续跑旧配置。启动路径仍保留 Fatalf 的 fail-fast。
+func ValidateAccounts(config *TradingSystemConfig) error {
+	if config == nil {
+		return fmt.Errorf("trading system config is nil")
+	}
+	for _, acc := range config.Accounts {
+		if !acc.IsTrailingTP() {
+			continue
+		}
+		if err := ValidateRiskParams(resolveRiskParamsView(acc, config.Trade.OrderSize)); err != nil {
+			return fmt.Errorf("账户 %s 风险参数非法: %w", acc.Name, err)
+		}
+	}
+	return nil
+}
+
 // logStaticRiskParams 启动时打印静态参数行（P5 两段式打印之一；
 // 动态行 P/N_formula/N_effective/档位 在 cap guard 首次成功初始化时打印）。
 func logStaticRiskParams(acc AccountConfig, v RiskParamsView) {
 	logrus.Infof("[风险参数] %s risk_equity=%.2f f=%.1f%% S=%.0f ceiling=%d order_size=%d gate_min=%.1f "+
-		"trail=[小%.0f/%.2f 中%.0f/%.2f 大%.0f/%.2f] tier=[%.2f,%.2f]",
+		"trail=[小%.0f/%.2f 中%.0f/%.2f 大%.0f/%.2f] tier=[%.2f,%.2f] logic=%s variant=%s sl_mode=%s",
 		acc.Name, v.RiskEquity, v.BudgetPct, v.StopPct, v.Ceiling, v.OrderSize, v.GateMin,
-		v.SmallAct, v.SmallGb, v.MedAct, v.MedGb, v.LargeAct, v.LargeGb, v.TierSmall, v.TierLarge)
+		v.SmallAct, v.SmallGb, v.MedAct, v.MedGb, v.LargeAct, v.LargeGb, v.TierSmall, v.TierLarge,
+		acc.TradeLogic, acc.Variant, acc.StopLossMode)
 }

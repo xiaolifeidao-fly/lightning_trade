@@ -427,7 +427,7 @@ func (s *TradeService) CreateBacktestRun(dto tradeDTO.CreateBacktestRunDTO) (int
 
 // ListBacktestRuns 分页查询回测任务。
 func (s *TradeService) ListBacktestRuns(dto tradeDTO.BacktestRunQueryDTO) (*tradeDTO.BacktestRunListDTO, error) {
-	rows, total, err := s.tradeBacktestRunRepository.FindRuns(dto.Symbol, dto.StrategyID, dto.Page, dto.PageSize)
+	rows, total, err := s.tradeBacktestRunRepository.FindRuns(dto.Symbol, dto.StrategyID, dto.EngineKind, dto.Page, dto.PageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -512,7 +512,10 @@ func (s *TradeService) GetBacktestMetrics(runIDs []int64) ([]tradeDTO.BacktestMe
 	}
 	out := make([]tradeDTO.BacktestMetricDTO, 0, len(rows))
 	for _, m := range rows {
-		if m.CalcMode != "" && m.CalcMode != CalcModePrediction {
+		// 预测驱动的 run 会有 prediction / trading 两套指标，横向对比只取
+		// prediction 这一套避免重复行；信号驱动的 run 只有 signal 一套，
+		// 一并放行（否则 r11 的参数组对比拿不到指标）。
+		if m.CalcMode != "" && m.CalcMode != CalcModePrediction && m.CalcMode != CalcModeSignal {
 			continue
 		}
 		out = append(out, backtestMetricToDTO(m))
@@ -702,7 +705,23 @@ func backtestRunToDTO(r *tradeRepository.TradeBacktestRun) tradeDTO.BacktestRunD
 		KlineCount:         r.KlineCount,
 		KlineStart:         fmtTimePtr(r.KlineStart),
 		KlineEnd:           fmtTimePtr(r.KlineEnd),
+		EngineKind:         normalizeEngineKind(r.EngineKind),
+		InstanceKey:        r.InstanceKey,
+		AccountLabel:       r.AccountLabel,
+		SignalSource:       r.SignalSource,
+		Fidelity:           r.Fidelity,
+		FidelityNote:       r.FidelityNote,
+		SignalCount:        r.SignalCount,
 	}
+}
+
+// normalizeEngineKind 既有行的 engine_kind 可能是空串（列刚加上、default 只作用于
+// 新插入的行）。读侧统一回落成 prediction，前端不必处理空值分支。
+func normalizeEngineKind(kind string) string {
+	if strings.TrimSpace(kind) == "" {
+		return EngineKindPrediction
+	}
+	return kind
 }
 
 func backtestTradeToDTO(t *tradeRepository.TradeBacktestTrade) tradeDTO.BacktestTradeDTO {
@@ -742,6 +761,11 @@ func backtestTradeToDTO(t *tradeRepository.TradeBacktestTrade) tradeDTO.Backtest
 		MaxPriceDuringHold: t.MaxPriceDuringHold,
 		MinPriceDuringHold: t.MinPriceDuringHold,
 		FavPeakDeciles:     parseFavPeakDeciles(t.FavPeakDeciles),
+		Contracts:          t.Contracts,
+		MaxContracts:       t.MaxContracts,
+		AddCount:           t.AddCount,
+		PeakPct:            t.PeakPct,
+		ReducedPnl:         t.ReducedPnl,
 		Leverage:           t.Leverage,
 	}
 }
@@ -782,6 +806,27 @@ func backtestMetricToDTO(m *tradeRepository.TradeBacktestMetric) tradeDTO.Backte
 		EarlyCutCount:     m.EarlyCutCount,
 		EarlyAdverseCount: m.EarlyAdverseCount,
 		TimeoutCount:      m.TimeoutCount,
+		// 盘口信号回测专用。精度等级跟着每一行 metric 走，横向对比页据此
+		// 分组——事件级与频率级排进同一张榜就是"寻优误导"的直接来源。
+		Fidelity:         m.Fidelity,
+		FidelityNote:     m.FidelityNote,
+		SignalCount:      m.SignalCount,
+		SignalDropped:    m.SignalDropped,
+		SignalFiltered:   m.SignalFiltered,
+		CapSkipCount:     m.CapSkipCount,
+		GateSkipCount:    m.GateSkipCount,
+		TrendSkipCount:   m.TrendSkipCount,
+		ReduceCount:      m.ReduceCount,
+		ReduceCloseCount: m.ReduceCloseCount,
+		EodOpenCount:     m.EodOpenCount,
+		MaxStack:         m.MaxStack,
+		CapEffective:     m.CapEffective,
+		RealizedPnl:      m.RealizedPnl,
+		FloatingPnl:      m.FloatingPnl,
+		MaxDrawdownPct:   m.MaxDrawdownPct,
+		LambdaPerDay:     m.LambdaPerDay,
+		LambdaRatio:      m.LambdaRatio,
+		LambdaSelfTest:   m.LambdaSelfTest,
 	}
 }
 

@@ -80,6 +80,13 @@ type ConfigDTO struct {
 	LoginScheduledMinute        uint8   `json:"loginScheduledMinute"`
 	SessionMaxAgeDay            int     `json:"sessionMaxAgeDay"`
 	ExtraConfigJSON             string  `json:"extraConfigJson,omitempty"`
+	// r5 收敛进来的全局策略参数，0 表示未配置（运行时回退 properties）。
+	ContractFace            float64 `json:"contractFace"`
+	SignalDelaySecond       int     `json:"signalDelaySecond"`
+	SpreadMaxPriceAgeMs     int     `json:"spreadMaxPriceAgeMs"`
+	TrendGateWindowHour     float64 `json:"trendGateWindowHour"`
+	TrendGateThresholdPct   float64 `json:"trendGateThresholdPct"`
+	ReverseGateMinProfitPct float64 `json:"reverseGateMinProfitPct"`
 }
 
 type AccountDTO struct {
@@ -115,6 +122,11 @@ type AccountRiskDTO struct {
 	ReverseGateEnabled    uint8   `json:"reverseGateEnabled"`
 	MaxContracts          int     `json:"maxContracts"`
 	ExtraRiskJSON         string  `json:"extraRiskJson,omitempty"`
+	// r5 收敛进来的账户级策略参数，0 表示未配置（运行时回退 properties）。
+	OrderSize               int     `json:"orderSize"`
+	RiskEquity              float64 `json:"riskEquity"`
+	ReverseGateMinProfitPct float64 `json:"reverseGateMinProfitPct"`
+	TrendGateThresholdPct   float64 `json:"trendGateThresholdPct"`
 }
 
 type MonitorSymbolDTO struct {
@@ -135,14 +147,20 @@ type NotificationDTO struct {
 }
 
 type RuntimeSessionDTO struct {
-	ID               uint64     `json:"id"`
-	AccountID        uint64     `json:"accountId"`
-	Cookie           string     `json:"cookie,omitempty"`
-	Token            string     `json:"token,omitempty"`
-	OToken           string     `json:"otoken,omitempty"`
-	SentryRelease    string     `json:"sentryRelease,omitempty"`
-	SentryPublicKey  string     `json:"sentryPublicKey,omitempty"`
-	Baggage          string     `json:"baggage,omitempty"`
+	ID              uint64 `json:"id"`
+	AccountID       uint64 `json:"accountId"`
+	Cookie          string `json:"cookie,omitempty"`
+	Token           string `json:"token,omitempty"`
+	OToken          string `json:"otoken,omitempty"`
+	SentryRelease   string `json:"sentryRelease,omitempty"`
+	SentryPublicKey string `json:"sentryPublicKey,omitempty"`
+	Baggage         string `json:"baggage,omitempty"`
+	// CookieLength / TokenLength 只回明文长度，不回明文本身。会话卡片是只读巡检，
+	// 运维要判断的是「有没有、是不是被截断了」，长度足够，回显 950 字符的 cookie
+	// 只会扩大泄露面。
+	CookieLength     int        `json:"cookieLength"`
+	TokenLength      int        `json:"tokenLength"`
+	OTokenLength     int        `json:"otokenLength"`
 	LoginURL         string     `json:"loginUrl"`
 	FinalURL         string     `json:"finalUrl"`
 	Valid            uint8      `json:"valid"`
@@ -178,4 +196,65 @@ type PublishConfigRequest struct {
 	// InstanceKey 指定发布目标实例；为空时由服务端按默认实例解析。
 	InstanceKey string `json:"instanceKey"`
 	ReleaseNote string `json:"releaseNote"`
+}
+
+// RollbackConfigRequest 回滚到某个已归档版本。回滚不新建版本，沿用该历史版本
+// 自身的版本号与不可变快照。
+type RollbackConfigRequest struct {
+	InstanceKey string `json:"instanceKey"`
+	ReleaseNote string `json:"releaseNote"`
+}
+
+// InstanceRuntimeDTO 是一个部署实例的「注册信息 + 已发布版本 + 心跳生效状态」三合一
+// 视图，供 Argus 总览页与实例对比页横向铺开。
+//
+// 版本漂移的口径只有一个：**同一个实例**的已发布版本 vs 该实例心跳回报的版本。
+// 版本号是实例内自增的，跨实例比大小没有意义（实例1 的 v37 与实例3 的 v36 是两条
+// 独立序列），所以这里不给「谁比谁新」这类字段。
+type InstanceRuntimeDTO struct {
+	InstanceKey  string `json:"instanceKey"`
+	InstanceName string `json:"instanceName"`
+	Description  string `json:"description,omitempty"`
+	ConfigSource string `json:"configSource,omitempty"`
+	Enabled      uint8  `json:"enabled"`
+
+	// PublishedVersion 为 0 表示该实例还没有已发布版本（只有草稿或全空）。
+	PublishedVersion  uint64     `json:"publishedVersion"`
+	PublishedChecksum string     `json:"publishedChecksum"`
+	PublishedAt       *time.Time `json:"publishedAt,omitempty"`
+	PublishedBy       string     `json:"publishedBy,omitempty"`
+
+	// Online 以心跳键是否还在（TTL 15s）为准，不看进程列表——实例可能部署在别的机器上。
+	Online              bool       `json:"online"`
+	HeartbeatAgeSeconds *int       `json:"heartbeatAgeSeconds,omitempty"`
+	HeartbeatAt         *time.Time `json:"heartbeatAt,omitempty"`
+	RunningVersion      uint64     `json:"runningVersion"`
+	RunningChecksum     string     `json:"runningChecksum,omitempty"`
+	Health              string     `json:"health,omitempty"`
+	Pid                 int        `json:"pid"`
+	BuildVersion        string     `json:"buildVersion,omitempty"`
+	StartedAt           *time.Time `json:"startedAt,omitempty"`
+	LastReloadAt        *time.Time `json:"lastReloadAt,omitempty"`
+	LastReloadSuccess   *bool      `json:"lastReloadSuccess,omitempty"`
+	LastReloadError     string     `json:"lastReloadError,omitempty"`
+
+	// EffectState 与 r7 参数页前端同一套取值：effective / awaiting / drift / offline / unknown。
+	EffectState string `json:"effectState"`
+	// VersionDrift 心跳版本与已发布版本号不一致；ChecksumDrift 版本号一致但快照校验和不同
+	// （同一版本号被重新发布过，进程还在跑旧快照）。老构建不上报 checksum 时后者恒为 false。
+	VersionDrift  bool `json:"versionDrift"`
+	ChecksumDrift bool `json:"checksumDrift"`
+}
+
+// InstanceOverviewDTO 实例总览返回体。
+type InstanceOverviewDTO struct {
+	Instances []InstanceRuntimeDTO `json:"instances"`
+	// DuplicateInstanceKeys 是 argus_instance 里出现重复的实例键。历史库缺唯一索引时
+	// 才可能非空；一旦非空，配置发布与心跳都可能串实例，页面必须显式告警而不是静默。
+	DuplicateInstanceKeys []string `json:"duplicateInstanceKeys"`
+	// DriftInstanceKeys 已发布但心跳尚未确认生效的实例键，供页面直接做角标。
+	DriftInstanceKeys []string `json:"driftInstanceKeys"`
+	// OfflineInstanceKeys 没有心跳的实例键。
+	OfflineInstanceKeys []string `json:"offlineInstanceKeys"`
+	Notice              string   `json:"notice"`
 }

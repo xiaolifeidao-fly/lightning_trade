@@ -58,11 +58,15 @@ type ConfigVersionMessage struct {
 }
 
 type ArgusHeartbeat struct {
-	InstanceID        string     `json:"instanceId"`
-	PID               int        `json:"pid"`
-	StartedAt         time.Time  `json:"startedAt"`
-	BuildVersion      string     `json:"buildVersion"`
-	Version           uint64     `json:"version"`
+	InstanceID   string    `json:"instanceId"`
+	PID          int       `json:"pid"`
+	StartedAt    time.Time `json:"startedAt"`
+	BuildVersion string    `json:"buildVersion"`
+	Version      uint64    `json:"version"`
+	// ConfigChecksum 是进程实际加载的快照校验和。管理端判定「已生效」时要
+	// version 与 checksum 同时对上：同一版本号被重新发布后 checksum 会变，
+	// 只看版本号会把「还在跑旧快照」误判成已生效。
+	ConfigChecksum    string     `json:"configChecksum,omitempty"`
 	LastReloadAt      *time.Time `json:"lastReloadAt,omitempty"`
 	LastReloadSuccess *bool      `json:"lastReloadSuccess,omitempty"`
 	LastReloadError   string     `json:"lastReloadError,omitempty"`

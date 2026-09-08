@@ -96,6 +96,15 @@ func InitAccountMonitor() {
 	})
 }
 
+// ApplyAccountMonitorParams 把配置快照里的持仓巡检参数热更新到账户监控器。
+// 监控器尚未初始化时静默返回：初始化路径会在构造时从 vipper 读到同一批值。
+func ApplyAccountMonitorParams(intervalSecond int, profitThreshold, lossThreshold float64) {
+	if globalAccountMonitor == nil {
+		return
+	}
+	globalAccountMonitor.ApplyParams(intervalSecond, profitThreshold, lossThreshold)
+}
+
 // StartAccountMonitor 启动全局账户监控器
 func StartAccountMonitor() {
 	if globalAccountMonitor == nil {

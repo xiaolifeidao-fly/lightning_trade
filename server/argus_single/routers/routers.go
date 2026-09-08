@@ -13,6 +13,7 @@ import (
 	"common/middleware/vipper"
 
 	"argus_single/middleware"
+	"argus_single/pkg/eventstore"
 	"argus_single/pkg/monitor"
 	"argus_single/pkg/runtimehealth"
 
@@ -89,6 +90,10 @@ func Run(middleware ...gin.HandlerFunc) error {
 	log.Println("正在停止账户监控并保存 trail 状态...")
 	monitor.StopAccountMonitor()
 	runtimehealth.StopDefaultReporter()
+
+	// 同理：停掉事件双写并把队列里积压的事件尽量落库。超时即放弃——
+	// JSONL 是真源，没写进去的部分可以事后回灌，绝不为此拖住进程退出。
+	eventstore.Shutdown(3 * time.Second)
 
 	log.Println("服务器已关闭")
 	return nil

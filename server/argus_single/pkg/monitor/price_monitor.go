@@ -51,6 +51,11 @@ type PriceMonitor struct {
 	lastDevFlush       map[string]time.Time       // 上次 dev_sample 落盘时间（受 signalMu 保护）
 	trendTrackers      map[string]*TrendTracker   // 趋势闸动量源（8/21 补丁，受 signalMu 保护）
 	trendWindow        time.Duration              // 趋势闸窗口（trade.trend_gate.window_hours，默认 24h）
+	// 触发瞬间 ±1min 秒级切片（r3）。sliceMu 是叶子锁：唯一获取点在
+	// slice_buffer.go，获取时绝不持有 mu/signalMu，因此不引入新的锁序。
+	sliceMu       sync.Mutex
+	sliceBuffers  map[string]*SliceBuffer   // 双 WS 流的秒级环形缓冲（受 sliceMu 保护）
+	slicePendings map[string][]slicePending // 已触发、等右半窗凑满的切片（受 sliceMu 保护）
 }
 
 // NewPriceMonitor 创建价格监控器
@@ -81,6 +86,8 @@ func NewPriceMonitor(symbolConfigs map[string]SymbolConfig) *PriceMonitor {
 		lastDevFlush:       make(map[string]time.Time),
 		trendTrackers:      make(map[string]*TrendTracker),
 		trendWindow:        time.Duration(trendWindowHours * float64(time.Hour)),
+		sliceBuffers:       make(map[string]*SliceBuffer),
+		slicePendings:      make(map[string][]slicePending),
 	}
 }
 
@@ -106,6 +113,10 @@ func (pm *PriceMonitor) Start() {
 		go pm.subscribeDeepCoin(symbol)
 		// go pm.subscribeDeepCoin_V2(symbol)
 	}
+
+	// 秒级切片落盘时钟：右半窗要等 60 秒，落盘节奏不能挂在行情 tick 上。
+	pm.wg.Add(1)
+	go pm.runSliceFlusher()
 
 	logrus.Infof("✅ 已启动多币种监听：%v", pm.getSymbolList())
 }
@@ -675,6 +686,10 @@ func (pm *PriceMonitor) handleBinanceMessage(symbol string, message []byte) {
 	binTime := pm.binancePriceTimes[symbol]
 	pm.mu.Unlock()
 
+	// 秒级切片：币安流自己落槽（锁外，叶子锁）。不复用 DC tick 时刻去读
+	// binancePrices 缓存——那样 DC 断流的那几秒币安侧会跟着变空。
+	pm.observeSliceBinance(binTime, symbol, price)
+
 	// 检查价差（在goroutine外检查，避免重复发送）
 	if deepPrice > 0 {
 		pm.checkPriceDiff(symbol, price, deepPrice, binTime, deepTime)
@@ -1061,6 +1076,10 @@ func (pm *PriceMonitor) handleOrderBookSignal(symbol string, dataField map[strin
 	deviation := (lastPrice - markedPrice) / markedPrice
 
 	now := time.Now()
+	// 秒级切片：DeepCoin 报价 tick 落槽。必须在 signalMu 之前——sliceMu 是叶子锁，
+	// 嵌进 signalMu 临界区就凭空多出一条锁序。
+	pm.observeSliceQuote(now, symbol, lastPrice, markedPrice)
+
 	pm.signalMu.Lock()
 	direction, fire := EvaluateDeviationSignal(deviation, threshold, pm.lastDerivedSignal[symbol])
 	pm.lastDerivedSignal[symbol] = direction
@@ -1077,6 +1096,10 @@ func (pm *PriceMonitor) handleOrderBookSignal(symbol string, dataField map[strin
 	if !fire {
 		return
 	}
+
+	// 登记一条 ±1min 秒级切片。右半窗还没发生，落盘要等 60 秒（见 runSliceFlusher）；
+	// 同秒多账户重复触发只登记一次（切片按 instance/instrument/ts 唯一）。
+	pm.armSlice(now, symbol, config.TradeInst)
 
 	source := fmt.Sprintf("LastPrice/MarkedPrice %.4f%%", deviation*100)
 	logrus.Infof("[%s] 由盘口价格偏离生成信号: signal=%s, LastPrice=%.8f, MarkedPrice=%.8f, deviation=%.4f%%, threshold=%.4f%%",

@@ -22,6 +22,10 @@ const CORS_HEADERS = [
 
 const nextConfig = {
     // basePath: "/indo-whatsapp",
+    // standalone：产出自包含的 .next/standalone（含目标平台的 sharp / swc 与最小
+    // node_modules），服务器只需 node 运行时，不必装 pnpm。启动方式随之变为
+    // `node server.js` + PORT 环境变量，见 pm2.config.js。
+    output: 'standalone',
     env: {
       JWT_SECRET : process.env.JWT_SECRET,
       SERVER_TARGET : process.env.SERVER_TARGET,

@@ -2,54 +2,22 @@ package argus_runtime
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestControlRejectsUnsupportedAction(t *testing.T) {
-	script := writeControlScript(t)
-	service, err := NewArgusRuntimeService(script)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.Control(context.Background(), "restart; rm -rf /"); err == nil {
-		t.Fatal("expected unsupported action error")
+func TestReloadRequiresInstanceID(t *testing.T) {
+	service := NewArgusRuntimeService()
+	if _, err := service.Reload(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "instance id") {
+		t.Fatalf("error = %v, want instance id validation", err)
 	}
 }
 
-func TestControlExecutesOnlyFixedAction(t *testing.T) {
-	script := writeControlScript(t)
-	service, err := NewArgusRuntimeService(script)
-	if err != nil {
-		t.Fatal(err)
+// Redis 未初始化时 Reload 必须报错而不是静默成功，否则页面会显示「已下发」
+// 但实例其实什么都没收到。
+func TestReloadReportsPublishFailure(t *testing.T) {
+	service := NewArgusRuntimeService()
+	if _, err := service.Reload(context.Background(), "argus-single-1"); err == nil {
+		t.Fatal("expected publish failure without redis")
 	}
-	result, err := service.Control(context.Background(), ActionRestart)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Action != ActionRestart || result.Output != "restart" {
-		t.Fatalf("unexpected control result: %+v", result)
-	}
-}
-
-func TestNewRequiresExecutableControlScript(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "not-control.sh")
-	if err := os.WriteFile(path, []byte("#!/usr/bin/env bash\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	_, err := NewArgusRuntimeService(path)
-	if err == nil || !strings.Contains(err.Error(), "control.sh") {
-		t.Fatalf("error = %v, want control.sh validation", err)
-	}
-}
-
-func writeControlScript(t *testing.T) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "control.sh")
-	if err := os.WriteFile(path, []byte("#!/usr/bin/env bash\nprintf '%s\\n' \"$1\"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return path
 }

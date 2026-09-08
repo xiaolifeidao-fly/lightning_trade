@@ -1,0 +1,141 @@
+---
+format: "delivery-task-planner-chat/v1"
+resourceType: "task"
+resourceKey: "r5-e2328de9a4"
+requirementKey: "req-1788169552180"
+resourceName: "配置面完整收敛到 DB + 生效兜底轮询"
+conversationTitle: "配置面完整收敛到 DB + 生效兜底轮询 V0.0.1"
+threadId: "9d3baf9a-b0c7-453e-b261-a333e4831ce1"
+provider: "claude"
+phase: "development"
+lastTurnStatus: "completed"
+archivedAt: "2026-09-02T01:07:54.924252+00:00"
+---
+
+# 任务聊天 · 配置面完整收敛到 DB + 生效兜底轮询 V0.0.1
+
+## 第 1 轮 · completed · xV74F3BIDwdUFDAQvAinyA
+
+### 用户
+
+执行「动作执行」阶段：配置面完整收敛到 DB + 生效兜底轮询
+
+### 助手
+
+I'll start by loading the delivery execution skill, then read the requirement docs and survey the actual code.
+
+### 助手
+
+I'll start by reading the requirement docs and loading the project's backend development skill.
+
+### 助手
+
+Baseline noted: `server/service/argus_event/` is an untracked, currently-broken parallel work-in-progress (not mine). I'll build around it. Starting implementation.
+
+### 助手
+
+Now the DTOs and service mappers:
+
+### 助手
+
+Now the importer — populate the new columns and fix account-level budget/catastrophe fidelity:
+
+### 助手
+
+Now the account monitor hot-reload of interval/thresholds:
+
+### 助手
+
+Now add the package-level hot-apply entry in `monitor.go` and wire up `runtimeconfig`:
+
+### 助手
+
+Now the core `runtimeconfig` changes:
+
+### 助手
+
+Now wire it into `runtime.go`:
+
+### 助手
+
+Now `applyRuntimeConfig` / `ApplyInitial` / the fallback poller:
+
+### 助手
+
+One safety gap my change opens: trail params are now hot-reloadable, and `NewTradeManager` calls `logrus.Fatalf` on illegal risk params — a bad publish could kill a live process holding positions. Pre-validating before swap:
+
+### 助手
+
+All four modules build, vet, and test clean. Now writing the design-process document:
+
+### 助手
+
+实现完成，四个模块 build / vet / test 全绿。
+
+## 改了什么
+
+**数据层 `server/service/argus_config/`**
+- `repository/model.go`：`ArgusConfig` 加 6 列（`contract_face`、`signal_delay_second`、`spread_max_price_age_ms`、`trend_gate_window_hour`、`trend_gate_threshold_pct`、`reverse_gate_min_profit_pct`）；`ArgusAccountRisk` 加 4 列（`order_size`、`risk_equity`、`reverse_gate_min_profit_pct`、`trend_gate_threshold_pct`）。全部 `default 0` = 未配置，`AutoMigrate` 自动加列，无需回填。
+- `dto/dto.go` + `service.go`：10 个字段进 `ConfigDTO`/`AccountRiskDTO` 及四个 entity/dto 映射，接口签名不变，r7 编辑页可直接用。
+- `importer.go`：10 个新字段从 properties 导入（缺省 0 而非运行时默认值，保住兜底语义）；**顺带修了一个会让验收 6.1-3 直接失败的 bug**——`RiskBudget`/`CatastrophicStopLoss` 原来只读全局键，`application_1.properties` 的 champion(cap26/S400) 与 challenger(cap8/S400) 差异在导入时被抹平，改为账户级优先、全局兜底。
+
+**`server/argus_single/pkg/trade/`**
+- 新增 `param_overrides.go`：`ParamOverrides` 覆盖层 + `SetParamOverrides`（装载时 clone）。
+- `account_params.go`：`AccFloat` 改为「DB 覆盖层 → properties 账户键 → 全局键 → 默认值」，**签名不变**，13 个调用点零改动。`AccInt` 随之生效。
+- `config.go`：抽出 `NormalizeAccountConfig()` 供 properties 与 DB 两条路径共用（防止行为再次分叉，这是 `trade_logic` 静默失效的结构性成因）；新增 `StopLossMode`/`Baggage` 字段与 `StopLossModeCatastrophic` 常量。
+- `risk_params.go`：拆掉 `ResolveRiskEquity` 里挡住 DB `risk_equity` 的短路；启动日志加打 `logic/variant/sl_mode`；新增 `ValidateAccounts()`（可返回错误的预校验）。
+- `manager.go`：风险参数打印放开到全部账户（fail-fast 仍只对 trailing）。
+- `session_store.go`：`Baggage` 回填 + 保存时从 `AccountConfig` 补，闭合「DB → 运行时 → 再回写」——修掉写得进读不出。
+
+**`server/argus_single/pkg/runtimeconfig/`**
+- 新增 `tuning.go`：`RuntimeTuning` + `setTuningValue`（首次写回前抓 properties 原值做兜底，让「取消配置」也能退回去）+ 覆盖层/extra_risk 构建。
+- `runtime.go`：`RuntimeConfig` 加 `Tuning`/`Overrides`；`runtimeAccount` 消费 `extra_risk_json`(tradeLogic/variant/tradeDirection)、`stop_loss_mode`、`order_size`、`baggage`，`position_mode` 从 DB 的 `hedge` 翻回 `bidirectional`，末尾调共用归一化；`applyRuntimeConfig` 顺序固定为**覆盖层 → 全局标量 → 预校验 → ReplaceManager → ReloadMonitor → ApplyAccountMonitorParams → Telegram**，新增 `hotApplied()` 与 `restartRequired()`（仍只有 serverPort/requestPath/logDir）配对；新增 `pollPublishedVersion`/`reconcilePublishedVersion`/`publishedVersion`，30 秒比对 `argus:config:version:<instance>`，Redis 不可用回落查库。
+
+**`server/argus_single/pkg/monitor/`**
+- `account_monitor.go`：巡检间隔与盈亏阈值加 `paramMu` + 访问器（原本裸读裸写，轮询 goroutine 一直在读，是 data race）+ `ApplyParams()`，轮询循环发现间隔变化即 `ticker.Reset`。
+- `monitor.go`：`ApplyAccountMonitorParams()` 入口。
+
+**主动补的一个安全洞**：trail 档位收敛成热更新项后，`NewTradeManager` 校验不过是 `logrus.Fatalf` —— 一次误发布会在热加载瞬间打死正在扛仓的进程。`applyRuntimeConfig` 现在先做可返回错误的预校验，失败就回滚覆盖层、继续跑旧配置。
+
+## 怎么验的
+
+```
+common / service / manager-api / argus_single
+  go build ./...  ✅   go vet ./...  ✅   go test ./...  ✅（全部 exit 0）
+```
+
+新增 5 个测试文件，都对着本任务要修的失效模式写：DB 优先与 properties 兜底、覆盖层整体重建（取消参数能生效）、**空 `trade_logic` 归一化成 spread 这一失效机理被钉住**、畸形 `extra_risk_json` 必须报错而非静默降级、非法风险参数在热加载前被拒绝且覆盖层回滚、`setTuningValue` 取消配置退回 properties、兜底轮询在 Redis+DB 双不可用时不 panic 不清配置、导入不再抹平账户级 budget/catastrophe。
+
+开工时 `server/service/argus_event/`（未跟踪，并行任务的在途工作）编译不过，期间被对方修好；收尾时四模块全绿，那些文件不属于本任务改动。
+
+## 对照验收标准（需求大纲 §6.1）
+
+| 条 | 状态 |
+|---|---|
+| 3 参数真生效 | 代码侧已满足：properties 只剩 4 个基础设施键有存在必要，`IsSignalLogic()` 由 `extra_risk_json` 驱动。「三实例 RiskParamsView 与 properties 逐项一致」需真实库验证 |
+| 5 生效可确认（断 Redis 30 秒内自行补上）| 已实现，需真实环境验证 |
+| 4 实例隔离 / 8 安全护栏 | 沿用 r1 产出与既有约束，本轮无回退：未新增任何能停进程的入口 |
+| 1、2、6、7、9、10 | 不在本任务范围（r6/r8/r13/r16） |
+
+## 测试交接信息
+
+- **入口**：`argus-config-import --instance <key> --apply` 导入三份 properties → 启动 argus_single → 看启动日志 `[风险参数] <账户> risk_equity=… logic=… variant=… sl_mode=…` 逐项对 properties。
+- **环境**：可写 MySQL + Redis；环境变量 `ARGUS_CONFIG_ENCRYPTION_KEY`（base64 的 32 字节，来源同 r1，不要落文档）；至少两套实例配置。
+- **兜底轮询验证**：发布后立刻 `CLIENT KILL` 掉 argus 的 Redis 订阅连接，观察 30 秒内出现 `配置版本落后（运行中=N 已发布=M）… 执行兜底热加载`；再把 Redis 整个停掉、只留 DB，重复一次，应走 `回落查库`。
+- **拒绝路径验证**：发布一份 `catastrophic_stop_loss=100` 的配置（<250），进程应打 `reject config version N` 并继续跑旧版本、**不退出**，心跳仍报旧 version。
+- **清理**：回滚到上一版本即可，无落库副作用。
+
+## 遗留与风险
+
+1. **`order_size=0` 刹不住车**：需求大纲把它当紧急刹车，但 `GetOrderSize()` 把 0 当未配置兜成 1。要真正生效必须改开仓判定分支，属于「不改策略判定逻辑」禁区且超出本任务范围。本轮只加列、语义保持 `0=未配置`，**建议在 r7 一并决策**。
+2. 兜底轮询只比版本号，同版本号重发布（checksum 变，如回滚→再回滚）仍只能靠 pub/sub 感知。
+3. `argus.build.version` 与 `argus.heartbeat.*` 按任务要求未收敛，仍需改 properties + 重启。
+4. `trailing_stop_tiers_json` 目前每账户存同一份全局 trail（导入按前缀抓，不区分账户）；列是账户级的，参数页填不同值即可产生差异，但导入不会自动产生。
+
+设计过程文档：[doc/module/r5-e2328de9a4/design/设计过程.md](doc/module/r5-e2328de9a4/design/设计过程.md)
+
+批量判定：完成
+
+<!-- delivery-task-planner-chat-data
+eyJ0dXJucyI6W3siaWQiOiJ4Vjc0RjNCSUR3ZFVGREFRdkFpbnlBIiwic3RhdHVzIjoiY29tcGxldGVkIiwiY3JlYXRlZEF0IjoiMjAyNi0wOS0wMlQwMDo0Nzo1Ny40NzI2MDErMDA6MDAiLCJjb21wbGV0ZWRBdCI6IjIwMjYtMDktMDJUMDE6MDc6NTQuMzUzMDI4KzAwOjAwIiwiaXRlbXMiOlt7InR5cGUiOiJ1c2VyTWVzc2FnZSIsImNvbnRlbnQiOlt7InR5cGUiOiJ0ZXh0IiwidGV4dCI6IuaJp+ihjOOAjOWKqOS9nOaJp+ihjOOAjemYtuaute+8mumFjee9rumdouWujOaVtOaUtuaVm+WIsCBEQiArIOeUn+aViOWFnOW6lei9ruivoiJ9XX0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6IkknbGwgc3RhcnQgYnkgbG9hZGluZyB0aGUgZGVsaXZlcnkgZXhlY3V0aW9uIHNraWxsLCB0aGVuIHJlYWQgdGhlIHJlcXVpcmVtZW50IGRvY3MgYW5kIHN1cnZleSB0aGUgYWN0dWFsIGNvZGUuIiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiSSdsbCBzdGFydCBieSByZWFkaW5nIHRoZSByZXF1aXJlbWVudCBkb2NzIGFuZCBsb2FkaW5nIHRoZSBwcm9qZWN0J3MgYmFja2VuZCBkZXZlbG9wbWVudCBza2lsbC4iLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJwaGFzZSI6IiJ9LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiJCYXNlbGluZSBub3RlZDogYHNlcnZlci9zZXJ2aWNlL2FyZ3VzX2V2ZW50L2AgaXMgYW4gdW50cmFja2VkLCBjdXJyZW50bHktYnJva2VuIHBhcmFsbGVsIHdvcmstaW4tcHJvZ3Jlc3MgKG5vdCBtaW5lKS4gSSdsbCBidWlsZCBhcm91bmQgaXQuIFN0YXJ0aW5nIGltcGxlbWVudGF0aW9uLiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6Ik5vdyB0aGUgRFRPcyBhbmQgc2VydmljZSBtYXBwZXJzOiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6Ik5vdyB0aGUgaW1wb3J0ZXIg4oCUIHBvcHVsYXRlIHRoZSBuZXcgY29sdW1ucyBhbmQgZml4IGFjY291bnQtbGV2ZWwgYnVkZ2V0L2NhdGFzdHJvcGhlIGZpZGVsaXR5OiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6Ik5vdyB0aGUgYWNjb3VudCBtb25pdG9yIGhvdC1yZWxvYWQgb2YgaW50ZXJ2YWwvdGhyZXNob2xkczoiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJwaGFzZSI6IiJ9LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiJOb3cgYWRkIHRoZSBwYWNrYWdlLWxldmVsIGhvdC1hcHBseSBlbnRyeSBpbiBgbW9uaXRvci5nb2AgYW5kIHdpcmUgdXAgYHJ1bnRpbWVjb25maWdgOiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6Ik5vdyB0aGUgY29yZSBgcnVudGltZWNvbmZpZ2AgY2hhbmdlczoiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJwaGFzZSI6IiJ9LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiJOb3cgd2lyZSBpdCBpbnRvIGBydW50aW1lLmdvYDoiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJwaGFzZSI6IiJ9LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiJOb3cgYGFwcGx5UnVudGltZUNvbmZpZ2AgLyBgQXBwbHlJbml0aWFsYCAvIHRoZSBmYWxsYmFjayBwb2xsZXI6Iiwic3RhdHVzIjoiY29tcGxldGVkIiwicGhhc2UiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0IjoiT25lIHNhZmV0eSBnYXAgbXkgY2hhbmdlIG9wZW5zOiB0cmFpbCBwYXJhbXMgYXJlIG5vdyBob3QtcmVsb2FkYWJsZSwgYW5kIGBOZXdUcmFkZU1hbmFnZXJgIGNhbGxzIGBsb2dydXMuRmF0YWxmYCBvbiBpbGxlZ2FsIHJpc2sgcGFyYW1zIOKAlCBhIGJhZCBwdWJsaXNoIGNvdWxkIGtpbGwgYSBsaXZlIHByb2Nlc3MgaG9sZGluZyBwb3NpdGlvbnMuIFByZS12YWxpZGF0aW5nIGJlZm9yZSBzd2FwOiIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInBoYXNlIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6IkFsbCBmb3VyIG1vZHVsZXMgYnVpbGQsIHZldCwgYW5kIHRlc3QgY2xlYW4uIE5vdyB3cml0aW5nIHRoZSBkZXNpZ24tcHJvY2VzcyBkb2N1bWVudDoiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJwaGFzZSI6IiJ9LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiLlrp7njrDlrozmiJDvvIzlm5vkuKrmqKHlnZcgYnVpbGQgLyB2ZXQgLyB0ZXN0IOWFqOe7v+OAglxuXG4jIyDmlLnkuobku4DkuYhcblxuKirmlbDmja7lsYIgYHNlcnZlci9zZXJ2aWNlL2FyZ3VzX2NvbmZpZy9gKipcbi0gYHJlcG9zaXRvcnkvbW9kZWwuZ29g77yaYEFyZ3VzQ29uZmlnYCDliqAgNiDliJfvvIhgY29udHJhY3RfZmFjZWDjgIFgc2lnbmFsX2RlbGF5X3NlY29uZGDjgIFgc3ByZWFkX21heF9wcmljZV9hZ2VfbXNg44CBYHRyZW5kX2dhdGVfd2luZG93X2hvdXJg44CBYHRyZW5kX2dhdGVfdGhyZXNob2xkX3BjdGDjgIFgcmV2ZXJzZV9nYXRlX21pbl9wcm9maXRfcGN0YO+8ie+8m2BBcmd1c0FjY291bnRSaXNrYCDliqAgNCDliJfvvIhgb3JkZXJfc2l6ZWDjgIFgcmlza19lcXVpdHlg44CBYHJldmVyc2VfZ2F0ZV9taW5fcHJvZml0X3BjdGDjgIFgdHJlbmRfZ2F0ZV90aHJlc2hvbGRfcGN0YO+8ieOAguWFqOmDqCBgZGVmYXVsdCAwYCA9IOacqumFjee9ru+8jGBBdXRvTWlncmF0ZWAg6Ieq5Yqo5Yqg5YiX77yM5peg6ZyA5Zue5aGr44CCXG4tIGBkdG8vZHRvLmdvYCArIGBzZXJ2aWNlLmdvYO+8mjEwIOS4quWtl+autei/myBgQ29uZmlnRFRPYC9gQWNjb3VudFJpc2tEVE9gIOWPiuWbm+S4qiBlbnRpdHkvZHRvIOaYoOWwhO+8jOaOpeWPo+etvuWQjeS4jeWPmO+8jHI3IOe8lui+kemhteWPr+ebtOaOpeeUqOOAglxuLSBgaW1wb3J0ZXIuZ29g77yaMTAg5Liq5paw5a2X5q615LuOIHByb3BlcnRpZXMg5a+85YWl77yI57y655yBIDAg6ICM6Z2e6L+Q6KGM5pe26buY6K6k5YC877yM5L+d5L2P5YWc5bqV6K+t5LmJ77yJ77ybKirpobrluKbkv67kuobkuIDkuKrkvJrorqnpqozmlLYgNi4xLTMg55u05o6l5aSx6LSl55qEIGJ1Zyoq4oCU4oCUYFJpc2tCdWRnZXRgL2BDYXRhc3Ryb3BoaWNTdG9wTG9zc2Ag5Y6f5p2l5Y+q6K+75YWo5bGA6ZSu77yMYGFwcGxpY2F0aW9uXzEucHJvcGVydGllc2Ag55qEIGNoYW1waW9uKGNhcDI2L1M0MDApIOS4jiBjaGFsbGVuZ2VyKGNhcDgvUzQwMCkg5beu5byC5Zyo5a+85YWl5pe26KKr5oq55bmz77yM5pS55Li66LSm5oi357qn5LyY5YWI44CB5YWo5bGA5YWc5bqV44CCXG5cbioqYHNlcnZlci9hcmd1c19zaW5nbGUvcGtnL3RyYWRlL2AqKlxuLSDmlrDlop4gYHBhcmFtX292ZXJyaWRlcy5nb2DvvJpgUGFyYW1PdmVycmlkZXNgIOimhuebluWxgiArIGBTZXRQYXJhbU92ZXJyaWRlc2DvvIjoo4Xovb3ml7YgY2xvbmXvvInjgIJcbi0gYGFjY291bnRfcGFyYW1zLmdvYO+8mmBBY2NGbG9hdGAg5pS55Li644CMREIg6KaG55uW5bGCIOKGkiBwcm9wZXJ0aWVzIOi0puaIt+mUriDihpIg5YWo5bGA6ZSuIOKGkiDpu5jorqTlgLzjgI3vvIwqKuetvuWQjeS4jeWPmCoq77yMMTMg5Liq6LCD55So54K56Zu25pS55Yqo44CCYEFjY0ludGAg6ZqP5LmL55Sf5pWI44CCXG4tIGBjb25maWcuZ29g77ya5oq95Ye6IGBOb3JtYWxpemVBY2NvdW50Q29uZmlnKClgIOS+myBwcm9wZXJ0aWVzIOS4jiBEQiDkuKTmnaHot6/lvoTlhbHnlKjvvIjpmLLmraLooYzkuLrlho3mrKHliIblj4nvvIzov5nmmK8gYHRyYWRlX2xvZ2ljYCDpnZnpu5jlpLHmlYjnmoTnu5PmnoTmgKfmiJDlm6DvvInvvJvmlrDlop4gYFN0b3BMb3NzTW9kZWAvYEJhZ2dhZ2VgIOWtl+auteS4jiBgU3RvcExvc3NNb2RlQ2F0YXN0cm9waGljYCDluLjph4/jgIJcbi0gYHJpc2tfcGFyYW1zLmdvYO+8muaLhuaOiSBgUmVzb2x2ZVJpc2tFcXVpdHlgIOmHjOaMoeS9jyBEQiBgcmlza19lcXVpdHlgIOeahOefrei3r++8m+WQr+WKqOaXpeW/l+WKoOaJkyBgbG9naWMvdmFyaWFudC9zbF9tb2RlYO+8m+aWsOWiniBgVmFsaWRhdGVBY2NvdW50cygpYO+8iOWPr+i/lOWbnumUmeivr+eahOmihOagoemqjO+8ieOAglxuLSBgbWFuYWdlci5nb2DvvJrpo47pmanlj4LmlbDmiZPljbDmlL7lvIDliLDlhajpg6jotKbmiLfvvIhmYWlsLWZhc3Qg5LuN5Y+q5a+5IHRyYWlsaW5n77yJ44CCXG4tIGBzZXNzaW9uX3N0b3JlLmdvYO+8mmBCYWdnYWdlYCDlm57loasgKyDkv53lrZjml7bku44gYEFjY291bnRDb25maWdgIOihpe+8jOmXreWQiOOAjERCIOKGkiDov5DooYzml7Yg4oaSIOWGjeWbnuWGmeOAjeKAlOKAlOS/ruaOieWGmeW+l+i/m+ivu+S4jeWHuuOAglxuXG4qKmBzZXJ2ZXIvYXJndXNfc2luZ2xlL3BrZy9ydW50aW1lY29uZmlnL2AqKlxuLSDmlrDlop4gYHR1bmluZy5nb2DvvJpgUnVudGltZVR1bmluZ2AgKyBgc2V0VHVuaW5nVmFsdWVg77yI6aaW5qyh5YaZ5Zue5YmN5oqTIHByb3BlcnRpZXMg5Y6f5YC85YGa5YWc5bqV77yM6K6p44CM5Y+W5raI6YWN572u44CN5Lmf6IO96YCA5Zue5Y6777yJKyDopobnm5blsYIvZXh0cmFfcmlzayDmnoTlu7rjgIJcbi0gYHJ1bnRpbWUuZ29g77yaYFJ1bnRpbWVDb25maWdgIOWKoCBgVHVuaW5nYC9gT3ZlcnJpZGVzYO+8m2BydW50aW1lQWNjb3VudGAg5raI6LS5IGBleHRyYV9yaXNrX2pzb25gKHRyYWRlTG9naWMvdmFyaWFudC90cmFkZURpcmVjdGlvbinjgIFgc3RvcF9sb3NzX21vZGVg44CBYG9yZGVyX3NpemVg44CBYGJhZ2dhZ2Vg77yMYHBvc2l0aW9uX21vZGVgIOS7jiBEQiDnmoQgYGhlZGdlYCDnv7vlm54gYGJpZGlyZWN0aW9uYWxg77yM5pyr5bC+6LCD5YWx55So5b2S5LiA5YyW77ybYGFwcGx5UnVudGltZUNvbmZpZ2Ag6aG65bqP5Zu65a6a5Li6Kiropobnm5blsYIg4oaSIOWFqOWxgOagh+mHjyDihpIg6aKE5qCh6aqMIOKGkiBSZXBsYWNlTWFuYWdlciDihpIgUmVsb2FkTW9uaXRvciDihpIgQXBwbHlBY2NvdW50TW9uaXRvclBhcmFtcyDihpIgVGVsZWdyYW0qKu+8jOaWsOWiniBgaG90QXBwbGllZCgpYCDkuI4gYHJlc3RhcnRSZXF1aXJlZCgpYO+8iOS7jeWPquaciSBzZXJ2ZXJQb3J0L3JlcXVlc3RQYXRoL2xvZ0Rpcu+8iemFjeWvue+8m+aWsOWiniBgcG9sbFB1Ymxpc2hlZFZlcnNpb25gL2ByZWNvbmNpbGVQdWJsaXNoZWRWZXJzaW9uYC9gcHVibGlzaGVkVmVyc2lvbmDvvIwzMCDnp5Lmr5Tlr7kgYGFyZ3VzOmNvbmZpZzp2ZXJzaW9uOjxpbnN0YW5jZT5g77yMUmVkaXMg5LiN5Y+v55So5Zue6JC95p+l5bqT44CCXG5cbioqYHNlcnZlci9hcmd1c19zaW5nbGUvcGtnL21vbml0b3IvYCoqXG4tIGBhY2NvdW50X21vbml0b3IuZ29g77ya5beh5qOA6Ze06ZqU5LiO55uI5LqP6ZiI5YC85YqgIGBwYXJhbU11YCArIOiuv+mXruWZqO+8iOWOn+acrOijuOivu+ijuOWGme+8jOi9ruivoiBnb3JvdXRpbmUg5LiA55u05Zyo6K+777yM5pivIGRhdGEgcmFjZe+8iSsgYEFwcGx5UGFyYW1zKClg77yM6L2u6K+i5b6q546v5Y+R546w6Ze06ZqU5Y+Y5YyW5Y2zIGB0aWNrZXIuUmVzZXRg44CCXG4tIGBtb25pdG9yLmdvYO+8mmBBcHBseUFjY291bnRNb25pdG9yUGFyYW1zKClgIOWFpeWPo+OAglxuXG4qKuS4u+WKqOihpeeahOS4gOS4quWuieWFqOa0nioq77yadHJhaWwg5qGj5L2N5pS25pWb5oiQ54Ot5pu05paw6aG55ZCO77yMYE5ld1RyYWRlTWFuYWdlcmAg5qCh6aqM5LiN6L+H5pivIGBsb2dydXMuRmF0YWxmYCDigJTigJQg5LiA5qyh6K+v5Y+R5biD5Lya5Zyo54Ot5Yqg6L29556s6Ze05omT5q275q2j5Zyo5omb5LuT55qE6L+b56iL44CCYGFwcGx5UnVudGltZUNvbmZpZ2Ag546w5Zyo5YWI5YGa5Y+v6L+U5Zue6ZSZ6K+v55qE6aKE5qCh6aqM77yM5aSx6LSl5bCx5Zue5rua6KaG55uW5bGC44CB57un57ut6LeR5pen6YWN572u44CCXG5cbiMjIOaAjuS5iOmqjOeahFxuXG5gYGBcbmNvbW1vbiAvIHNlcnZpY2UgLyBtYW5hZ2VyLWFwaSAvIGFyZ3VzX3NpbmdsZVxuICBnbyBidWlsZCAuLy4uLiAg4pyFICAgZ28gdmV0IC4vLi4uICDinIUgICBnbyB0ZXN0IC4vLi4uICDinIXvvIjlhajpg6ggZXhpdCAw77yJXG5gYGBcblxu5paw5aKeIDUg5Liq5rWL6K+V5paH5Lu277yM6YO95a+5552A5pys5Lu75Yqh6KaB5L+u55qE5aSx5pWI5qih5byP5YaZ77yaREIg5LyY5YWI5LiOIHByb3BlcnRpZXMg5YWc5bqV44CB6KaG55uW5bGC5pW05L2T6YeN5bu677yI5Y+W5raI5Y+C5pWw6IO955Sf5pWI77yJ44CBKirnqbogYHRyYWRlX2xvZ2ljYCDlvZLkuIDljJbmiJAgc3ByZWFkIOi/meS4gOWkseaViOacuueQhuiiq+mSieS9jyoq44CB55W45b2iIGBleHRyYV9yaXNrX2pzb25gIOW/hemhu+aKpemUmeiAjOmdnumdmem7mOmZjee6p+OAgemdnuazlemjjumZqeWPguaVsOWcqOeDreWKoOi9veWJjeiiq+aLkue7neS4lOimhuebluWxguWbnua7muOAgWBzZXRUdW5pbmdWYWx1ZWAg5Y+W5raI6YWN572u6YCA5ZueIHByb3BlcnRpZXPjgIHlhZzlupXova7or6LlnKggUmVkaXMrREIg5Y+M5LiN5Y+v55So5pe25LiNIHBhbmljIOS4jea4hemFjee9ruOAgeWvvOWFpeS4jeWGjeaKueW5s+i0puaIt+e6pyBidWRnZXQvY2F0YXN0cm9waGXjgIJcblxu5byA5bel5pe2IGBzZXJ2ZXIvc2VydmljZS9hcmd1c19ldmVudC9g77yI5pyq6Lef6Liq77yM5bm26KGM5Lu75Yqh55qE5Zyo6YCU5bel5L2c77yJ57yW6K+R5LiN6L+H77yM5pyf6Ze06KKr5a+55pa55L+u5aW977yb5pS25bC+5pe25Zub5qih5Z2X5YWo57u/77yM6YKj5Lqb5paH5Lu25LiN5bGe5LqO5pys5Lu75Yqh5pS55Yqo44CCXG5cbiMjIOWvueeFp+mqjOaUtuagh+WHhu+8iOmcgOaxguWkp+e6siDCpzYuMe+8iVxuXG58IOadoSB8IOeKtuaAgSB8XG58LS0tfC0tLXxcbnwgMyDlj4LmlbDnnJ/nlJ/mlYggfCDku6PnoIHkvqflt7Lmu6HotrPvvJpwcm9wZXJ0aWVzIOWPquWJqSA0IOS4quWfuuehgOiuvuaWvemUruacieWtmOWcqOW/heimge+8jGBJc1NpZ25hbExvZ2ljKClgIOeUsSBgZXh0cmFfcmlza19qc29uYCDpqbHliqjjgILjgIzkuInlrp7kvosgUmlza1BhcmFtc1ZpZXcg5LiOIHByb3BlcnRpZXMg6YCQ6aG55LiA6Ie044CN6ZyA55yf5a6e5bqT6aqM6K+BIHxcbnwgNSDnlJ/mlYjlj6/noa7orqTvvIjmlq0gUmVkaXMgMzAg56eS5YaF6Ieq6KGM6KGl5LiK77yJfCDlt7Llrp7njrDvvIzpnIDnnJ/lrp7njq/looPpqozor4EgfFxufCA0IOWunuS+i+malOemuyAvIDgg5a6J5YWo5oqk5qCPIHwg5rK/55SoIHIxIOS6p+WHuuS4juaXouaciee6puadn++8jOacrOi9ruaXoOWbnumAgO+8muacquaWsOWinuS7u+S9leiDveWBnOi/m+eoi+eahOWFpeWPoyB8XG58IDHjgIEy44CBNuOAgTfjgIE544CBMTAgfCDkuI3lnKjmnKzku7vliqHojIPlm7TvvIhyNi9yOC9yMTMvcjE277yJIHxcblxuIyMg5rWL6K+V5Lqk5o6l5L+h5oGvXG5cbi0gKirlhaXlj6MqKu+8mmBhcmd1cy1jb25maWctaW1wb3J0IC0taW5zdGFuY2UgPGtleT4gLS1hcHBseWAg5a+85YWl5LiJ5Lu9IHByb3BlcnRpZXMg4oaSIOWQr+WKqCBhcmd1c19zaW5nbGUg4oaSIOeci+WQr+WKqOaXpeW/lyBgW+mjjumZqeWPguaVsF0gPOi0puaItz4gcmlza19lcXVpdHk94oCmIGxvZ2ljPeKApiB2YXJpYW50PeKApiBzbF9tb2RlPeKApmAg6YCQ6aG55a+5IHByb3BlcnRpZXPjgIJcbi0gKirnjq/looMqKu+8muWPr+WGmSBNeVNRTCArIFJlZGlz77yb546v5aKD5Y+Y6YePIGBBUkdVU19DT05GSUdfRU5DUllQVElPTl9LRVlg77yIYmFzZTY0IOeahCAzMiDlrZfoioLvvIzmnaXmupDlkIwgcjHvvIzkuI3opoHokL3mlofmoaPvvInvvJvoh7PlsJHkuKTlpZflrp7kvovphY3nva7jgIJcbi0gKirlhZzlupXova7or6Lpqozor4EqKu+8muWPkeW4g+WQjueri+WIuyBgQ0xJRU5UIEtJTExgIOaOiSBhcmd1cyDnmoQgUmVkaXMg6K6i6ZiF6L+e5o6l77yM6KeC5a+fIDMwIOenkuWGheWHuueOsCBg6YWN572u54mI5pys6JC95ZCO77yI6L+Q6KGM5LitPU4g5bey5Y+R5biDPU3vvInigKYg5omn6KGM5YWc5bqV54Ot5Yqg6L29YO+8m+WGjeaKiiBSZWRpcyDmlbTkuKrlgZzmjonjgIHlj6rnlZkgRELvvIzph43lpI3kuIDmrKHvvIzlupTotbAgYOWbnuiQveafpeW6k2DjgIJcbi0gKirmi5Lnu53ot6/lvoTpqozor4EqKu+8muWPkeW4g+S4gOS7vSBgY2F0YXN0cm9waGljX3N0b3BfbG9zcz0xMDBgIOeahOmFjee9ru+8iDwyNTDvvInvvIzov5vnqIvlupTmiZMgYHJlamVjdCBjb25maWcgdmVyc2lvbiBOYCDlubbnu6fnu63ot5Hml6fniYjmnKzjgIEqKuS4jemAgOWHuioq77yM5b+D6Lez5LuN5oql5penIHZlcnNpb27jgIJcbi0gKirmuIXnkIYqKu+8muWbnua7muWIsOS4iuS4gOeJiOacrOWNs+WPr++8jOaXoOiQveW6k+WJr+S9nOeUqOOAglxuXG4jIyDpgZfnlZnkuI7po47pmalcblxuMS4gKipgb3JkZXJfc2l6ZT0wYCDliLnkuI3kvY/ovaYqKu+8mumcgOaxguWkp+e6suaKiuWug+W9k+e0p+aApeWIuei9pu+8jOS9hiBgR2V0T3JkZXJTaXplKClgIOaKiiAwIOW9k+acqumFjee9ruWFnOaIkCAx44CC6KaB55yf5q2j55Sf5pWI5b+F6aG75pS55byA5LuT5Yik5a6a5YiG5pSv77yM5bGe5LqO44CM5LiN5pS5562W55Wl5Yik5a6a6YC76L6R44CN56aB5Yy65LiU6LaF5Ye65pys5Lu75Yqh6IyD5Zu044CC5pys6L2u5Y+q5Yqg5YiX44CB6K+t5LmJ5L+d5oyBIGAwPeacqumFjee9rmDvvIwqKuW7uuiuruWcqCByNyDkuIDlubblhrPnrZYqKuOAglxuMi4g5YWc5bqV6L2u6K+i5Y+q5q+U54mI5pys5Y+377yM5ZCM54mI5pys5Y+36YeN5Y+R5biD77yIY2hlY2tzdW0g5Y+Y77yM5aaC5Zue5rua4oaS5YaN5Zue5rua77yJ5LuN5Y+q6IO96Z2gIHB1Yi9zdWIg5oSf55+l44CCXG4zLiBgYXJndXMuYnVpbGQudmVyc2lvbmAg5LiOIGBhcmd1cy5oZWFydGJlYXQuKmAg5oyJ5Lu75Yqh6KaB5rGC5pyq5pS25pWb77yM5LuN6ZyA5pS5IHByb3BlcnRpZXMgKyDph43lkK/jgIJcbjQuIGB0cmFpbGluZ19zdG9wX3RpZXJzX2pzb25gIOebruWJjeavj+i0puaIt+WtmOWQjOS4gOS7veWFqOWxgCB0cmFpbO+8iOWvvOWFpeaMieWJjee8gOaKk++8jOS4jeWMuuWIhui0puaIt++8ie+8m+WIl+aYr+i0puaIt+e6p+eahO+8jOWPguaVsOmhteWhq+S4jeWQjOWAvOWNs+WPr+S6p+eUn+W3ruW8gu+8jOS9huWvvOWFpeS4jeS8muiHquWKqOS6p+eUn+OAglxuXG7orr7orqHov4fnqIvmlofmoaPvvJpbZG9jL21vZHVsZS9yNS1lMjMyOGRlOWE0L2Rlc2lnbi/orr7orqHov4fnqIsubWRdKGRvYy9tb2R1bGUvcjUtZTIzMjhkZTlhNC9kZXNpZ24v6K6+6K6h6L+H56iLLm1kKVxuXG7mibnph4/liKTlrprvvJrlrozmiJAiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJwaGFzZSI6ImZpbmFsX2Fuc3dlciJ9XX1dfQ==
+-->

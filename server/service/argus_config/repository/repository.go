@@ -78,6 +78,24 @@ func (r *ArgusConfigRepository) rebuildUniqueIndex(table, indexName string, want
 	return nil
 }
 
+// CountMissingInstanceKey 统计还没有归属实例的历史版本行。
+//
+// 用途只有一个：区分「全新部署，本来就没有存量行」与「升级部署，存量行等着
+// 归属实例」。前者跳过回填是对的，后者跳过会让所有实例都查不到自己的已发布
+// 版本——同一段代码，两种截然不同的后果，只能靠这个计数分开。
+func (r *ArgusConfigRepository) CountMissingInstanceKey() (int64, error) {
+	if r.Db == nil {
+		return 0, fmt.Errorf("database is not initialized")
+	}
+	var count int64
+	if err := r.Db.Model(&ArgusConfigVersion{}).
+		Where("instance_key IS NULL OR instance_key = ''").
+		Count(&count).Error; err != nil {
+		return 0, fmt.Errorf("count config versions missing instance key: %w", err)
+	}
+	return count, nil
+}
+
 // BackfillInstanceKey 把新增 instance_key 之前的历史版本行归到默认实例，
 // 返回补齐的行数，便于调用方打印迁移日志。
 func (r *ArgusConfigRepository) BackfillInstanceKey(defaultInstanceKey string) (int64, error) {
@@ -144,6 +162,26 @@ func (r *ArgusConfigRepository) NextVersion(instanceKey string) (uint64, error) 
 		return 1, nil
 	}
 	return version, nil
+}
+
+// ListVersions 返回某个实例的版本历史，按版本号倒序。参数页的回滚入口只认这
+// 一个来源，跨实例的版本不会互相出现在对方的历史里。
+func (r *ArgusConfigRepository) ListVersions(instanceKey string, limit int) ([]*ArgusConfigVersion, error) {
+	if strings.TrimSpace(instanceKey) == "" {
+		return nil, ErrInstanceKeyRequired
+	}
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	var versions []*ArgusConfigVersion
+	if err := r.Db.Where("instance_key = ? AND active = 1", strings.TrimSpace(instanceKey)).
+		Order("version DESC").Limit(limit).Find(&versions).Error; err != nil {
+		return nil, err
+	}
+	return versions, nil
 }
 
 // ListInstances 返回全部有效实例，按实例键排序保证输出稳定。

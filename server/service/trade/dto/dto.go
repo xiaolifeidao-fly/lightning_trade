@@ -736,10 +736,73 @@ type CreateBacktestRunDTO struct {
 
 // BacktestRunQueryDTO 回测任务列表查询。
 type BacktestRunQueryDTO struct {
-	Page       int    `form:"page"`
-	PageSize   int    `form:"pageSize"`
-	Symbol     string `form:"symbol"`
+	Page     int    `form:"page"`
+	PageSize int    `form:"pageSize"`
+	Symbol   string `form:"symbol"`
+	// EngineKind 引擎类型 prediction/signal；空=不限（既有页面不传，行为不变）。
+	EngineKind string `form:"engineKind"`
 	StrategyID int64  `form:"strategyId"`
+}
+
+// CreateSignalBacktestRunDTO 新建一次盘口信号回测。
+//
+// 与预测驱动的 CreateBacktestRunDTO 分开，因为两者的必填项完全不同：
+// 信号驱动不需要 strategyId / predictionInterval，但**必须**有
+// instanceKey + accountLabel——三个部署实例写同一张事件表，且实例1 有两个
+// 账户（champion/challenger），少任一维度都会把不同实验体的触发流混成一条。
+//
+// 参数旋钮全部用指针：区分"没传（回落生产缺省）"与"显式传了 0"。
+// 字段后的括号是对应的生产配置键，回测与实盘共享同一套参数定义。
+type CreateSignalBacktestRunDTO struct {
+	Name         string `json:"name"`
+	PlatformCode string `json:"platformCode"` // 1m 路径回放的行情平台，缺省 deepcoin
+	CoinCode     string `json:"coinCode"`
+	Symbol       string `json:"symbol"` // 缺省 BTCUSDT
+	StartTime    string `json:"startTime" binding:"required"`
+	EndTime      string `json:"endTime" binding:"required"`
+	InstanceKey  string `json:"instanceKey" binding:"required"`  // argus_instance.instance_key
+	AccountLabel string `json:"accountLabel" binding:"required"` // strategy_event.account_label
+
+	// 参数旋钮内联（匿名嵌入，JSON 键与嵌入前完全一致）。批量扫描的每一组
+	// 复用同一个结构，保证"批量里的某组单独重跑"参数口径一致。
+	SignalBacktestParamsDTO
+}
+
+// SignalBacktestParamsDTO 一组盘口信号回测的参数旋钮。
+//
+// 单次回测（CreateSignalBacktestRunDTO）与批量扫描的每一组
+// （SignalBacktestGroupDTO）共用它：两处若各写一份字段列表，加旋钮时必然漏改
+// 一边，于是"同一组参数单跑和批量跑结果不同"。
+//
+// 全部用指针：区分"没传（回落基线/生产缺省）"与"显式传了 0"。
+// 字段后的括号是对应的生产配置键，回测与实盘共享同一套参数定义。
+type SignalBacktestParamsDTO struct {
+	Mode     string `json:"mode"`     // net（实盘形态）/ dual（研究对照）
+	EvalMode string `json:"evalMode"` // close / pessimistic
+	EntryPx  string `json:"entryPx"`  // bar_close / sig_last
+
+	OrderSize                  *int     `json:"orderSize"`                  // trade.accountN.order_size
+	RiskEquity                 *float64 `json:"riskEquity"`                 // trade.accountN.risk_equity
+	CapOverride                *int     `json:"capOverride"`                // >0 固定上限（金标准口径），0=走 cap 公式
+	BudgetPct                  *float64 `json:"budgetPct"`                  // position.risk.budget_pct
+	CatastropheStopPct         *float64 `json:"catastropheStopPct"`         // position.monitor.catastrophe_stop_pct
+	Ceiling                    *int     `json:"ceiling"`                    // position.risk.max_contracts_ceiling
+	CatastropheOvershootRoiPts *float64 `json:"catastropheOvershootRoiPts"` // 兜底成交过冲 ROI 点
+	GateMinProfitPct           *float64 `json:"gateMinProfitPct"`           // trade.accountN.reverse_gate_min_profit_pct
+	TrendGateWindowHours       *float64 `json:"trendGateWindowHours"`       // trade.trend_gate.window_hours
+	TrendGateThresholdPct      *float64 `json:"trendGateThresholdPct"`      // trade.trend_gate.threshold_pct
+	TierSmallRatio             *float64 `json:"tierSmallRatio"`             // position.monitor.trail.tier_small_ratio
+	TierLargeRatio             *float64 `json:"tierLargeRatio"`             // position.monitor.trail.tier_large_ratio
+	SmallActivatePct           *float64 `json:"smallActivatePct"`           // position.monitor.trail.small_activate
+	SmallGiveback              *float64 `json:"smallGiveback"`              // position.monitor.trail.small_giveback
+	MediumActivatePct          *float64 `json:"mediumActivatePct"`
+	MediumGiveback             *float64 `json:"mediumGiveback"`
+	LargeActivatePct           *float64 `json:"largeActivatePct"`
+	LargeGiveback              *float64 `json:"largeGiveback"`
+	TakerFee                   *float64 `json:"takerFee"`
+	// SignalThresholdBp / BaselineThresholdBp 只要不相等，本组精度自动降为频率级。
+	SignalThresholdBp   *float64 `json:"signalThresholdBp"`
+	BaselineThresholdBp *float64 `json:"baselineThresholdBp"`
 }
 
 type BacktestRunDTO struct {
@@ -763,6 +826,14 @@ type BacktestRunDTO struct {
 	KlineCount         int    `json:"klineCount"` // 回放使用的K线根数
 	KlineStart         string `json:"klineStart"` // 实际K线起始时间
 	KlineEnd           string `json:"klineEnd"`   // 实际K线结束时间
+	// 盘口信号回测（engineKind=signal）专用
+	EngineKind   string `json:"engineKind"`
+	InstanceKey  string `json:"instanceKey"`
+	AccountLabel string `json:"accountLabel"`
+	SignalSource string `json:"signalSource"`
+	Fidelity     string `json:"fidelity"`     // event / frequency，前端按它分组，不得混排
+	FidelityNote string `json:"fidelityNote"` // 必须随结果一起展示的精度警示
+	SignalCount  int    `json:"signalCount"`  // 回放消费的真实触发数
 }
 
 type BacktestRunListDTO struct {
@@ -813,6 +884,12 @@ type BacktestTradeDTO struct {
 	UnrealizedPnlRate    float64 `json:"unrealizedPnlRate"`    // 浮动盈亏率%(含杠杆，未扣费)
 	UnrealizedNetPnl     float64 `json:"unrealizedNetPnl"`     // 浮动净盈亏 = 浮动盈亏 - 预估手续费
 	UnrealizedNetPnlRate float64 `json:"unrealizedNetPnlRate"` // 浮动净盈亏率%(含杠杆，已扣预估手续费)
+	// 盘口信号回测（calcMode=signal）专用：一行 = 一个持仓生命周期
+	Contracts    int     `json:"contracts"`    // 平仓张数
+	MaxContracts int     `json:"maxContracts"` // 生命周期内最大张数
+	AddCount     int     `json:"addCount"`     // 加仓次数(含首次建仓)
+	PeakPct      float64 `json:"peakPct"`      // 移动止盈峰值ROI%(回测口径，用1m high 算，偏高)
+	ReducedPnl   float64 `json:"reducedPnl"`   // 生命周期内反向减仓锁利累计
 }
 
 type BacktestMetricDTO struct {
@@ -838,6 +915,26 @@ type BacktestMetricDTO struct {
 	EarlyCutCount     int     `json:"earlyCutCount"`
 	EarlyAdverseCount int     `json:"earlyAdverseCount"`
 	TimeoutCount      int     `json:"timeoutCount"`
+	// 盘口信号回测（calcMode=signal）专用
+	Fidelity         string  `json:"fidelity"`
+	FidelityNote     string  `json:"fidelityNote"`
+	SignalCount      int     `json:"signalCount"`
+	SignalDropped    int     `json:"signalDropped"`
+	SignalFiltered   int     `json:"signalFiltered"`
+	CapSkipCount     int     `json:"capSkipCount"`
+	GateSkipCount    int     `json:"gateSkipCount"`
+	TrendSkipCount   int     `json:"trendSkipCount"`
+	ReduceCount      int     `json:"reduceCount"`
+	ReduceCloseCount int     `json:"reduceCloseCount"`
+	EodOpenCount     int     `json:"eodOpenCount"`
+	MaxStack         int     `json:"maxStack"`
+	CapEffective     int     `json:"capEffective"`
+	RealizedPnl      float64 `json:"realizedPnl"`
+	FloatingPnl      float64 `json:"floatingPnl"`
+	MaxDrawdownPct   float64 `json:"maxDrawdownPct"`
+	LambdaPerDay     float64 `json:"lambdaPerDay"`
+	LambdaRatio      float64 `json:"lambdaRatio"`
+	LambdaSelfTest   float64 `json:"lambdaSelfTest"`
 }
 
 // BacktestRunDetailDTO 单次回测详情：任务 + 汇总指标(可能两种口径) + 逐笔。
@@ -845,6 +942,174 @@ type BacktestRunDetailDTO struct {
 	Run     BacktestRunDTO      `json:"run"`
 	Metrics []BacktestMetricDTO `json:"metrics"` // 按 calcMode 区分：prediction / trading
 	Trades  []BacktestTradeDTO  `json:"trades"`
+}
+
+// ─── 参数组批量扫描与横向对比（r11）──────────────────────────────────────────
+
+// SignalBacktestGroupDTO 批量扫描里的一组参数。
+//
+// 组参数是**相对基线的增量**：没给的旋钮沿用基线（= 所选实例当前生产参数），
+// 不回落代码缺省。这样 "cap 15/26/40 三组" 的 diff 里就只有 cap 一行，而不是
+// 十几个字段同时偏离生产。
+type SignalBacktestGroupDTO struct {
+	// Label 组标签，用于对比矩阵的行名。留空时服务端按 diff 自动生成
+	// （如 "capOverride=26"），全同基线时生成 "same_as_baseline"。
+	Label string `json:"label"`
+	SignalBacktestParamsDTO
+}
+
+// CreateSignalBacktestBatchDTO 一次提交多组参数。
+//
+// 信号源与窗口是**批次级**的，不允许逐组指定：组间要能比大小的前提是吃同一份
+// 触发流，允许每组换实例/换窗口就等于允许把不可比的东西排进同一张榜。
+type CreateSignalBacktestBatchDTO struct {
+	Name         string `json:"name"`
+	PlatformCode string `json:"platformCode"` // 1m 路径回放平台，缺省 deepcoin
+	CoinCode     string `json:"coinCode"`
+	Symbol       string `json:"symbol"` // 缺省 BTCUSDT
+	StartTime    string `json:"startTime" binding:"required"`
+	EndTime      string `json:"endTime" binding:"required"`
+	InstanceKey  string `json:"instanceKey" binding:"required"`
+	AccountLabel string `json:"accountLabel" binding:"required"`
+
+	// Concurrency 并发执行的组数上限；<=0 取缺省 3，上限 8。
+	// 回放是纯 CPU 的，放太开只会把管理端进程的 CPU 吃满、拖慢在线接口。
+	Concurrency int `json:"concurrency"`
+	// BaselineParams 显式基线；为空时取所选实例当前生产参数（已发布配置版本）。
+	// 配置还没导入 DB、或要拿某个历史参数包当基线时用它。
+	BaselineParams *SignalBacktestParamsDTO `json:"baselineParams"`
+	// IncludeBaselineRun 是否把基线本身也当一组跑（缺省 true）。
+	// 关掉它就没有基线侧的指标，diff 只剩参数差异、没有指标差异。
+	IncludeBaselineRun *bool `json:"includeBaselineRun"`
+
+	Groups []SignalBacktestGroupDTO `json:"groups" binding:"required"`
+}
+
+// SignalBacktestBatchQueryDTO 批次列表查询。
+type SignalBacktestBatchQueryDTO struct {
+	Page         int    `form:"page"`
+	PageSize     int    `form:"pageSize"`
+	InstanceKey  string `form:"instanceKey"`
+	AccountLabel string `form:"accountLabel"`
+}
+
+// SignalBaselineQueryDTO 基线预览查询：表单在提交前先看清基线是什么。
+type SignalBaselineQueryDTO struct {
+	InstanceKey  string `form:"instanceKey" binding:"required"`
+	AccountLabel string `form:"accountLabel" binding:"required"`
+	Symbol       string `form:"symbol"`
+}
+
+// SignalBaselineDTO 解析出来的基线：参数 + 每个字段从哪来。
+// Notes 必须在页面上和参数一起显示——配置面收敛（r5）没做完之前，基线里有一部分
+// 字段是按实盘缺省兜底的，不说清楚就会被当成生产事实读。
+type SignalBaselineDTO struct {
+	Source string `json:"source"` // instance_published / request
+	// Params 是 signal.Params 的原样 JSON（键名即回测参数键），不再拆一层。
+	Params map[string]interface{} `json:"params"`
+	Notes  []string               `json:"notes"`
+	FromDB []string               `json:"fromDb"` // 确实从 DB 取到值的配置键
+}
+
+// SignalBacktestParamDiffDTO 一个参数键与基线的差异。
+type SignalBacktestParamDiffDTO struct {
+	Key      string  `json:"key"`      // 生产配置键口径，如 position.risk.max_contracts_ceiling
+	Field    string  `json:"field"`    // 回测参数字段名，如 ceiling
+	Baseline string  `json:"baseline"` // 基线值（字符串，避免数值/枚举两套类型）
+	Value    string  `json:"value"`    // 本组取值
+	Delta    float64 `json:"delta"`    // 数值型的差值；枚举型为 0
+	Numeric  bool    `json:"numeric"`  // Delta 是否有意义
+}
+
+// SignalBacktestMetricDiffDTO 本组指标与基线的差异（同精度等级才计算）。
+// 字段全部取自 trade_backtest_metric 既有列，不新造指标。
+type SignalBacktestMetricDiffDTO struct {
+	NetPnl       float64 `json:"netPnl"`       // 净盈亏差（USDT）
+	NetPnlPct    float64 `json:"netPnlPct"`    // 相对基线的百分比变化；基线为 0 时留 0
+	WinRate      float64 `json:"winRate"`      // 胜率差（绝对值，0.01 = 1 个百分点）
+	ProfitFactor float64 `json:"profitFactor"` // 盈亏比差
+	MaxDrawdown  float64 `json:"maxDrawdown"`  // 最大回撤差（USDT，正=回撤更大）
+	Sharpe       float64 `json:"sharpe"`       // 夏普差
+	TradeCount   int     `json:"tradeCount"`   // 持仓生命周期数差
+	TrailCount   int     `json:"trailCount"`   // 移动止盈平仓数差
+	SlCount      int     `json:"slCount"`      // 兜底止损数差
+	ReduceClose  int     `json:"reduceClose"`  // 减仓削零数差
+	EodOpen      int     `json:"eodOpen"`      // 期末仍持仓数差
+	MaxStack     int     `json:"maxStack"`     // 最大堆积张数差
+}
+
+// SignalBacktestComparisonRowDTO 对比矩阵的一行 = 一组参数。
+type SignalBacktestComparisonRowDTO struct {
+	RunID      int64  `json:"runId"`
+	GroupLabel string `json:"groupLabel"`
+	IsBaseline bool   `json:"isBaseline"`
+	Status     string `json:"status"` // pending/running/done/failed
+	ErrorMsg   string `json:"errorMsg"`
+	Fidelity   string `json:"fidelity"`
+
+	ParamDiff []SignalBacktestParamDiffDTO `json:"paramDiff"`
+	Metric    *BacktestMetricDTO           `json:"metric"`
+	// MetricDiff 仅在与基线**同精度等级**且两侧都有指标时非空。
+	MetricDiff *SignalBacktestMetricDiffDTO `json:"metricDiff"`
+	// DiffBlockedReason 说明为什么没有 MetricDiff（精度不同 / 基线缺失 / 本组未完成 /
+	// 本组不产 PnL）。空串表示有 diff。
+	DiffBlockedReason string `json:"diffBlockedReason"`
+	// PnlAvailable 本组是否产出了 PnL。降低阈值的频率级组只输出 λ(θ)、不产 PnL，
+	// 它们不能按净利排序，也不能与任何产 PnL 的组比大小。
+	PnlAvailable bool `json:"pnlAvailable"`
+}
+
+// SignalBacktestFidelityGroupDTO 按精度等级分组后的一组对比行。
+//
+// 需求大纲 §3.3 与本任务的"不做"都明确：频率级与事件级结果不得放在同一排序里
+// 比大小。所以排序只在组内做，接口层从不返回一张跨精度的全局榜——前端拿不到
+// 混排数据，也就没法误排。
+type SignalBacktestFidelityGroupDTO struct {
+	Fidelity      string `json:"fidelity"`      // event / frequency
+	FidelityLabel string `json:"fidelityLabel"` // 事件级 / 频率级
+	// ComparableToBaseline 本精度组是否与基线同精度：false 时组内各行没有 metricDiff，
+	// 只能组内相互比较。
+	ComparableToBaseline bool `json:"comparableToBaseline"`
+	// SortedBy 组内排序依据：netPnl（有 PnL）或 lambdaPerDay（只有 λ 的频率级组）。
+	SortedBy string                           `json:"sortedBy"`
+	Notes    []string                         `json:"notes"` // 本组内出现过的精度警示（去重）
+	Rows     []SignalBacktestComparisonRowDTO `json:"rows"`
+}
+
+// SignalBacktestBatchDTO 批次头。
+type SignalBacktestBatchDTO struct {
+	ID             int64  `json:"id"`
+	Name           string `json:"name"`
+	InstanceKey    string `json:"instanceKey"`
+	AccountLabel   string `json:"accountLabel"`
+	PlatformCode   string `json:"platformCode"`
+	CoinCode       string `json:"coinCode"`
+	Symbol         string `json:"symbol"`
+	StartTime      string `json:"startTime"`
+	EndTime        string `json:"endTime"`
+	Status         string `json:"status"`
+	ErrorMsg       string `json:"errorMsg"`
+	Concurrency    int    `json:"concurrency"`
+	GroupCount     int    `json:"groupCount"`
+	DoneCount      int    `json:"doneCount"`
+	FailedCount    int    `json:"failedCount"`
+	BaselineRunID  int64  `json:"baselineRunId"`
+	BaselineSource string `json:"baselineSource"`
+	CreatedTime    string `json:"createdTime"`
+}
+
+type SignalBacktestBatchListDTO struct {
+	Total int64                    `json:"total"`
+	List  []SignalBacktestBatchDTO `json:"list"`
+}
+
+// SignalBacktestBatchDetailDTO 批次详情 = 批次头 + 基线 + 按精度分组的对比矩阵。
+type SignalBacktestBatchDetailDTO struct {
+	Batch    SignalBacktestBatchDTO           `json:"batch"`
+	Baseline SignalBaselineDTO                `json:"baseline"`
+	Groups   []SignalBacktestFidelityGroupDTO `json:"groups"`
+	// Warnings 整批级别的提醒：基线未跑完、跨精度组存在、样本量不足等。
+	Warnings []string `json:"warnings"`
 }
 
 // KlinePointDTO 单根 K 线(供回测逐笔的“K线详情”弹窗展示)。
@@ -970,4 +1235,325 @@ type BackfillKlineResultDTO struct {
 	Upserted     int64  `json:"upserted"`        // 幂等入库影响行数
 	LatestAfter  string `json:"latestAfter"`     // 回填后 DB 最新一根 open_time
 	Error        string `json:"error,omitempty"` // 该组合的失败原因(批量回填时单组合失败不影响其它组合)
+}
+
+// BackfillKlineRangeDTO 按【时间窗口覆盖率】回填 K 线的入参。
+//
+// 与 BackfillKlineDTO/BatchBackfillKlineDTO 的「最近 N 根增量」不同：那套以
+// DB 最新一根为基准推算需补根数，窗口整段落在过去时会误判成「已是最新」而漏补
+// 历史空洞（行情主视图 r12 的「回填缺口」正是这个场景）。这里改按窗口内实际
+// 覆盖率判定，再按 (now - start)/周期 往回兜——交易所只提供「最近 N 根」。
+//
+// Start/End 建议传 RFC3339（带时区偏移）。传裸 "YYYY-MM-DD HH:mm:ss" 会按 UTC
+// 解析，而 argus-event 的时间串是本地墙钟，两者混用会整体错开时区偏移。
+type BackfillKlineRangeDTO struct {
+	PlatformCodes []string `json:"platformCodes"` // 空则取 platformCode，仍为空默认 [binance]
+	PlatformCode  string   `json:"platformCode"`
+	Symbol        string   `json:"symbol" binding:"required"`
+	Intervals     []string `json:"intervals"` // 空则取 interval，仍为空默认 [1m,5m,1h,1d]
+	Interval      string   `json:"interval"`
+	Start         string   `json:"start" binding:"required"`
+	End           string   `json:"end"` // 空 = 现在
+}
+
+// BackfillKlineRangeItemDTO 单个「平台 × 周期」组合的窗口回填结果。
+type BackfillKlineRangeItemDTO struct {
+	PlatformCode string `json:"platformCode"`
+	Symbol       string `json:"symbol"`
+	Interval     string `json:"interval"`
+	Expected     int    `json:"expected"`   // 窗口内理应有的根数
+	HaveBefore   int    `json:"haveBefore"` // 回填前窗口内已有根数
+	NeedFetch    int    `json:"needFetch"`  // 为兜到窗口左界需向交易所要的根数(已按单次上限截断)
+	Fetched      int    `json:"fetched"`    // 实际拉到的根数
+	Upserted     int64  `json:"upserted"`   // 幂等入库影响行数
+	HaveAfter    int    `json:"haveAfter"`  // 回填后窗口内已有根数
+	Skipped      bool   `json:"skipped"`    // 覆盖率已达标，未发起请求
+	Capped       bool   `json:"capped"`     // 窗口太老，单次「最近 N 根」够不到左界
+	Note         string `json:"note"`       // 人话说明(补不动时说清为什么)
+	Error        string `json:"error,omitempty"`
+}
+
+// BackfillKlineRangeResultDTO 窗口回填汇总。
+type BackfillKlineRangeResultDTO struct {
+	Start     string                      `json:"start"` // 实际生效窗口(UTC 串)
+	End       string                      `json:"end"`
+	Total     int                         `json:"total"`
+	Succeeded int                         `json:"succeeded"`
+	Failed    int                         `json:"failed"`
+	Items     []BackfillKlineRangeItemDTO `json:"items"`
+}
+
+// ─── 后台自动参数寻优（r16）──────────────────────────────────────────────────
+//
+// 这一段的请求/响应体**直接复用 strategy/signal 的领域结构**
+// （SearchSpace / Protocol / Convergence / Gates / CellSpec / CellStats 系），
+// 不在 dto 里手抄一份镜像。理由与 r11 的 paramsToMap 一致：搜索空间的轴、
+// 降噪协议的抖动维度、三关阈值都会随研究推进增删，抄一份必然漂移，而这三样
+// 一旦与引擎不一致，落库的"冻结快照"就不再等于实际跑的那份配置——那就把整个
+// 可复现性给毁了。signal 包不依赖 dto，没有环。
+
+// CreateSignalOptimizeStudyDTO 发起一次后台自动参数寻优。
+//
+// 关键约束：Gates（三关阈值）在**创建时锁定**，跑完不接受修改。要换阈值只能
+// 建新任务。这是本任务唯一的防过拟合机械保障——跑完再定标准等于用同一份数据
+// 既定标准又选参数。
+type CreateSignalOptimizeStudyDTO struct {
+	Name         string `json:"name"`
+	PlatformCode string `json:"platformCode"` // 1m 路径回放平台，缺省 deepcoin
+	CoinCode     string `json:"coinCode"`
+	Symbol       string `json:"symbol"`    // 缺省 BTCUSDT
+	StartTime    string `json:"startTime"` // OOS 任务可留空，继承基准任务之后的窗口需自行给出
+	EndTime      string `json:"endTime"`
+	InstanceKey  string `json:"instanceKey"`
+	AccountLabel string `json:"accountLabel"`
+
+	// Concurrency 并发执行的格数上限；<=0 取缺省 3，上限 8。
+	// 单格内的 16 条路径是顺序跑的：并发放在格级已经足够吃满 CPU。
+	Concurrency int `json:"concurrency"`
+
+	// BaselineParams 显式基线；为空时取所选实例当前已发布的生产参数。
+	// 基线提供的是"不参与寻优的那些旋钮"（trail 档位、面值、order_size、
+	// risk_equity），四个搜索轴会覆盖在它之上。
+	BaselineParams *SignalBacktestParamsDTO `json:"baselineParams"`
+
+	// Space / Protocol / Converge / Gates 留空即取缺省（= 设计文档 §3.3 的搜索空间、
+	// §3.2 的 16 路径降噪协议、§10.2 的三关阈值）。
+	Space    *SignalOptimizeSpaceInput    `json:"space"`
+	Protocol *SignalOptimizeProtocolInput `json:"protocol"`
+	Converge *SignalOptimizeConvergeInput `json:"converge"`
+	Gates    *SignalOptimizeGatesInput    `json:"gates"`
+
+	// Incumbent 现行线上配置对应的格；留空时由基线参数推出。
+	// 它会被强制纳入精算格——"现行配置是否被支配"必须有结论。
+	Incumbent *SignalOptimizeCellInput `json:"incumbent"`
+	// FineCells 显式指定精算格。给了就**跳过粗网格**，直接精算这些格子
+	// （用于复现历史精算清单，如 study_fine.csv 的 10 格）。
+	FineCells []SignalOptimizeCellInput `json:"fineCells"`
+
+	// OosBaseStudyID 以某次已完成的扫描为基准建 out_of_sample 任务：
+	// 继承它冻结的阈值、协议与精算格，只换数据窗口，不重新调参。
+	// 窗口起点必须晚于基准任务的阈值锁定时刻，否则不是真正的样本外。
+	OosBaseStudyID int64 `json:"oosBaseStudyId"`
+}
+
+// SignalOptimizeSpaceInput 搜索空间输入，字段与 signal.SearchSpace 同名同义。
+type SignalOptimizeSpaceInput struct {
+	NetCaps       []int     `json:"netCaps"`
+	DualCaps      []int     `json:"dualCaps"`
+	StopPcts      []float64 `json:"stopPcts"`
+	GatePcts      []float64 `json:"gatePcts"`
+	IncludeDual   *bool     `json:"includeDual"`
+	CoarseGatePct float64   `json:"coarseGatePct"`
+}
+
+// SignalOptimizeProtocolInput 降噪协议输入。留空的字段取金标准缺省。
+type SignalOptimizeProtocolInput struct {
+	EvalModes       []string `json:"evalModes"`
+	OffsetDays      []int    `json:"offsetDays"`
+	DropSeeds       []*int64 `json:"dropSeeds"`
+	DropRate        float64  `json:"dropRate"`
+	NormalizeDays   float64  `json:"normalizeDays"`
+	ScenarioDays    int      `json:"scenarioDays"`
+	BootstrapMode   string   `json:"bootstrapMode"` // day_iid / episode_block
+	BootstrapDraws  int      `json:"bootstrapDraws"`
+	BootstrapSeed   int64    `json:"bootstrapSeed"`
+	LambdaDenom     string   `json:"lambdaDenom"` // window / path
+	LambdaMonthDays float64  `json:"lambdaMonthDays"`
+	TrendAbsRetPct  float64  `json:"trendAbsRetPct"`
+	VolRangePct     float64  `json:"volRangePct"`
+	// CoarseOffsetDays / CoarseDropSeeds 粗网格阶段的抖动轴（缺省 4 条路径）。
+	CoarseOffsetDays []int    `json:"coarseOffsetDays"`
+	CoarseDropSeeds  []*int64 `json:"coarseDropSeeds"`
+}
+
+// SignalOptimizeConvergeInput 粗→精收敛规则输入。
+type SignalOptimizeConvergeInput struct {
+	TopK            int   `json:"topK"`
+	KeepAllPositive *bool `json:"keepAllPositive"`
+	ExpandGateAxis  *bool `json:"expandGateAxis"`
+	MaxCells        int   `json:"maxCells"`
+}
+
+// SignalOptimizeGatesInput 预注册三关阈值输入。
+//
+// 优先给百分比（riskEquity + bearBudgetPct + ddMaxPct），绝对阈值由它们派生；
+// 也可以直接给绝对阈值来复现历史标准（如 −56U / 94U）。
+type SignalOptimizeGatesInput struct {
+	RiskEquity     float64 `json:"riskEquity"`
+	BearBudgetPct  float64 `json:"bearBudgetPct"`
+	DdMaxPct       float64 `json:"ddMaxPct"`
+	SignMin        float64 `json:"signMin"`
+	BearNetP10Min  float64 `json:"bearNetP10Min"`
+	MaxDrawdownMax float64 `json:"maxDrawdownMax"`
+}
+
+// SignalOptimizeCellInput 搜索空间里的一格。
+type SignalOptimizeCellInput struct {
+	Mode    string  `json:"mode"` // net / dual
+	Cap     int     `json:"cap"`
+	StopPct float64 `json:"stopPct"`
+	GatePct float64 `json:"gatePct"`
+}
+
+// SignalOptimizeStudyDTO 寻优任务头。
+type SignalOptimizeStudyDTO struct {
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	InstanceKey  string `json:"instanceKey"`
+	AccountLabel string `json:"accountLabel"`
+	PlatformCode string `json:"platformCode"`
+	CoinCode     string `json:"coinCode"`
+	Symbol       string `json:"symbol"`
+	StartTime    string `json:"startTime"`
+	EndTime      string `json:"endTime"`
+
+	SampleKind string `json:"sampleKind"` // in_sample / out_of_sample
+	SampleNote string `json:"sampleNote"`
+	OosBaseID  int64  `json:"oosBaseId"`
+
+	Stage           string `json:"stage"` // coarse / fine / concluded
+	Status          string `json:"status"`
+	ErrorMsg        string `json:"errorMsg"`
+	Concurrency     int    `json:"concurrency"`
+	CoarseCellCount int    `json:"coarseCellCount"`
+	FineCellCount   int    `json:"fineCellCount"`
+	DoneCellCount   int    `json:"doneCellCount"`
+	FailedCellCount int    `json:"failedCellCount"`
+	SkipCellCount   int    `json:"skipCellCount"`
+	ReplayCount     int    `json:"replayCount"`
+	ConvergeNote    string `json:"convergeNote"`
+
+	SignalCount   int `json:"signalCount"`
+	KlineCount    int `json:"klineCount"`
+	TrendDayCount int `json:"trendDayCount"`
+	VolDayCount   int `json:"volDayCount"`
+
+	// GateLockedAt 阈值锁定时刻。页面必须显示它：没有它，"预注册"就只是一句宣称。
+	GateLockedAt    string `json:"gateLockedAt"`
+	GateNote        string `json:"gateNote"`
+	Verdict         string `json:"verdict"`
+	PassedCellCount int    `json:"passedCellCount"`
+	BaselineSource  string `json:"baselineSource"`
+	CreatedTime     string `json:"createdTime"`
+}
+
+type SignalOptimizeStudyListDTO struct {
+	Total int64                    `json:"total"`
+	List  []SignalOptimizeStudyDTO `json:"list"`
+}
+
+// SignalOptimizeCellRowDTO 结果矩阵的一行 = 一格。
+//
+// 刻意**没有** netPnl 这种单值字段：一格的产出是一束路径上的分布，给一个
+// "该格的 PnL" 就是在邀请人按点估计排序，而这正是本任务要消灭的误读
+// （现行 champion 的符号一致率 0.56，按点估计排它并不难看）。
+type SignalOptimizeCellRowDTO struct {
+	ID       int64   `json:"id"`
+	Stage    string  `json:"stage"`
+	Key      string  `json:"key"`
+	Mode     string  `json:"mode"`
+	Cap      int     `json:"cap"`
+	StopPct  float64 `json:"stopPct"`
+	GatePct  float64 `json:"gatePct"`
+	Fidelity string  `json:"fidelity"`
+	Status   string  `json:"status"`
+	ErrorMsg string  `json:"errorMsg"`
+
+	PathCount int     `json:"pathCount"`
+	MedPnl28  float64 `json:"medPnl28"`
+	P25Pnl28  float64 `json:"p25Pnl28"`
+	P75Pnl28  float64 `json:"p75Pnl28"`
+	IqrPnl28  float64 `json:"iqrPnl28"`
+	MinPnl28  float64 `json:"minPnl28"`
+	MaxPnl28  float64 `json:"maxPnl28"`
+	SignRatio float64 `json:"signRatio"`
+
+	LambdaBear   float64 `json:"lambdaBear"`
+	MeanStopLoss float64 `json:"meanStopLoss"`
+	StopBudget   float64 `json:"stopBudget"`
+	StopCount    int     `json:"stopCount"`
+
+	P90MaxDrawdown float64 `json:"p90MaxDrawdown"`
+	MaxStack       int     `json:"maxStack"`
+	MedFee         float64 `json:"medFee"`
+	MedDays        float64 `json:"medDays"`
+	MedSignalRun   int     `json:"medSignalRun"`
+
+	BearPoolSize int     `json:"bearPoolSize"`
+	BearP10      float64 `json:"bearP10"`
+	BearP50      float64 `json:"bearP50"`
+	BearP90      float64 `json:"bearP90"`
+	ChopP10      float64 `json:"chopP10"`
+	ChopP50      float64 `json:"chopP50"`
+	MixedP10     float64 `json:"mixedP10"`
+	MixedP50     float64 `json:"mixedP50"`
+
+	OkSign      bool     `json:"okSign"`
+	OkBear      bool     `json:"okBear"`
+	OkDd        bool     `json:"okDd"`
+	OkBudget    bool     `json:"okBudget"`
+	Passed      bool     `json:"passed"`
+	PassCount   int      `json:"passCount"`
+	VerdictNote string   `json:"verdictNote"`
+	DominatedBy []string `json:"dominatedBy"`
+
+	IsIncumbent    bool `json:"isIncumbent"`
+	OnDdFrontier   bool `json:"onDdFrontier"`
+	OnBearFrontier bool `json:"onBearFrontier"`
+
+	// Notes 本格必须随结果展示的口径说明（bootstrap 偏差、λ 分母偏差、样本薄等）。
+	Notes []string `json:"notes"`
+	// Params 本格的完整参数快照，可直接提交给 POST /backtest/signal-runs 单跑看逐笔。
+	Params map[string]interface{} `json:"params"`
+	// Paths 逐路径产出（不含日 MTM 序列，那是中间量）。
+	Paths []map[string]interface{} `json:"paths,omitempty"`
+}
+
+// SignalOptimizeStudyDetailDTO 寻优任务详情。
+type SignalOptimizeStudyDetailDTO struct {
+	Study SignalOptimizeStudyDTO `json:"study"`
+	// Space / Protocol / Converge / Gates 是任务**冻结**的那份，不是当前缺省。
+	Space     map[string]interface{} `json:"space"`
+	Protocol  map[string]interface{} `json:"protocol"`
+	Converge  map[string]interface{} `json:"converge"`
+	Gates     map[string]interface{} `json:"gates"`
+	Baseline  SignalBaselineDTO      `json:"baseline"`
+	Incumbent map[string]interface{} `json:"incumbent"`
+
+	Coarse []SignalOptimizeCellRowDTO `json:"coarse"`
+	Fine   []SignalOptimizeCellRowDTO `json:"fine"`
+
+	// Conclusion 结论（含无解分支的权衡前沿与被支配的现行配置）。未跑完为空。
+	Conclusion  map[string]interface{}   `json:"conclusion"`
+	Frontier    []map[string]interface{} `json:"frontier"`
+	ScaleChecks []map[string]interface{} `json:"scaleChecks"`
+	Warnings    []string                 `json:"warnings"`
+}
+
+// SignalOptimizeStudyQueryDTO 任务列表查询。
+type SignalOptimizeStudyQueryDTO struct {
+	Page         int    `form:"page"`
+	PageSize     int    `form:"pageSize"`
+	InstanceKey  string `form:"instanceKey"`
+	AccountLabel string `form:"accountLabel"`
+	SampleKind   string `form:"sampleKind"`
+}
+
+// SignalOptimizeDefaultsDTO 发起表单的缺省值预览：搜索空间会展开成多少格、
+// 降噪协议是哪几条路径、三关阈值是多少。让人在提交前就能核对这三样。
+type SignalOptimizeDefaultsDTO struct {
+	Space           map[string]interface{} `json:"space"`
+	CoarseCellCount int                    `json:"coarseCellCount"`
+	CoarseCells     []string               `json:"coarseCells"`
+	Protocol        map[string]interface{} `json:"protocol"`
+	FinePathCount   int                    `json:"finePathCount"`
+	FinePaths       []string               `json:"finePaths"`
+	CoarsePathCount int                    `json:"coarsePathCount"`
+	CoarsePaths     []string               `json:"coarsePaths"`
+	Converge        map[string]interface{} `json:"converge"`
+	Gates           map[string]interface{} `json:"gates"`
+	GateNote        string                 `json:"gateNote"`
+	// EstimatedReplays 预估总回放次数：粗网格格数×粗路径数 + 精算格数×精路径数。
+	EstimatedReplays int      `json:"estimatedReplays"`
+	Notes            []string `json:"notes"`
 }

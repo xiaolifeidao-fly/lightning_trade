@@ -366,9 +366,208 @@ type TradeBacktestRun struct {
 	KlineCount int        `gorm:"column:kline_count;type:int;default:0" description:"回放使用的K线根数"`
 	KlineStart *time.Time `gorm:"column:kline_start;type:datetime" description:"实际K线起始时间"`
 	KlineEnd   *time.Time `gorm:"column:kline_end;type:datetime" description:"实际K线结束时间"`
+
+	// ─── 盘口信号回测（engine_kind=signal）专用 ────────────────────────────────
+	// 两套引擎共用本表：预测驱动（engine.go）与信号驱动（strategy/signal）。
+	// 既有行没有这一列，AutoMigrate 会按 default 回填成 prediction，读侧据此分流。
+	EngineKind   string `gorm:"column:engine_kind;type:varchar(16);default:'prediction';index:idx_bt_run_engine" description:"引擎类型 prediction/signal"`
+	InstanceKey  string `gorm:"column:instance_key;type:varchar(64)" description:"信号源实例键(argus_instance.instance_key)"`
+	AccountLabel string `gorm:"column:account_label;type:varchar(128)" description:"信号源账户(strategy_event.account_label)"`
+	SignalSource string `gorm:"column:signal_source;type:varchar(32)" description:"信号来源表，固定 strategy_event"`
+	// Fidelity 精度等级：event=事件级(触发点精确到秒) / frequency=频率级(只能推λ(θ))。
+	// 需求大纲 §3.3：两级结果不得混排比较，所以它必须落在 run 上而不只是算出来。
+	Fidelity     string `gorm:"column:fidelity;type:varchar(16)" description:"精度等级 event/frequency"`
+	FidelityNote string `gorm:"column:fidelity_note;type:varchar(1024)" description:"必须随结果展示的精度警示"`
+	SignalCount  int    `gorm:"column:signal_count;type:int;default:0" description:"回放消费的真实触发数"`
+
+	// ─── 参数组批量扫描（r11）────────────────────────────────────────────────────
+	// 批量扫描不另建一张"批量逐组"表：一组参数就是一条完整的 run（自带
+	// params_snapshot / fidelity / metric / 逐笔），只是多了个归属批次。这样
+	// 批量里的任一组都能直接在既有 run 详情页打开，也能单独重跑。
+	// batch_id=0 表示单跑的 run（既有行 AutoMigrate 后就是 0）。
+	BatchID    int64  `gorm:"column:batch_id;type:bigint;default:0;index:idx_bt_run_batch" description:"所属批量扫描ID，0=单跑"`
+	GroupLabel string `gorm:"column:group_label;type:varchar(128)" description:"批量扫描中的参数组标签"`
+	IsBaseline uint8  `gorm:"column:is_baseline;type:tinyint;default:0" description:"是否本批次的基线组"`
 }
 
 func (r *TradeBacktestRun) TableName() string { return "trade_backtest_run" }
+
+// TradeBacktestBatch 参数组批量扫描（r11）：一次批量 = 一行，下挂 N 条
+// trade_backtest_run（每组参数一条）。
+//
+// 批次只承载"这一批共享什么、跑到哪一步、基线是谁"，指标一律不冗余在这里——
+// 汇总指标的唯一来源是 trade_backtest_metric，横向对比页按 run_id 关联去取。
+// 冗余一份就会出现"批次上的净利与组详情里的净利不一致"这类无法排查的问题。
+type TradeBacktestBatch struct {
+	db.BaseEntity
+	Name string `gorm:"column:name;type:varchar(128)" description:"批次名"`
+	// 共享的信号源与窗口：批内全部组必须完全一致，否则组间差异里混进数据差异。
+	InstanceKey  string    `gorm:"column:instance_key;type:varchar(64);index:idx_bt_batch_inst" description:"信号源实例键"`
+	AccountLabel string    `gorm:"column:account_label;type:varchar(128)" description:"信号源账户"`
+	PlatformCode string    `gorm:"column:platform_code;type:varchar(32)" description:"1m 路径回放平台"`
+	Symbol       string    `gorm:"column:symbol;type:varchar(32)" description:"交易对"`
+	CoinCode     string    `gorm:"column:coin_code;type:varchar(32)" description:"基础币种"`
+	StartTime    time.Time `gorm:"column:start_time;type:datetime" description:"扫描窗口起"`
+	EndTime      time.Time `gorm:"column:end_time;type:datetime" description:"扫描窗口止"`
+	// BaselineSnapshot 基线参数冻结快照（JSON，signal.Params）。与基线的 diff
+	// 一律按它算，不按"重新读一次当前生产配置"——生产参数随时会被热更，
+	// 事后再读会让同一个批次今天和明天算出不同的差异。
+	BaselineSnapshot string `gorm:"column:baseline_snapshot;type:text" description:"基线参数冻结快照(JSON)"`
+	BaselineSource   string `gorm:"column:baseline_source;type:varchar(32)" description:"基线来源 instance_published/request"`
+	// BaselineNote 基线里哪些字段没能从 DB 取到、用了什么兜底（配置面收敛未完成时必然有）。
+	BaselineNote  string `gorm:"column:baseline_note;type:varchar(1024)" description:"基线取值来源与兜底说明"`
+	BaselineRunID int64  `gorm:"column:baseline_run_id;type:bigint;default:0" description:"基线组对应的 run_id，0=未跑基线"`
+
+	Concurrency int    `gorm:"column:concurrency;type:int;default:1" description:"并发执行的组数上限"`
+	GroupCount  int    `gorm:"column:group_count;type:int;default:0" description:"本批次的参数组数(含基线组)"`
+	DoneCount   int    `gorm:"column:done_count;type:int;default:0" description:"已完成组数"`
+	FailedCount int    `gorm:"column:failed_count;type:int;default:0" description:"失败组数"`
+	Status      string `gorm:"column:status;type:varchar(16);default:'pending'" description:"状态 pending/running/done/partial/failed"`
+	ErrorMsg    string `gorm:"column:error_msg;type:varchar(512)" description:"批次级失败原因(取数失败等)"`
+}
+
+func (b *TradeBacktestBatch) TableName() string { return "trade_backtest_batch" }
+
+// TradeOptimizeStudy 后台自动参数寻优任务（r16）：一次扫描 = 一行，下挂 N 条
+// trade_optimize_cell（一格一条，粗网格与精算格用 stage 区分）。
+//
+// 为什么**不复用** trade_backtest_run 逐路径落库：降噪协议每格 16 条路径，
+// 40 格就是 640 条 run + 640 条 metric + 数万行逐笔，而其中任何一条单路径都
+// **不是决策依据**（单路径混沌 ±70U）。真正要留档的是格级的中位数/IQR/一致率/
+// 情景分位。要看某一格的逐笔，把该格的 params_snapshot 提交给
+// POST /backtest/signal-runs 单跑一次即可——参数快照就是完整的 signal.Params。
+//
+// 阈值三件套（gate_snapshot / gate_locked_at / gate_note）是本表最关键的列：
+// 预注册的意思就是"发起时写死、跑完不可改"，改阈值只能建新任务。
+type TradeOptimizeStudy struct {
+	db.BaseEntity
+	Name string `gorm:"column:name;type:varchar(128)" description:"扫描任务名"`
+	// 信号源与窗口：全部格子共享同一份触发流，否则格间差异里混进数据差异。
+	InstanceKey  string    `gorm:"column:instance_key;type:varchar(64);index:idx_opt_study_inst" description:"信号源实例键"`
+	AccountLabel string    `gorm:"column:account_label;type:varchar(128)" description:"信号源账户"`
+	PlatformCode string    `gorm:"column:platform_code;type:varchar(32)" description:"1m 路径回放平台"`
+	Symbol       string    `gorm:"column:symbol;type:varchar(32)" description:"交易对"`
+	CoinCode     string    `gorm:"column:coin_code;type:varchar(32)" description:"基础币种"`
+	StartTime    time.Time `gorm:"column:start_time;type:datetime" description:"扫描窗口起"`
+	EndTime      time.Time `gorm:"column:end_time;type:datetime" description:"扫描窗口止"`
+
+	// OOS 纪律：in_sample = 用于推参数的窗口（收益必然高估）；
+	// out_of_sample = 以某次扫描为基准、继承其冻结阈值与精算格，只换数据窗口。
+	SampleKind string `gorm:"column:sample_kind;type:varchar(16);default:'in_sample'" description:"样本口径 in_sample/out_of_sample"`
+	SampleNote string `gorm:"column:sample_note;type:varchar(512)" description:"样本口径说明"`
+	OosBaseID  int64  `gorm:"column:oos_base_id;type:bigint;default:0" description:"out_of_sample 任务继承的基准扫描 id，0=无"`
+
+	// 冻结快照：结果可复算的唯一凭据。
+	SpaceSnapshot     string    `gorm:"column:space_snapshot;type:text" description:"搜索空间快照(JSON signal.SearchSpace)"`
+	ProtocolSnapshot  string    `gorm:"column:protocol_snapshot;type:text" description:"降噪协议快照(JSON signal.Protocol)"`
+	ConvergeSnapshot  string    `gorm:"column:converge_snapshot;type:text" description:"粗→精收敛规则快照(JSON signal.Convergence)"`
+	GateSnapshot      string    `gorm:"column:gate_snapshot;type:text" description:"预注册三关阈值快照(JSON signal.Gates)"`
+	GateLockedAt      time.Time `gorm:"column:gate_locked_at;type:datetime" description:"阈值锁定时刻(发起时写死，跑完不可改)"`
+	GateNote          string    `gorm:"column:gate_note;type:varchar(512)" description:"三关阈值的可读表述"`
+	BaselineSnapshot  string    `gorm:"column:baseline_snapshot;type:text" description:"基线参数冻结快照(JSON signal.Params)"`
+	BaselineSource    string    `gorm:"column:baseline_source;type:varchar(32)" description:"基线来源 instance_published/request"`
+	BaselineNote      string    `gorm:"column:baseline_note;type:varchar(1024)" description:"基线取值来源与兜底说明"`
+	IncumbentSnapshot string    `gorm:"column:incumbent_snapshot;type:varchar(512)" description:"现行配置格快照(JSON signal.CellSpec)，空=未解析出"`
+
+	// 执行进度
+	Stage           string `gorm:"column:stage;type:varchar(16);default:'coarse'" description:"阶段 coarse/fine/concluded"`
+	Concurrency     int    `gorm:"column:concurrency;type:int;default:1" description:"并发执行的格数上限"`
+	CoarseCellCount int    `gorm:"column:coarse_cell_count;type:int;default:0" description:"粗网格格数"`
+	FineCellCount   int    `gorm:"column:fine_cell_count;type:int;default:0" description:"精算格数"`
+	DoneCellCount   int    `gorm:"column:done_cell_count;type:int;default:0" description:"已完成格数"`
+	FailedCellCount int    `gorm:"column:failed_cell_count;type:int;default:0" description:"失败格数"`
+	SkipCellCount   int    `gorm:"column:skip_cell_count;type:int;default:0" description:"参数非法被跳过的格数"`
+	ReplayCount     int    `gorm:"column:replay_count;type:int;default:0" description:"累计回放次数(格数×路径数)"`
+	Status          string `gorm:"column:status;type:varchar(16);default:'pending'" description:"状态 pending/running/done/partial/failed"`
+	ErrorMsg        string `gorm:"column:error_msg;type:varchar(512)" description:"任务级失败原因"`
+	ConvergeNote    string `gorm:"column:converge_note;type:varchar(1024)" description:"精算格是怎么从粗网格收敛出来的"`
+
+	// 数据侧事实
+	SignalCount   int `gorm:"column:signal_count;type:int;default:0" description:"窗口内真实触发数"`
+	KlineCount    int `gorm:"column:kline_count;type:int;default:0" description:"窗口内 1m 根数"`
+	TrendDayCount int `gorm:"column:trend_day_count;type:int;default:0" description:"窗口内单边日天数(熊市月情景的样本基数)"`
+	VolDayCount   int `gorm:"column:vol_day_count;type:int;default:0" description:"窗口内震荡日天数"`
+
+	// 结论
+	Verdict          string `gorm:"column:verdict;type:varchar(24)" description:"结论 candidate_found/no_solution，空=未出结论"`
+	PassedCellCount  int    `gorm:"column:passed_cell_count;type:int;default:0" description:"通过三关的格数"`
+	Conclusion       string `gorm:"column:conclusion;type:text" description:"结论正文(JSON signal.Conclusion)"`
+	FrontierSnapshot string `gorm:"column:frontier_snapshot;type:text" description:"权衡前沿快照(JSON []signal.FrontierPoint)"`
+	ScaleSnapshot    string `gorm:"column:scale_snapshot;type:text" description:"规模不变性核查快照(JSON []signal.ScaleInvarianceCheck)"`
+}
+
+func (s *TradeOptimizeStudy) TableName() string { return "trade_optimize_study" }
+
+// TradeOptimizeCell 搜索空间里的一格 + 它的降噪产出与三关判定。
+//
+// 每个统计列都是 N 条路径的聚合，**没有任何一列是单路径点估计**——这是本表
+// 与 trade_backtest_metric 的根本区别，也是它不能塞进那张表的原因。
+type TradeOptimizeCell struct {
+	db.BaseEntity
+	StudyID int64   `gorm:"column:study_id;type:bigint;not null;index:idx_opt_cell_study" description:"关联寻优任务ID"`
+	Stage   string  `gorm:"column:stage;type:varchar(16);index:idx_opt_cell_study" description:"阶段 coarse/fine"`
+	CellKey string  `gorm:"column:cell_key;type:varchar(64)" description:"格子标识 如 net(26,400,g20)"`
+	Mode    string  `gorm:"column:mode;type:varchar(8)" description:"持仓形态 net/dual"`
+	Cap     int     `gorm:"column:cap_contracts;type:int;default:0" description:"仓位上限张数(dual 为每侧上限)；999=∞对照"`
+	StopPct float64 `gorm:"column:stop_pct;type:decimal(18,6);default:0" description:"S 兜底止损 ROI%"`
+	GatePct float64 `gorm:"column:gate_pct;type:decimal(18,6);default:0" description:"反向门控最低盈利%"`
+
+	ParamsSnapshot string `gorm:"column:params_snapshot;type:text" description:"本格完整参数快照(JSON signal.Params)"`
+	Fidelity       string `gorm:"column:fidelity;type:varchar(16);default:'event'" description:"精度等级；寻优只做事件级"`
+	Status         string `gorm:"column:status;type:varchar(16);default:'pending'" description:"状态 pending/running/done/failed/skipped"`
+	ErrorMsg       string `gorm:"column:error_msg;type:varchar(512)" description:"失败或跳过原因"`
+	PathCount      int    `gorm:"column:path_count;type:int;default:0" description:"实际跑通的抖动路径数"`
+
+	// 降噪产出
+	MedPnl28  float64 `gorm:"column:med_pnl28;type:decimal(24,8);default:0" description:"中位净利(归一到 28 天)"`
+	P25Pnl28  float64 `gorm:"column:p25_pnl28;type:decimal(24,8);default:0" description:"净利 p25"`
+	P75Pnl28  float64 `gorm:"column:p75_pnl28;type:decimal(24,8);default:0" description:"净利 p75"`
+	IqrPnl28  float64 `gorm:"column:iqr_pnl28;type:decimal(24,8);default:0" description:"净利 IQR"`
+	MinPnl28  float64 `gorm:"column:min_pnl28;type:decimal(24,8);default:0" description:"净利最小值"`
+	MaxPnl28  float64 `gorm:"column:max_pnl28;type:decimal(24,8);default:0" description:"净利最大值"`
+	SignRatio float64 `gorm:"column:sign_ratio;type:decimal(18,6);default:0" description:"符号一致率(pnl>0 的路径占比)"`
+
+	LambdaBear   float64 `gorm:"column:lambda_bear;type:decimal(18,6);default:0" description:"单边日口径兜底频率 次/月"`
+	MeanStopLoss float64 `gorm:"column:mean_stop_loss;type:decimal(24,8);default:0" description:"单次兜底平均损失额"`
+	StopBudget   float64 `gorm:"column:stop_budget;type:decimal(24,8);default:0" description:"月度兜底预算消耗 λ×损失"`
+	StopCount    int     `gorm:"column:stop_count;type:int;default:0" description:"全路径兜底总次数"`
+
+	P90MaxDrawdown float64 `gorm:"column:p90_max_drawdown;type:decimal(24,8);default:0" description:"p90 MTM 最大回撤"`
+	MaxStack       int     `gorm:"column:max_stack;type:int;default:0" description:"最大堆积张数"`
+	MedFee         float64 `gorm:"column:med_fee;type:decimal(24,8);default:0" description:"中位手续费"`
+	MedDays        float64 `gorm:"column:med_days;type:decimal(18,6);default:0" description:"中位覆盖天数"`
+	MedSignalRun   int     `gorm:"column:med_signal_run;type:int;default:0" description:"中位回放触发数"`
+
+	// 情景 bootstrap
+	BearPoolSize int     `gorm:"column:bear_pool_size;type:int;default:0" description:"熊市月重采样池大小"`
+	BearP10      float64 `gorm:"column:bear_p10;type:decimal(24,8);default:0" description:"熊市月净 p10"`
+	BearP50      float64 `gorm:"column:bear_p50;type:decimal(24,8);default:0" description:"熊市月净 p50"`
+	BearP90      float64 `gorm:"column:bear_p90;type:decimal(24,8);default:0" description:"熊市月净 p90"`
+	ChopP10      float64 `gorm:"column:chop_p10;type:decimal(24,8);default:0" description:"震荡月净 p10"`
+	ChopP50      float64 `gorm:"column:chop_p50;type:decimal(24,8);default:0" description:"震荡月净 p50"`
+	MixedP10     float64 `gorm:"column:mixed_p10;type:decimal(24,8);default:0" description:"混合月净 p10"`
+	MixedP50     float64 `gorm:"column:mixed_p50;type:decimal(24,8);default:0" description:"混合月净 p50"`
+
+	// 三关判定（阈值取自任务冻结的 gate_snapshot）
+	OkSign      int    `gorm:"column:ok_sign;type:tinyint;default:0" description:"符号一致率关 1=过"`
+	OkBear      int    `gorm:"column:ok_bear;type:tinyint;default:0" description:"熊市月净 p10 关 1=过"`
+	OkDd        int    `gorm:"column:ok_dd;type:tinyint;default:0" description:"p90 回撤关 1=过"`
+	OkBudget    int    `gorm:"column:ok_budget;type:tinyint;default:0" description:"参考项：频率预算 1=过(不计入三关)"`
+	Passed      int    `gorm:"column:passed;type:tinyint;default:0" description:"三关全过 1=候选"`
+	PassCount   int    `gorm:"column:pass_count;type:int;default:0" description:"通过的关数 0-3"`
+	VerdictNote string `gorm:"column:verdict_note;type:varchar(1024)" description:"未过关的逐条原因"`
+
+	// 支配关系与前沿
+	DominatedBy    string `gorm:"column:dominated_by;type:varchar(512)" description:"全面支配本格的格子键，逗号分隔"`
+	IsIncumbent    int    `gorm:"column:is_incumbent;type:tinyint;default:0" description:"1=现行线上配置对应的格"`
+	OnDdFrontier   int    `gorm:"column:on_dd_frontier;type:tinyint;default:0" description:"1=在收益/回撤前沿上"`
+	OnBearFrontier int    `gorm:"column:on_bear_frontier;type:tinyint;default:0" description:"1=在收益/熊市尾部前沿上"`
+
+	PathsSnapshot string `gorm:"column:paths_snapshot;type:text" description:"逐路径产出快照(JSON []signal.PathOutcome)"`
+	NoteSnapshot  string `gorm:"column:note_snapshot;type:text" description:"本格必须随结果展示的口径说明(JSON []string)"`
+}
+
+func (c *TradeOptimizeCell) TableName() string { return "trade_optimize_cell" }
 
 // TradeBacktestTrade 回测逐笔明细：一次回测里的每一笔模拟交易，结构镜像持仓但归属某个 run、不进实盘监控。
 // 与 strategy.Order 对应；status=expired 表示挂单未成交(成交率统计必需)。
@@ -422,6 +621,16 @@ type TradeBacktestTrade struct {
 	// 本笔所属压力面(信号时刻最近一次分析)的关键结构位：最高=关键阻力、最低=关键支撑(0=无)。
 	PressureHigh float64 `gorm:"column:pressure_high;type:decimal(36,18);default:0" description:"压力面最高价(关键阻力)"`
 	PressureLow  float64 `gorm:"column:pressure_low;type:decimal(36,18);default:0" description:"压力面最低价(关键支撑)"`
+
+	// ─── 盘口信号回测（calc_mode=signal）专用 ──────────────────────────────────
+	// 信号驱动的一行 = 一个持仓生命周期（net 仓从 0 张累积到平仓/削零），
+	// 不是一个预测信号，所以需要张数与加仓次数这两个净仓口径的字段。
+	Contracts    int `gorm:"column:contracts;type:int;default:0" description:"平仓张数"`
+	MaxContracts int `gorm:"column:max_contracts;type:int;default:0" description:"生命周期内最大张数"`
+	AddCount     int `gorm:"column:add_count;type:int;default:0" description:"加仓次数(含首次建仓)"`
+	// PeakPct 回测口径的 trail 峰值：用 1m high 计算，相对实盘 5 秒轮询系统性偏高。
+	PeakPct    float64 `gorm:"column:peak_pct;type:decimal(14,6);default:0" description:"移动止盈峰值ROI%(回测口径，偏高)"`
+	ReducedPnl float64 `gorm:"column:reduced_pnl;type:decimal(36,18);default:0" description:"生命周期内反向减仓锁利累计"`
 }
 
 func (t *TradeBacktestTrade) TableName() string { return "trade_backtest_trade" }
@@ -455,6 +664,32 @@ type TradeBacktestMetric struct {
 	EarlyCutCount     int `gorm:"column:early_cut_count;type:int;default:0" description:"早段疲软离场笔数"`
 	EarlyAdverseCount int `gorm:"column:early_adverse_count;type:int;default:0" description:"早段逆行离场笔数"`
 	TimeoutCount      int `gorm:"column:timeout_count;type:int;default:0" description:"超时平仓笔数"`
+
+	// ─── 盘口信号回测（calc_mode=signal）专用 ──────────────────────────────────
+	// Fidelity 冗余到 metric 而不只放 run 上：横向对比页是按 metric 行排序的，
+	// 精度等级必须跟着每一行走，否则事件级与频率级会被排进同一张榜。
+	Fidelity     string `gorm:"column:fidelity;type:varchar(16)" description:"精度等级 event/frequency"`
+	FidelityNote string `gorm:"column:fidelity_note;type:varchar(1024)" description:"精度警示"`
+
+	SignalCount      int     `gorm:"column:signal_count;type:int;default:0" description:"回放消费的真实触发数"`
+	SignalDropped    int     `gorm:"column:signal_dropped;type:int;default:0" description:"未回放的触发数(种子之前/无K线覆盖)"`
+	SignalFiltered   int     `gorm:"column:signal_filtered;type:int;default:0" description:"抬高阈值后被|gapBp|门限筛掉的触发数"`
+	CapSkipCount     int     `gorm:"column:cap_skip_count;type:int;default:0" description:"仓位上限跳过次数"`
+	GateSkipCount    int     `gorm:"column:gate_skip_count;type:int;default:0" description:"反向门控拦截次数"`
+	TrendSkipCount   int     `gorm:"column:trend_skip_count;type:int;default:0" description:"趋势闸拦截次数"`
+	ReduceCount      int     `gorm:"column:reduce_count;type:int;default:0" description:"盈利减仓次数"`
+	ReduceCloseCount int     `gorm:"column:reduce_close_count;type:int;default:0" description:"被减仓削零结束的生命周期数"`
+	EodOpenCount     int     `gorm:"column:eod_open_count;type:int;default:0" description:"窗口结束仍持仓的生命周期数"`
+	MaxStack         int     `gorm:"column:max_stack;type:int;default:0" description:"最大堆积张数"`
+	CapEffective     int     `gorm:"column:cap_effective;type:int;default:0" description:"本次回放生效的仓位上限"`
+	RealizedPnl      float64 `gorm:"column:realized_pnl;type:decimal(36,18);default:0" description:"已实现盈亏(含减仓锁利)"`
+	FloatingPnl      float64 `gorm:"column:floating_pnl;type:decimal(36,18);default:0" description:"期末浮动盈亏"`
+	MaxDrawdownPct   float64 `gorm:"column:max_drawdown_pct;type:decimal(14,6);default:0" description:"最大回撤占风险基数%"`
+	// λ(θ)：只有频率级(改了 signal_threshold)的组有值。LambdaSelfTest 是
+	// θ0 的 λ 与真实事件密度之比，应≈1；偏离说明 λ 推断本身不可信。
+	LambdaPerDay   float64 `gorm:"column:lambda_per_day;type:decimal(18,6);default:0" description:"目标阈值下的λ(次/天)"`
+	LambdaRatio    float64 `gorm:"column:lambda_ratio;type:decimal(18,6);default:0" description:"λ(θ)/λ(θ0)"`
+	LambdaSelfTest float64 `gorm:"column:lambda_self_test;type:decimal(18,6);default:0" description:"λ自检比值，应≈1"`
 }
 
 func (m *TradeBacktestMetric) TableName() string { return "trade_backtest_metric" }

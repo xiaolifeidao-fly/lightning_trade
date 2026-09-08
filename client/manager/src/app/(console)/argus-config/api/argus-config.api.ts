@@ -115,9 +115,13 @@ export class ArgusNotification {
 export class ArgusRuntimeSession {
   declare id: number;
   declare accountId: number;
+  /** 服务端只回 "******" 占位，明文永不出网；巡检看长度即可。 */
   declare cookie?: string;
   declare token?: string;
   declare otoken?: string;
+  declare cookieLength: number;
+  declare tokenLength: number;
+  declare otokenLength: number;
   declare sentryRelease?: string;
   declare sentryPublicKey?: string;
   declare baggage?: string;
@@ -130,6 +134,7 @@ export class ArgusRuntimeSession {
 }
 
 export class ArgusConfigSnapshot {
+  declare instanceKey: string;
   declare version: ArgusConfigVersion;
   declare config: ArgusConfig;
   declare accounts: ArgusAccount[];
@@ -141,10 +146,17 @@ export class ArgusConfigSnapshot {
 
 export class ArgusHeartbeat {
   declare instanceId: string;
+  declare pid: number;
+  declare buildVersion: string;
   declare version: number;
+  /** 程序实际加载的快照校验和，与已发布版本的 snapshotChecksum 比对才算真生效。 */
+  declare configChecksum?: string;
   declare startedAt: string;
-  declare reloadedAt?: string;
+  declare lastReloadAt?: string;
+  declare lastReloadSuccess?: boolean;
   declare lastReloadError?: string;
+  declare health: string;
+  declare updatedAt: string;
 }
 
 export class ArgusRuntimeStatus {
@@ -157,35 +169,71 @@ export class ArgusControlResult {
   declare output?: string;
 }
 
-export type ArgusConfigDraft = Omit<ArgusConfigSnapshot, "version"> & { releaseNote: string };
+export class ArgusInstance {
+  declare id: number;
+  declare instanceKey: string;
+  declare instanceName: string;
+  declare description?: string;
+  declare configSource?: string;
+  declare enabled: number;
+}
 
-async function post<T>(url: string, body?: unknown): Promise<T> {
-  const response = await instance.post<ApiResponse<T>>(url, body);
+export type ArgusConfigDraft = Omit<ArgusConfigSnapshot, "version" | "instanceKey"> & {
+  instanceKey: string;
+  releaseNote: string;
+};
+
+async function get<T>(url: string, params?: Record<string, string | number>): Promise<T> {
+  const response = await instance.get<ApiResponse<T>>(url, { params });
   return unwrapApiResponse(response.data);
 }
 
-export async function fetchPublishedArgusConfig(): Promise<ArgusConfigSnapshot | null> {
-	const response = await instance.get<ApiResponse<ArgusConfigSnapshot | null>>("/argus-config/published");
-	return unwrapApiResponse(response.data);
+async function post<T>(url: string, body?: unknown, params?: Record<string, string | number>): Promise<T> {
+  const response = await instance.post<ApiResponse<T>>(url, body, { params });
+  return unwrapApiResponse(response.data);
+}
+
+/**
+ * 全部配置读写都必须带 instanceKey：参数按实例分域，缺实例键时服务端会按默认实例
+ * 兜底解析，那正是「改 A 误伤 B」的入口，所以页面这一层强制传。
+ */
+export function fetchArgusInstances(): Promise<ArgusInstance[]> {
+  return get<ArgusInstance[]>("/argus-config/instances", { onlyEnabled: "true" });
+}
+
+export function fetchPublishedArgusConfig(instanceKey: string): Promise<ArgusConfigSnapshot | null> {
+  return get<ArgusConfigSnapshot | null>("/argus-config/published", { instanceKey });
+}
+
+export function fetchArgusConfigVersions(instanceKey: string, limit = 30): Promise<ArgusConfigVersion[]> {
+  return get<ArgusConfigVersion[]>("/argus-config/versions", { instanceKey, limit });
 }
 
 export function saveArgusConfigDraft(payload: ArgusConfigDraft): Promise<ArgusConfigVersion> {
-  return post<ArgusConfigVersion>("/argus-config/drafts", payload);
+  return post<ArgusConfigVersion>("/argus-config/drafts", payload, { instanceKey: payload.instanceKey });
 }
 
-export function publishArgusConfig(versionId: number, releaseNote: string): Promise<ArgusConfigVersion> {
-  return post<ArgusConfigVersion>(`/argus-config/versions/${versionId}/publish`, { releaseNote });
+export function publishArgusConfig(
+  instanceKey: string,
+  versionId: number,
+  releaseNote: string,
+): Promise<ArgusConfigVersion> {
+  return post<ArgusConfigVersion>(`/argus-config/versions/${versionId}/publish`, { instanceKey, releaseNote }, { instanceKey });
 }
 
-export async function fetchArgusRuntimeStatus(): Promise<ArgusRuntimeStatus> {
-  const response = await instance.get<ApiResponse<ArgusRuntimeStatus>>("/argus/runtime/status");
-  return unwrapApiResponse(response.data);
+/** 回滚不新建版本号：把该历史版本的不可变快照重新推上 published 槽位并广播。 */
+export function rollbackArgusConfig(
+  instanceKey: string,
+  versionId: number,
+  releaseNote: string,
+): Promise<ArgusConfigVersion> {
+  return post<ArgusConfigVersion>(`/argus-config/versions/${versionId}/rollback`, { instanceKey, releaseNote }, { instanceKey });
 }
 
-export function controlArgus(action: "start" | "stop" | "restart"): Promise<ArgusControlResult> {
-  return post<ArgusControlResult>(`/argus/runtime/${action}`);
+export function fetchArgusRuntimeStatus(instanceKey: string): Promise<ArgusRuntimeStatus> {
+  return get<ArgusRuntimeStatus>("/argus/runtime/status", { instanceKey });
 }
 
-export function reloadArgus(): Promise<ArgusControlResult> {
-  return post<ArgusControlResult>("/argus/runtime/reload");
+export function reloadArgus(instanceKey: string): Promise<ArgusControlResult> {
+  return post<ArgusControlResult>("/argus/runtime/reload", undefined, { instanceKey });
 }

@@ -36,7 +36,15 @@ type TradeService struct {
 	tradeBacktestRunRepository      *tradeRepository.TradeBacktestRunRepository
 	tradeBacktestTradeRepository    *tradeRepository.TradeBacktestTradeRepository
 	tradeBacktestMetricRepository   *tradeRepository.TradeBacktestMetricRepository
-	pressureAnalysisRepository      *pressureRepository.PressureAnalysisRepository
+	// 参数组批量扫描（r11）：一次批量的共享维度与执行进度。
+	tradeBacktestBatchRepository *tradeRepository.TradeBacktestBatchRepository
+	// 自动参数寻优（r16）：一次扫描 + 每格的降噪产出与三关判定。
+	tradeOptimizeStudyRepository *tradeRepository.TradeOptimizeStudyRepository
+	tradeOptimizeCellRepository  *tradeRepository.TradeOptimizeCellRepository
+	pressureAnalysisRepository   *pressureRepository.PressureAnalysisRepository
+	// 盘口信号回测（r8）读侧：argus_single 双写进来的事实表，只读不写。
+	strategyEventRepository *tradeRepository.StrategyEventRepository
+	devSampleRepository     *tradeRepository.DevSampleRepository
 }
 
 func NewTradeService() *TradeService {
@@ -53,7 +61,12 @@ func NewTradeService() *TradeService {
 		tradeBacktestRunRepository:      db.GetRepository[tradeRepository.TradeBacktestRunRepository](),
 		tradeBacktestTradeRepository:    db.GetRepository[tradeRepository.TradeBacktestTradeRepository](),
 		tradeBacktestMetricRepository:   db.GetRepository[tradeRepository.TradeBacktestMetricRepository](),
+		tradeBacktestBatchRepository:    db.GetRepository[tradeRepository.TradeBacktestBatchRepository](),
+		tradeOptimizeStudyRepository:    db.GetRepository[tradeRepository.TradeOptimizeStudyRepository](),
+		tradeOptimizeCellRepository:     db.GetRepository[tradeRepository.TradeOptimizeCellRepository](),
 		pressureAnalysisRepository:      db.GetRepository[pressureRepository.PressureAnalysisRepository](),
+		strategyEventRepository:         db.GetRepository[tradeRepository.StrategyEventRepository](),
+		devSampleRepository:             db.GetRepository[tradeRepository.DevSampleRepository](),
 	}
 }
 
@@ -91,7 +104,24 @@ func (s *TradeService) EnsureTable() error {
 	if err := s.tradeBacktestTradeRepository.EnsureTable(); err != nil {
 		return err
 	}
-	return s.tradeBacktestMetricRepository.EnsureTable()
+	if err := s.tradeBacktestMetricRepository.EnsureTable(); err != nil {
+		return err
+	}
+	if err := s.tradeOptimizeStudyRepository.EnsureTable(); err != nil {
+		return err
+	}
+	if err := s.tradeOptimizeCellRepository.EnsureTable(); err != nil {
+		return err
+	}
+	if err := s.tradeBacktestBatchRepository.EnsureTable(); err != nil {
+		return err
+	}
+	// 事件表由 argus_single 侧（r4）拥有并 AutoMigrate；管理端先起来时这里
+	// 也建一次，好让回测页在事件还没进来之前查出空集而不是报未知表。
+	if err := s.strategyEventRepository.EnsureTable(); err != nil {
+		return err
+	}
+	return s.devSampleRepository.EnsureTable()
 }
 
 // SaveAIPrediction 落库一条 AI 模拟盘预测（oracle 调用入口，按维度幂等 upsert）。

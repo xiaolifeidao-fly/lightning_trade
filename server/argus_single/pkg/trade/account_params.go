@@ -19,8 +19,12 @@ func pickFloat(accRaw string, accVal float64, globalRaw string, globalVal, def f
 	return def
 }
 
-// AccFloat 解析账户级浮点参数：trade.account{index}.{name} 优先，否则 globalKey，否则 def。
+// AccFloat 解析账户级浮点参数：DB 配置快照优先（账户级 → 全局键），
+// 未在快照里显式配置时才回退 properties 的 trade.account{index}.{name} → globalKey → def。
 func AccFloat(index int, name, globalKey string, def float64) float64 {
+	if value, ok := lookupParamOverride(index, name, globalKey); ok {
+		return value
+	}
 	accKey := fmt.Sprintf("trade.account%d.%s", index, name)
 	return pickFloat(vipper.GetString(accKey), vipper.GetFloat64(accKey),
 		vipper.GetString(globalKey), vipper.GetFloat64(globalKey), def)

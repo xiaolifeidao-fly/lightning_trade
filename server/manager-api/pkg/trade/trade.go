@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
 
@@ -18,7 +19,16 @@ type TradeHandler struct {
 
 func NewTradeHandler() *TradeHandler {
 	service := tradeService.NewTradeService()
-	_ = service.EnsureTable()
+	// EnsureTable 不只是 AutoMigrate：trade_kline 那一步会回填存量行的
+	// platform_code 并 DROP 旧唯一索引 idx_symbol_interval_open。两种失败后果
+	// 不对称——建表失败只是接口报错，索引迁移失败则是旧唯一键存活，DeepCoin 与
+	// 币安同一 (symbol, interval, open_time) 写入时报重复键，平台维度静默失效。
+	// 原来的 `_ =` 会把根因整个吞掉。这里不 panic（会连带拖垮 user/permission
+	// 等无关模块），改为 error 级留痕，让根因在启动日志里可检索。
+	// 对齐 pkg/argus_config 的同类处理。
+	if err := service.EnsureTable(); err != nil {
+		logrus.Errorf("交易域表初始化/迁移失败，K 线平台维度可能未生效（旧唯一索引 idx_symbol_interval_open 或仍存活，DeepCoin K 线写入会报重复键）: %v", err)
+	}
 	return &TradeHandler{
 		BaseHandler:  &commonRouter.BaseHandler{},
 		tradeService: service,

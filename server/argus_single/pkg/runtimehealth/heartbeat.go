@@ -115,18 +115,23 @@ func (r *Reporter) Stop() {
 	}
 }
 
-func (r *Reporter) SetVersion(version uint64) {
+// SetConfigState 记录进程当前实际加载的配置版本与快照校验和。管理端按
+// version + checksum 双条件判定「已生效」，只上报版本号会在同版本号重新
+// 发布时把旧快照误判成新配置。
+func (r *Reporter) SetConfigState(version uint64, checksum string) {
 	r.mu.Lock()
 	r.state.Version = version
+	r.state.ConfigChecksum = checksum
 	r.mu.Unlock()
 }
 
-func (r *Reporter) RecordReload(version uint64, err error) {
+func (r *Reporter) RecordReload(version uint64, checksum string, err error) {
 	now := time.Now().UTC()
 	success := err == nil
 	r.mu.Lock()
 	if success && version != 0 {
 		r.state.Version = version
+		r.state.ConfigChecksum = checksum
 	}
 	r.state.LastReloadAt = &now
 	r.state.LastReloadSuccess = &success

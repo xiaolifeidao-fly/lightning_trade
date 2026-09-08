@@ -1,0 +1,458 @@
+---
+format: "delivery-task-planner-chat/v1"
+resourceType: "task"
+resourceKey: "r17-3c2253115f"
+requirementKey: "req-1788169552180"
+resourceName: "行情状态依赖性 Phase 0 复现研究（λ / 决策归集 / rv）"
+conversationTitle: "行情状态依赖性 Phase 0 复现研究（λ / 决策归集 / rv） V0.0.2"
+threadId: "01a05fcd-b3ec-76e0-a7cc-74dfbd04f571"
+provider: "codex"
+phase: "development"
+lastTurnStatus: "completed"
+archivedAt: "2026-09-02T02:08:30.758240+00:00"
+---
+
+# 任务聊天 · 行情状态依赖性 Phase 0 复现研究（λ / 决策归集 / rv） V0.0.2
+
+## 第 1 轮 · completed · 01a05fcd-bab8-7131-bcc7-f61e2f12c1d4
+
+### 用户
+
+执行「动作执行」阶段：行情状态依赖性 Phase 0 复现研究（λ / 决策归集 / rv）
+
+### 推理摘要
+
+**Planning delivery skill application**
+
+### 助手
+
+我会按交付动作执行流程先读取需求与项目技能，核对事件库、r10 决策归集和回测入口，再完成可复跑的研究产物与设计过程文档。
+
+### 推理摘要
+
+**Planning full requirements reread**
+
+### 推理摘要
+
+**Confirming full requirements and task scope**
+
+**Determining backend focus and tooling needs**
+
+### 推理摘要
+
+**Listing relevant files for analysis**
+
+**Inspecting modified source files**
+
+### 推理摘要
+
+**Planning event store analysis**
+
+**Inspecting r16 design dependencies**
+
+### 助手
+
+已确认本分支已有事件库、episode 派生和信号回测实现；工作区存在其他任务的未提交改动，我会避免触碰它们，只新增本任务的研究脚本、报告和设计文档。接下来核对原 Phase 0 方法与 r10 实现，确保复现口径不是沿用旧的平仓归集。
+
+### 推理摘要
+
+**Planning targeted documentation review**
+
+**Deciding documentation reading scope and limits**
+
+### 推理摘要
+
+**Confirming r10 volume coverage and planning r16 design**
+
+### 推理摘要
+
+**Planning full read of r16 output**
+
+**Assessing database access and config handling**
+
+### 推理摘要
+
+**Planning data sourcing for analysis**
+
+**Assessing database connection feasibility**
+
+**Preparing to analyze data models and parsers**
+
+### 推理摘要
+
+**Planning research script development**
+
+**Assessing data sources and parsing methods**
+
+### 推理摘要
+
+**Executing MySQL command to list databases**
+
+### 推理摘要
+
+**Noting local DB auth unavailability**
+
+### 推理摘要
+
+**Parsing event log headers**
+
+### 推理摘要
+
+**Planning event library backfill with JSONL fallback**
+
+**Defining training and test data windows**
+
+**Clarifying lambda fallback definition**
+
+### 推理摘要
+
+**Planning Poisson stratification by exposure time**
+
+**Evaluating episode derivation methods**
+
+**Implementing in-memory episode derivation**
+
+### 推理摘要
+
+**Identifying relevant event logs for August analysis**
+
+**Reconciling catastrophic event counts**
+
+### 推理摘要
+
+**Assessing ROC event requirement counts**
+
+**Investigating missing trend_skip events**
+
+### 推理摘要
+
+**Planning safe config extraction**
+
+### 推理摘要
+
+**Planning offline replay analysis**
+
+**Clarifying candidate signal criteria**
+
+**Noting tick approximation in replay**
+
+### 推理摘要
+
+**Planning robust intercept analysis script**
+
+**Defining signal deduplication strategy**
+
+**Specifying state label training periods**
+
+### 推理摘要
+
+**Assessing event log overlap and deduplication**
+
+**Planning complete event log backfill**
+
+### 推理摘要
+
+**Analyzing jq unique command limitations**
+
+**Planning robust research script design**
+
+**Evaluating Go tool versus Python script**
+
+### 推理摘要
+
+**Assessing event library integration feasibility**
+
+**Planning DB-backed Go report command**
+
+**Including raw JSONL and DB instructions**
+
+### 推理摘要
+
+**Designing multi-file Kline and log parsing**
+
+**Planning signal density and quantile calculations**
+
+**Refining signal and decision event filtering**
+
+### 推理摘要
+
+**Classifying entry candidates by netSide**
+
+### 推理摘要
+
+**Reviewing net.Side application logic**
+
+### 推理摘要
+
+**Clarifying candidate selection criteria**
+
+**Planning catastrophic stop exposure computation**
+
+**Identifying close events for episodes**
+
+### 推理摘要
+
+**Designing episode weighting method**
+
+**Planning fractional event weighting and MLE estimation**
+
+**Evaluating exact Poisson confidence intervals**
+
+### 推理摘要
+
+**Refining two-group binomial test approach**
+
+**Defining episode state by first decision**
+
+**Establishing episode start and closure criteria**
+
+### 推理摘要
+
+**Assessing PnL distribution challenges**
+
+**Planning controlled study for gate/trail states**
+
+**Implementing data parsing and structure**
+
+### 推理摘要
+
+**Noticing data discontinuity on 8.17**
+
+**Designing signal deduplication and state labeling**
+
+**Preventing label bleeding before training period**
+
+### 推理摘要
+
+**Computing signal state proportions**
+
+**Marking truncated events and calculating Poisson p-values**
+
+**Identifying trend candidates per account**
+
+### 推理摘要
+
+**Mapping episode entry blocks**
+
+**Planning patch for numeric evaluation**
+
+### 助手
+
+现有原始档案与 r10 派生报告核对后，找到了关键数据事实：7 条 `catastrophe_stop` 原始行中有 1 条是窗口开始前已持仓的截断 episode，按决策时刻口径必须剔除，因此与任务说明的“6 次”一致。趋势闸在该事故窗口尚未实际部署，日志中没有 `trend_skip`，所以只能用同一信号流做严格标注为“反事实”的 24h/5% 重跑。
+
+### 推理摘要
+
+**Preparing to run script**
+
+### 推理摘要
+
+**Identifying off-by-one cat derivation bug**
+
+**Planning preexisting position detection before opens**
+
+### 推理摘要
+
+**Refining open reductions and account tests**
+
+**Identifying degenerate threshold issue in training data**
+
+**Planning refined training period with signal events**
+
+### 推理摘要
+
+**Assessing threshold training data continuity**
+
+**Adding and deduplicating source directories**
+
+**Confirming training start date and data scope**
+
+### 推理摘要
+
+**Applying patch for data limitations and threshold adjustments**
+
+### 推理摘要
+
+**Identifying report data limitations**
+
+### 推理摘要
+
+**Inspecting episode category discrepancies**
+
+### 推理摘要
+
+**Planning module import with sys.modules insertion**
+
+### 推理摘要
+
+**Refining first event logic**
+
+**Adjusting first flag handling for opens**
+
+### 推理摘要
+
+**Verifying single patch occurrence**
+
+### 推理摘要
+
+**Planning to view comment next**
+
+### 推理摘要
+
+**Checking full start of table W1**
+
+### 推理摘要
+
+**Assessing data limitations and event source linkage**
+
+**Verifying signal counts and event library completeness**
+
+**Comparing signal totals across date ranges**
+
+### 推理摘要
+
+**Planning event sorting validation and testing**
+
+**Designing detailed validation test and documentation**
+
+**Correcting data limitation report metrics**
+
+### 推理摘要
+
+**Adding test for table episodes**
+
+### 推理摘要
+
+**Planning test execution and script patching**
+
+### 推理摘要
+
+**Refactoring test for opening count**
+
+### 推理摘要
+
+**Rerunning report overwrite tests**
+
+### 推理摘要
+
+**Diagnosing incomplete test execution**
+
+**Planning to run test with extended timeout**
+
+### 推理摘要
+
+**Planning code validation and review scripts**
+
+### 助手
+
+研究报告已生成并通过回归核验：原始 7 条兜底中 1 条被识别为 r10 定义的截断头，λ 分层只保留 6 条；`trend_skip` 实际为 0，24h/±5% 的 1m 反事实重跑可直接拦截 5 个可归集兜底 episode，但不能据此声称线上效果。下一步我会写入本任务的完整设计过程，并做最终差异与可复跑检查。
+
+### 推理摘要
+
+**Planning design document creation**
+
+**Detailing design document contents and decisions**
+
+### 推理摘要
+
+**Evaluating whitespace check strategies**
+
+**Verifying script output and data consistency**
+
+**Confirming no secrets in new files**
+
+### 推理摘要
+
+**Verifying decision timestamp usage**
+
+**Planning decision aggregation implementation**
+
+**Confirming r10 decision report usage**
+
+### 推理摘要
+
+**Running final verification and tests**
+
+### 推理摘要
+
+**Verifying final test completion**
+
+**Confirming test command success**
+
+### 推理摘要
+
+**Checking which files are gitignored**
+
+### 推理摘要
+
+**Planning relocating scripts outside ignored docs**
+
+### 推理摘要
+
+**Planning relocation of docs script to scripts directory**
+
+### 推理摘要
+
+**Planning patch-based local edits**
+
+**Exploring gitignore and staging strategy**
+
+### 推理摘要
+
+**Planning script creation via patch**
+
+**Evaluating handling of ignored research scripts**
+
+**Confirming report generation and final test success**
+
+### 推理摘要
+
+**Verifying design doc completeness**
+
+**Classifying task as needing manual handling**
+
+**Preparing final commentary with manual flag**
+
+### 推理摘要
+
+**Designing mixed path links for docs**
+
+**Summarizing verification and DB access limitation**
+
+**Identifying missing DB query implementation**
+
+### 推理摘要
+
+**Assessing incomplete PnL recalculation**
+
+**Finalizing manual batch status output**
+
+### 助手
+
+研究结论和交付文档已落盘：自动按行情路由维持关闭。已完成可复跑脚本与 2 条回归核验；由于本机没有获授权的事件库只读连接，本轮以 r6 回灌的 JSONL 真源完成复现，并在报告中明确了数据库级复跑仍需人工提供安全的 DSN。
+
+### 助手
+
+结论：不立项自动按行情路由参数，维持关闭。
+
+- λ 事故样本从 0 增至 6 条可归集 stop，但 rv·W=4 的条件 Poisson p=0.2538，且实例/参数包混杂，证据不足。
+- 8/18–8/21 实际 `trend_skip=0`；24h/±5% 反事实重跑可直接覆盖 5 个可归集兜底 episode，不能当作线上效果或路由授权。
+- 已严格排除平仓时刻收益归集伪影，以及高波动降暴露、紧止损、时间退出等已否定方向。
+
+交付物：
+
+- [doc/module/r17-3c2253115f/report/phase0-r17-研究报告.md](/Users/chai/code/dc/lightning_trade/doc/module/r17-3c2253115f/report/phase0-r17-研究报告.md)
+- [doc/module/r17-3c2253115f/design/设计过程.md](/Users/chai/code/dc/lightning_trade/doc/module/r17-3c2253115f/design/设计过程.md)
+- [复现脚本](/Users/chai/code/dc/lightning_trade/docs/argus_single/vol_state_phase0_r17.py)
+- [回归测试](/Users/chai/code/dc/lightning_trade/docs/argus_single/test_vol_state_phase0_r17.py)
+
+验证：脚本读取 185,137 条事件、生成报告；Python 编译通过；2 条回归测试通过。
+
+按需读取了 r1（实例归属）、r10（决策归集/截断 episode）和 r16（统计判定纪律）的设计文档。
+
+遗留：本机没有获授权的事件库只读 DSN，因此未能直接查询 MySQL 的 `strategy_event`/`episode_entry`；已用 r6 回灌 JSONL 真源复现。后续需提供安全的只读连接并先跑一致性巡检。
+
+批量判定：需人工处理
+
+<!-- delivery-task-planner-chat-data
+eyJ0dXJucyI6W3siaWQiOiIwMWEwNWZjZC1iYWI4LTcxMzEtYmNjNy1mNjFlMmYxMmMxZDQiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJjcmVhdGVkQXQiOjE3ODgzMTM3MTMsImNvbXBsZXRlZEF0IjoxNzg4MzE0OTEwLCJpdGVtcyI6W3sidHlwZSI6InVzZXJNZXNzYWdlIiwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0Ijoi5omn6KGM44CM5Yqo5L2c5omn6KGM44CN6Zi25q6177ya6KGM5oOF54q25oCB5L6d6LWW5oCnIFBoYXNlIDAg5aSN546w56CU56m277yIzrsgLyDlhrPnrZblvZLpm4YgLyBydu+8iSJ9XX0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKlBsYW5uaW5nIGRlbGl2ZXJ5IHNraWxsIGFwcGxpY2F0aW9uKioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6IuaIkeS8muaMieS6pOS7mOWKqOS9nOaJp+ihjOa1geeoi+WFiOivu+WPlumcgOaxguS4jumhueebruaKgOiDve+8jOaguOWvueS6i+S7tuW6k+OAgXIxMCDlhrPnrZblvZLpm4blkozlm57mtYvlhaXlj6PvvIzlho3lrozmiJDlj6/lpI3ot5HnmoTnoJTnqbbkuqfniankuI7orr7orqHov4fnqIvmlofmoaPjgIIiLCJzdGF0dXMiOiIiLCJwaGFzZSI6ImNvbW1lbnRhcnkifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqUGxhbm5pbmcgZnVsbCByZXF1aXJlbWVudHMgcmVyZWFkKioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKkNvbmZpcm1pbmcgZnVsbCByZXF1aXJlbWVudHMgYW5kIHRhc2sgc2NvcGUqKiIsIioqRGV0ZXJtaW5pbmcgYmFja2VuZCBmb2N1cyBhbmQgdG9vbGluZyBuZWVkcyoqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipMaXN0aW5nIHJlbGV2YW50IGZpbGVzIGZvciBhbmFseXNpcyoqIiwiKipJbnNwZWN0aW5nIG1vZGlmaWVkIHNvdXJjZSBmaWxlcyoqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipQbGFubmluZyBldmVudCBzdG9yZSBhbmFseXNpcyoqIiwiKipJbnNwZWN0aW5nIHIxNiBkZXNpZ24gZGVwZW5kZW5jaWVzKioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6IuW3suehruiupOacrOWIhuaUr+W3suacieS6i+S7tuW6k+OAgWVwaXNvZGUg5rS+55Sf5ZKM5L+h5Y+35Zue5rWL5a6e546w77yb5bel5L2c5Yy65a2Y5Zyo5YW25LuW5Lu75Yqh55qE5pyq5o+Q5Lqk5pS55Yqo77yM5oiR5Lya6YG/5YWN6Kem56Kw5a6D5Lus77yM5Y+q5paw5aKe5pys5Lu75Yqh55qE56CU56m26ISa5pys44CB5oql5ZGK5ZKM6K6+6K6h5paH5qGj44CC5o6l5LiL5p2l5qC45a+55Y6fIFBoYXNlIDAg5pa55rOV5LiOIHIxMCDlrp7njrDvvIznoa7kv53lpI3njrDlj6PlvoTkuI3mmK/msr/nlKjml6fnmoTlubPku5PlvZLpm4bjgIIiLCJzdGF0dXMiOiIiLCJwaGFzZSI6ImNvbW1lbnRhcnkifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqUGxhbm5pbmcgdGFyZ2V0ZWQgZG9jdW1lbnRhdGlvbiByZXZpZXcqKiIsIioqRGVjaWRpbmcgZG9jdW1lbnRhdGlvbiByZWFkaW5nIHNjb3BlIGFuZCBsaW1pdHMqKiJdLCJzdGF0dXMiOiIifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqQ29uZmlybWluZyByMTAgdm9sdW1lIGNvdmVyYWdlIGFuZCBwbGFubmluZyByMTYgZGVzaWduKioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKlBsYW5uaW5nIGZ1bGwgcmVhZCBvZiByMTYgb3V0cHV0KioiLCIqKkFzc2Vzc2luZyBkYXRhYmFzZSBhY2Nlc3MgYW5kIGNvbmZpZyBoYW5kbGluZyoqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipQbGFubmluZyBkYXRhIHNvdXJjaW5nIGZvciBhbmFseXNpcyoqIiwiKipBc3Nlc3NpbmcgZGF0YWJhc2UgY29ubmVjdGlvbiBmZWFzaWJpbGl0eSoqIiwiKipQcmVwYXJpbmcgdG8gYW5hbHl6ZSBkYXRhIG1vZGVscyBhbmQgcGFyc2VycyoqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipQbGFubmluZyByZXNlYXJjaCBzY3JpcHQgZGV2ZWxvcG1lbnQqKiIsIioqQXNzZXNzaW5nIGRhdGEgc291cmNlcyBhbmQgcGFyc2luZyBtZXRob2RzKioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKkV4ZWN1dGluZyBNeVNRTCBjb21tYW5kIHRvIGxpc3QgZGF0YWJhc2VzKioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKk5vdGluZyBsb2NhbCBEQiBhdXRoIHVuYXZhaWxhYmlsaXR5KioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKlBhcnNpbmcgZXZlbnQgbG9nIGhlYWRlcnMqKiJdLCJzdGF0dXMiOiIifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqUGxhbm5pbmcgZXZlbnQgbGlicmFyeSBiYWNrZmlsbCB3aXRoIEpTT05MIGZhbGxiYWNrKioiLCIqKkRlZmluaW5nIHRyYWluaW5nIGFuZCB0ZXN0IGRhdGEgd2luZG93cyoqIiwiKipDbGFyaWZ5aW5nIGxhbWJkYSBmYWxsYmFjayBkZWZpbml0aW9uKioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKlBsYW5uaW5nIFBvaXNzb24gc3RyYXRpZmljYXRpb24gYnkgZXhwb3N1cmUgdGltZSoqIiwiKipFdmFsdWF0aW5nIGVwaXNvZGUgZGVyaXZhdGlvbiBtZXRob2RzKioiLCIqKkltcGxlbWVudGluZyBpbi1tZW1vcnkgZXBpc29kZSBkZXJpdmF0aW9uKioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKklkZW50aWZ5aW5nIHJlbGV2YW50IGV2ZW50IGxvZ3MgZm9yIEF1Z3VzdCBhbmFseXNpcyoqIiwiKipSZWNvbmNpbGluZyBjYXRhc3Ryb3BoaWMgZXZlbnQgY291bnRzKioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKkFzc2Vzc2luZyBST0MgZXZlbnQgcmVxdWlyZW1lbnQgY291bnRzKioiLCIqKkludmVzdGlnYXRpbmcgbWlzc2luZyB0cmVuZF9za2lwIGV2ZW50cyoqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipQbGFubmluZyBzYWZlIGNvbmZpZyBleHRyYWN0aW9uKioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKlBsYW5uaW5nIG9mZmxpbmUgcmVwbGF5IGFuYWx5c2lzKioiLCIqKkNsYXJpZnlpbmcgY2FuZGlkYXRlIHNpZ25hbCBjcml0ZXJpYSoqIiwiKipOb3RpbmcgdGljayBhcHByb3hpbWF0aW9uIGluIHJlcGxheSoqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipQbGFubmluZyByb2J1c3QgaW50ZXJjZXB0IGFuYWx5c2lzIHNjcmlwdCoqIiwiKipEZWZpbmluZyBzaWduYWwgZGVkdXBsaWNhdGlvbiBzdHJhdGVneSoqIiwiKipTcGVjaWZ5aW5nIHN0YXRlIGxhYmVsIHRyYWluaW5nIHBlcmlvZHMqKiJdLCJzdGF0dXMiOiIifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqQXNzZXNzaW5nIGV2ZW50IGxvZyBvdmVybGFwIGFuZCBkZWR1cGxpY2F0aW9uKioiLCIqKlBsYW5uaW5nIGNvbXBsZXRlIGV2ZW50IGxvZyBiYWNrZmlsbCoqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipBbmFseXppbmcganEgdW5pcXVlIGNvbW1hbmQgbGltaXRhdGlvbnMqKiIsIioqUGxhbm5pbmcgcm9idXN0IHJlc2VhcmNoIHNjcmlwdCBkZXNpZ24qKiIsIioqRXZhbHVhdGluZyBHbyB0b29sIHZlcnN1cyBQeXRob24gc2NyaXB0KioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKkFzc2Vzc2luZyBldmVudCBsaWJyYXJ5IGludGVncmF0aW9uIGZlYXNpYmlsaXR5KioiLCIqKlBsYW5uaW5nIERCLWJhY2tlZCBHbyByZXBvcnQgY29tbWFuZCoqIiwiKipJbmNsdWRpbmcgcmF3IEpTT05MIGFuZCBEQiBpbnN0cnVjdGlvbnMqKiJdLCJzdGF0dXMiOiIifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqRGVzaWduaW5nIG11bHRpLWZpbGUgS2xpbmUgYW5kIGxvZyBwYXJzaW5nKioiLCIqKlBsYW5uaW5nIHNpZ25hbCBkZW5zaXR5IGFuZCBxdWFudGlsZSBjYWxjdWxhdGlvbnMqKiIsIioqUmVmaW5pbmcgc2lnbmFsIGFuZCBkZWNpc2lvbiBldmVudCBmaWx0ZXJpbmcqKiJdLCJzdGF0dXMiOiIifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqQ2xhc3NpZnlpbmcgZW50cnkgY2FuZGlkYXRlcyBieSBuZXRTaWRlKioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKlJldmlld2luZyBuZXQuU2lkZSBhcHBsaWNhdGlvbiBsb2dpYyoqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipDbGFyaWZ5aW5nIGNhbmRpZGF0ZSBzZWxlY3Rpb24gY3JpdGVyaWEqKiIsIioqUGxhbm5pbmcgY2F0YXN0cm9waGljIHN0b3AgZXhwb3N1cmUgY29tcHV0YXRpb24qKiIsIioqSWRlbnRpZnlpbmcgY2xvc2UgZXZlbnRzIGZvciBlcGlzb2RlcyoqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipEZXNpZ25pbmcgZXBpc29kZSB3ZWlnaHRpbmcgbWV0aG9kKioiLCIqKlBsYW5uaW5nIGZyYWN0aW9uYWwgZXZlbnQgd2VpZ2h0aW5nIGFuZCBNTEUgZXN0aW1hdGlvbioqIiwiKipFdmFsdWF0aW5nIGV4YWN0IFBvaXNzb24gY29uZmlkZW5jZSBpbnRlcnZhbHMqKiJdLCJzdGF0dXMiOiIifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqUmVmaW5pbmcgdHdvLWdyb3VwIGJpbm9taWFsIHRlc3QgYXBwcm9hY2gqKiIsIioqRGVmaW5pbmcgZXBpc29kZSBzdGF0ZSBieSBmaXJzdCBkZWNpc2lvbioqIiwiKipFc3RhYmxpc2hpbmcgZXBpc29kZSBzdGFydCBhbmQgY2xvc3VyZSBjcml0ZXJpYSoqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipBc3Nlc3NpbmcgUG5MIGRpc3RyaWJ1dGlvbiBjaGFsbGVuZ2VzKioiLCIqKlBsYW5uaW5nIGNvbnRyb2xsZWQgc3R1ZHkgZm9yIGdhdGUvdHJhaWwgc3RhdGVzKioiLCIqKkltcGxlbWVudGluZyBkYXRhIHBhcnNpbmcgYW5kIHN0cnVjdHVyZSoqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipOb3RpY2luZyBkYXRhIGRpc2NvbnRpbnVpdHkgb24gOC4xNyoqIiwiKipEZXNpZ25pbmcgc2lnbmFsIGRlZHVwbGljYXRpb24gYW5kIHN0YXRlIGxhYmVsaW5nKioiLCIqKlByZXZlbnRpbmcgbGFiZWwgYmxlZWRpbmcgYmVmb3JlIHRyYWluaW5nIHBlcmlvZCoqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipDb21wdXRpbmcgc2lnbmFsIHN0YXRlIHByb3BvcnRpb25zKioiLCIqKk1hcmtpbmcgdHJ1bmNhdGVkIGV2ZW50cyBhbmQgY2FsY3VsYXRpbmcgUG9pc3NvbiBwLXZhbHVlcyoqIiwiKipJZGVudGlmeWluZyB0cmVuZCBjYW5kaWRhdGVzIHBlciBhY2NvdW50KioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKk1hcHBpbmcgZXBpc29kZSBlbnRyeSBibG9ja3MqKiIsIioqUGxhbm5pbmcgcGF0Y2ggZm9yIG51bWVyaWMgZXZhbHVhdGlvbioqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiLnjrDmnInljp/lp4vmoaPmoYjkuI4gcjEwIOa0vueUn+aKpeWRiuaguOWvueWQju+8jOaJvuWIsOS6huWFs+mUruaVsOaNruS6i+Wunu+8mjcg5p2hIGBjYXRhc3Ryb3BoZV9zdG9wYCDljp/lp4vooYzkuK3mnIkgMSDmnaHmmK/nqpflj6PlvIDlp4vliY3lt7LmjIHku5PnmoTmiKrmlq0gZXBpc29kZe+8jOaMieWGs+etluaXtuWIu+WPo+W+hOW/hemhu+WJlOmZpO+8jOWboOatpOS4juS7u+WKoeivtOaYjueahOKAnDYg5qyh4oCd5LiA6Ie044CC6LaL5Yq/6Ze45Zyo6K+l5LqL5pWF56qX5Y+j5bCa5pyq5a6e6ZmF6YOo572y77yM5pel5b+X5Lit5rKh5pyJIGB0cmVuZF9za2lwYO+8jOaJgOS7peWPquiDveeUqOWQjOS4gOS/oeWPt+a1geWBmuS4peagvOagh+azqOS4uuKAnOWPjeS6i+WunuKAneeahCAyNGgvNSUg6YeN6LeR44CCIiwic3RhdHVzIjoiIiwicGhhc2UiOiJjb21tZW50YXJ5In0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKlByZXBhcmluZyB0byBydW4gc2NyaXB0KioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKklkZW50aWZ5aW5nIG9mZi1ieS1vbmUgY2F0IGRlcml2YXRpb24gYnVnKioiLCIqKlBsYW5uaW5nIHByZWV4aXN0aW5nIHBvc2l0aW9uIGRldGVjdGlvbiBiZWZvcmUgb3BlbnMqKiJdLCJzdGF0dXMiOiIifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqUmVmaW5pbmcgb3BlbiByZWR1Y3Rpb25zIGFuZCBhY2NvdW50IHRlc3RzKioiLCIqKklkZW50aWZ5aW5nIGRlZ2VuZXJhdGUgdGhyZXNob2xkIGlzc3VlIGluIHRyYWluaW5nIGRhdGEqKiIsIioqUGxhbm5pbmcgcmVmaW5lZCB0cmFpbmluZyBwZXJpb2Qgd2l0aCBzaWduYWwgZXZlbnRzKioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKkFzc2Vzc2luZyB0aHJlc2hvbGQgdHJhaW5pbmcgZGF0YSBjb250aW51aXR5KioiLCIqKkFkZGluZyBhbmQgZGVkdXBsaWNhdGluZyBzb3VyY2UgZGlyZWN0b3JpZXMqKiIsIioqQ29uZmlybWluZyB0cmFpbmluZyBzdGFydCBkYXRlIGFuZCBkYXRhIHNjb3BlKioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKkFwcGx5aW5nIHBhdGNoIGZvciBkYXRhIGxpbWl0YXRpb25zIGFuZCB0aHJlc2hvbGQgYWRqdXN0bWVudHMqKiJdLCJzdGF0dXMiOiIifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqSWRlbnRpZnlpbmcgcmVwb3J0IGRhdGEgbGltaXRhdGlvbnMqKiJdLCJzdGF0dXMiOiIifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqSW5zcGVjdGluZyBlcGlzb2RlIGNhdGVnb3J5IGRpc2NyZXBhbmNpZXMqKiJdLCJzdGF0dXMiOiIifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqUGxhbm5pbmcgbW9kdWxlIGltcG9ydCB3aXRoIHN5cy5tb2R1bGVzIGluc2VydGlvbioqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipSZWZpbmluZyBmaXJzdCBldmVudCBsb2dpYyoqIiwiKipBZGp1c3RpbmcgZmlyc3QgZmxhZyBoYW5kbGluZyBmb3Igb3BlbnMqKiJdLCJzdGF0dXMiOiIifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqVmVyaWZ5aW5nIHNpbmdsZSBwYXRjaCBvY2N1cnJlbmNlKioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKlBsYW5uaW5nIHRvIHZpZXcgY29tbWVudCBuZXh0KioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKkNoZWNraW5nIGZ1bGwgc3RhcnQgb2YgdGFibGUgVzEqKiJdLCJzdGF0dXMiOiIifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqQXNzZXNzaW5nIGRhdGEgbGltaXRhdGlvbnMgYW5kIGV2ZW50IHNvdXJjZSBsaW5rYWdlKioiLCIqKlZlcmlmeWluZyBzaWduYWwgY291bnRzIGFuZCBldmVudCBsaWJyYXJ5IGNvbXBsZXRlbmVzcyoqIiwiKipDb21wYXJpbmcgc2lnbmFsIHRvdGFscyBhY3Jvc3MgZGF0ZSByYW5nZXMqKiJdLCJzdGF0dXMiOiIifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqUGxhbm5pbmcgZXZlbnQgc29ydGluZyB2YWxpZGF0aW9uIGFuZCB0ZXN0aW5nKioiLCIqKkRlc2lnbmluZyBkZXRhaWxlZCB2YWxpZGF0aW9uIHRlc3QgYW5kIGRvY3VtZW50YXRpb24qKiIsIioqQ29ycmVjdGluZyBkYXRhIGxpbWl0YXRpb24gcmVwb3J0IG1ldHJpY3MqKiJdLCJzdGF0dXMiOiIifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqQWRkaW5nIHRlc3QgZm9yIHRhYmxlIGVwaXNvZGVzKioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKlBsYW5uaW5nIHRlc3QgZXhlY3V0aW9uIGFuZCBzY3JpcHQgcGF0Y2hpbmcqKiJdLCJzdGF0dXMiOiIifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqUmVmYWN0b3JpbmcgdGVzdCBmb3Igb3BlbmluZyBjb3VudCoqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipSZXJ1bm5pbmcgcmVwb3J0IG92ZXJ3cml0ZSB0ZXN0cyoqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipEaWFnbm9zaW5nIGluY29tcGxldGUgdGVzdCBleGVjdXRpb24qKiIsIioqUGxhbm5pbmcgdG8gcnVuIHRlc3Qgd2l0aCBleHRlbmRlZCB0aW1lb3V0KioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKlBsYW5uaW5nIGNvZGUgdmFsaWRhdGlvbiBhbmQgcmV2aWV3IHNjcmlwdHMqKiJdLCJzdGF0dXMiOiIifSx7InR5cGUiOiJhZ2VudE1lc3NhZ2UiLCJ0ZXh0Ijoi56CU56m25oql5ZGK5bey55Sf5oiQ5bm26YCa6L+H5Zue5b2S5qC46aqM77ya5Y6f5aeLIDcg5p2h5YWc5bqV5LitIDEg5p2h6KKr6K+G5Yir5Li6IHIxMCDlrprkuYnnmoTmiKrmlq3lpLTvvIzOuyDliIblsYLlj6rkv53nlZkgNiDmnaHvvJtgdHJlbmRfc2tpcGAg5a6e6ZmF5Li6IDDvvIwyNGgvwrE1JSDnmoQgMW0g5Y+N5LqL5a6e6YeN6LeR5Y+v55u05o6l5oum5oiqIDUg5Liq5Y+v5b2S6ZuG5YWc5bqVIGVwaXNvZGXvvIzkvYbkuI3og73mja7mraTlo7Dnp7Dnur/kuIrmlYjmnpzjgILkuIvkuIDmraXmiJHkvJrlhpnlhaXmnKzku7vliqHnmoTlrozmlbTorr7orqHov4fnqIvvvIzlubblgZrmnIDnu4jlt67lvILkuI7lj6/lpI3ot5Hmo4Dmn6XjgIIiLCJzdGF0dXMiOiIiLCJwaGFzZSI6ImNvbW1lbnRhcnkifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqUGxhbm5pbmcgZGVzaWduIGRvY3VtZW50IGNyZWF0aW9uKioiLCIqKkRldGFpbGluZyBkZXNpZ24gZG9jdW1lbnQgY29udGVudHMgYW5kIGRlY2lzaW9ucyoqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipFdmFsdWF0aW5nIHdoaXRlc3BhY2UgY2hlY2sgc3RyYXRlZ2llcyoqIiwiKipWZXJpZnlpbmcgc2NyaXB0IG91dHB1dCBhbmQgZGF0YSBjb25zaXN0ZW5jeSoqIiwiKipDb25maXJtaW5nIG5vIHNlY3JldHMgaW4gbmV3IGZpbGVzKioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKlZlcmlmeWluZyBkZWNpc2lvbiB0aW1lc3RhbXAgdXNhZ2UqKiIsIioqUGxhbm5pbmcgZGVjaXNpb24gYWdncmVnYXRpb24gaW1wbGVtZW50YXRpb24qKiIsIioqQ29uZmlybWluZyByMTAgZGVjaXNpb24gcmVwb3J0IHVzYWdlKioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKlJ1bm5pbmcgZmluYWwgdmVyaWZpY2F0aW9uIGFuZCB0ZXN0cyoqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipWZXJpZnlpbmcgZmluYWwgdGVzdCBjb21wbGV0aW9uKioiLCIqKkNvbmZpcm1pbmcgdGVzdCBjb21tYW5kIHN1Y2Nlc3MqKiJdLCJzdGF0dXMiOiIifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqQ2hlY2tpbmcgd2hpY2ggZmlsZXMgYXJlIGdpdGlnbm9yZWQqKiJdLCJzdGF0dXMiOiIifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqUGxhbm5pbmcgcmVsb2NhdGluZyBzY3JpcHRzIG91dHNpZGUgaWdub3JlZCBkb2NzKioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKlBsYW5uaW5nIHJlbG9jYXRpb24gb2YgZG9jcyBzY3JpcHQgdG8gc2NyaXB0cyBkaXJlY3RvcnkqKiJdLCJzdGF0dXMiOiIifSx7InR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbIioqUGxhbm5pbmcgcGF0Y2gtYmFzZWQgbG9jYWwgZWRpdHMqKiIsIioqRXhwbG9yaW5nIGdpdGlnbm9yZSBhbmQgc3RhZ2luZyBzdHJhdGVneSoqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipQbGFubmluZyBzY3JpcHQgY3JlYXRpb24gdmlhIHBhdGNoKioiLCIqKkV2YWx1YXRpbmcgaGFuZGxpbmcgb2YgaWdub3JlZCByZXNlYXJjaCBzY3JpcHRzKioiLCIqKkNvbmZpcm1pbmcgcmVwb3J0IGdlbmVyYXRpb24gYW5kIGZpbmFsIHRlc3Qgc3VjY2VzcyoqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipWZXJpZnlpbmcgZGVzaWduIGRvYyBjb21wbGV0ZW5lc3MqKiIsIioqQ2xhc3NpZnlpbmcgdGFzayBhcyBuZWVkaW5nIG1hbnVhbCBoYW5kbGluZyoqIiwiKipQcmVwYXJpbmcgZmluYWwgY29tbWVudGFyeSB3aXRoIG1hbnVhbCBmbGFnKioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoicmVhc29uaW5nIiwic3VtbWFyeSI6WyIqKkRlc2lnbmluZyBtaXhlZCBwYXRoIGxpbmtzIGZvciBkb2NzKioiLCIqKlN1bW1hcml6aW5nIHZlcmlmaWNhdGlvbiBhbmQgREIgYWNjZXNzIGxpbWl0YXRpb24qKiIsIioqSWRlbnRpZnlpbmcgbWlzc2luZyBEQiBxdWVyeSBpbXBsZW1lbnRhdGlvbioqIl0sInN0YXR1cyI6IiJ9LHsidHlwZSI6InJlYXNvbmluZyIsInN1bW1hcnkiOlsiKipBc3Nlc3NpbmcgaW5jb21wbGV0ZSBQbkwgcmVjYWxjdWxhdGlvbioqIiwiKipGaW5hbGl6aW5nIG1hbnVhbCBiYXRjaCBzdGF0dXMgb3V0cHV0KioiXSwic3RhdHVzIjoiIn0seyJ0eXBlIjoiYWdlbnRNZXNzYWdlIiwidGV4dCI6IueglOeptue7k+iuuuWSjOS6pOS7mOaWh+aho+W3suiQveebmO+8muiHquWKqOaMieihjOaDhei3r+eUsee7tOaMgeWFs+mXreOAguW3suWujOaIkOWPr+Wkjei3keiEmuacrOS4jiAyIOadoeWbnuW9kuaguOmqjO+8m+eUseS6juacrOacuuayoeacieiOt+aOiOadg+eahOS6i+S7tuW6k+WPquivu+i/nuaOpe+8jOacrOi9ruS7pSByNiDlm57ngYznmoQgSlNPTkwg55yf5rqQ5a6M5oiQ5aSN546w77yM5bm25Zyo5oql5ZGK5Lit5piO56Gu5LqG5pWw5o2u5bqT57qn5aSN6LeR5LuN6ZyA5Lq65bel5o+Q5L6b5a6J5YWo55qEIERTTuOAgiIsInN0YXR1cyI6IiIsInBoYXNlIjoiY29tbWVudGFyeSJ9LHsidHlwZSI6ImFnZW50TWVzc2FnZSIsInRleHQiOiLnu5PorrrvvJrkuI3nq4vpobnoh6rliqjmjInooYzmg4Xot6/nlLHlj4LmlbDvvIznu7TmjIHlhbPpl63jgIJcblxuLSDOuyDkuovmlYXmoLfmnKzku44gMCDlop7oh7MgNiDmnaHlj6/lvZLpm4Ygc3RvcO+8jOS9hiBydsK3Vz00IOeahOadoeS7tiBQb2lzc29uIHA9MC4yNTM477yM5LiU5a6e5L6LL+WPguaVsOWMhea3t+adgu+8jOivgeaNruS4jei2s+OAglxuLSA4LzE44oCTOC8yMSDlrp7pmYUgYHRyZW5kX3NraXA9MGDvvJsyNGgvwrE1JSDlj43kuovlrp7ph43ot5Hlj6/nm7TmjqXopobnm5YgNSDkuKrlj6/lvZLpm4blhZzlupUgZXBpc29kZe+8jOS4jeiDveW9k+S9nOe6v+S4iuaViOaenOaIlui3r+eUseaOiOadg+OAglxuLSDlt7LkuKXmoLzmjpLpmaTlubPku5Pml7bliLvmlLbnm4rlvZLpm4bkvKrlvbHvvIzku6Xlj4rpq5jms6LliqjpmY3mmrTpnLLjgIHntKfmraLmjZ/jgIHml7bpl7TpgIDlh7rnrYnlt7LlkKblrprmlrnlkJHjgIJcblxu5Lqk5LuY54mp77yaXG5cbi0gW2RvYy9tb2R1bGUvcjE3LTNjMjI1MzExNWYvcmVwb3J0L3BoYXNlMC1yMTct56CU56m25oql5ZGKLm1kXSgvVXNlcnMvY2hhaS9jb2RlL2RjL2xpZ2h0bmluZ190cmFkZS9kb2MvbW9kdWxlL3IxNy0zYzIyNTMxMTVmL3JlcG9ydC9waGFzZTAtcjE3LeeglOeptuaKpeWRii5tZClcbi0gW2RvYy9tb2R1bGUvcjE3LTNjMjI1MzExNWYvZGVzaWduL+iuvuiuoei/h+eoiy5tZF0oL1VzZXJzL2NoYWkvY29kZS9kYy9saWdodG5pbmdfdHJhZGUvZG9jL21vZHVsZS9yMTctM2MyMjUzMTE1Zi9kZXNpZ24v6K6+6K6h6L+H56iLLm1kKVxuLSBb5aSN546w6ISa5pysXSgvVXNlcnMvY2hhaS9jb2RlL2RjL2xpZ2h0bmluZ190cmFkZS9kb2NzL2FyZ3VzX3NpbmdsZS92b2xfc3RhdGVfcGhhc2UwX3IxNy5weSlcbi0gW+WbnuW9kua1i+ivlV0oL1VzZXJzL2NoYWkvY29kZS9kYy9saWdodG5pbmdfdHJhZGUvZG9jcy9hcmd1c19zaW5nbGUvdGVzdF92b2xfc3RhdGVfcGhhc2UwX3IxNy5weSlcblxu6aqM6K+B77ya6ISa5pys6K+75Y+WIDE4NSwxMzcg5p2h5LqL5Lu244CB55Sf5oiQ5oql5ZGK77ybUHl0aG9uIOe8luivkemAmui/h++8mzIg5p2h5Zue5b2S5rWL6K+V6YCa6L+H44CCXG5cbuaMiemcgOivu+WPluS6hiByMe+8iOWunuS+i+W9kuWxnu+8ieOAgXIxMO+8iOWGs+etluW9kumbhi/miKrmlq0gZXBpc29kZe+8ieWSjCByMTbvvIjnu5/orqHliKTlrprnuqrlvovvvInnmoTorr7orqHmlofmoaPjgIJcblxu6YGX55WZ77ya5pys5py65rKh5pyJ6I635o6I5p2D55qE5LqL5Lu25bqT5Y+q6K+7IERTTu+8jOWboOatpOacquiDveebtOaOpeafpeivoiBNeVNRTCDnmoQgYHN0cmF0ZWd5X2V2ZW50YC9gZXBpc29kZV9lbnRyeWDvvJvlt7LnlKggcjYg5Zue54GMIEpTT05MIOecn+a6kOWkjeeOsOOAguWQjue7remcgOaPkOS+m+WuieWFqOeahOWPquivu+i/nuaOpeW5tuWFiOi3keS4gOiHtOaAp+W3oeajgOOAglxuXG7mibnph4/liKTlrprvvJrpnIDkurrlt6XlpITnkIYiLCJzdGF0dXMiOiIiLCJwaGFzZSI6ImZpbmFsX2Fuc3dlciJ9XX1dfQ==
+-->

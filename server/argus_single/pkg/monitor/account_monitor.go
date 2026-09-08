@@ -34,6 +34,9 @@ type AccountMonitor struct {
 	minBalance         decimal.Decimal      // 最小余额阈值，默认30U（用于交易判断）
 	reportThreshold    decimal.Decimal      // 报告阈值，默认100U（低于此值才发送报告）
 
+	// 以下三项来自配置快照，热更新时会被 ApplyParams 就地改写，必须过 paramMu；
+	// 直接读字段会与热更新并发（持仓轮询 goroutine 一直在读）。
+	paramMu            sync.RWMutex         // 保护 posQueryInterval / pnl*Threshold
 	posQueryInterval   time.Duration        // 持仓查询间隔
 	pnlProfitThreshold decimal.Decimal      // 盈利告警阈值（正值，如150表示150%）
 	pnlLossThreshold   decimal.Decimal      // 亏损告警阈值（正值，如150表示-150%时告警）
@@ -156,6 +159,43 @@ func NewAccountMonitor() *AccountMonitor {
 	}
 }
 
+// PositionInterval 返回当前持仓巡检间隔（热更新安全）。
+func (am *AccountMonitor) PositionInterval() time.Duration {
+	am.paramMu.RLock()
+	defer am.paramMu.RUnlock()
+	return am.posQueryInterval
+}
+
+func (am *AccountMonitor) profitThreshold() decimal.Decimal {
+	am.paramMu.RLock()
+	defer am.paramMu.RUnlock()
+	return am.pnlProfitThreshold
+}
+
+func (am *AccountMonitor) lossThreshold() decimal.Decimal {
+	am.paramMu.RLock()
+	defer am.paramMu.RUnlock()
+	return am.pnlLossThreshold
+}
+
+// ApplyParams 热更新持仓巡检间隔与盈亏告警阈值。
+// 账户监控器是 sync.Once 单例、构造时读一次 vipper，配置发布后如果不就地更新，
+// 这三项就只能等重启才生效——而重启会让持仓失去看管，是本需求明确排除的动作。
+// 非正值表示未配置，保持当前取值不动。
+func (am *AccountMonitor) ApplyParams(intervalSecond int, profitThreshold, lossThreshold float64) {
+	am.paramMu.Lock()
+	defer am.paramMu.Unlock()
+	if intervalSecond > 0 {
+		am.posQueryInterval = time.Duration(intervalSecond) * time.Second
+	}
+	if profitThreshold > 0 {
+		am.pnlProfitThreshold = decimal.NewFromFloat(profitThreshold)
+	}
+	if lossThreshold > 0 {
+		am.pnlLossThreshold = decimal.NewFromFloat(lossThreshold)
+	}
+}
+
 // resolveTrailParamsForAccount 解析某账户的移动止盈参数（账户级覆盖 + 全局回退）。
 func resolveTrailParamsForAccount(index int) TrailParams {
 	f := func(name, globalKey string, def float64) float64 {
@@ -232,7 +272,7 @@ func (am *AccountMonitor) Start() {
 	}()
 
 	logrus.Infof("✅ 账户监控已启动，每1分钟查询余额，每%v监控持仓盈亏（盈利>%s%%/亏损<-%s%%）",
-		am.posQueryInterval, am.pnlProfitThreshold.String(), am.pnlLossThreshold.String())
+		am.PositionInterval(), am.profitThreshold().String(), am.lossThreshold().String())
 }
 
 // startComparisonReport 周期性发送账户对比报告。
@@ -428,7 +468,7 @@ func (am *AccountMonitor) queryBalances(sendReport bool) {
 					// P2-C：补 equity/upl。缓存陈旧（持仓查询持续异常）时诚实省略，
 					// 报告回退 balance——旧 UPL 不得冒充实时权益。
 					sample, ok := am.getUpl(acc.Name)
-					hasUpl := ok && uplFresh(sample, time.Now(), am.posQueryInterval)
+					hasUpl := ok && uplFresh(sample, time.Now(), am.PositionInterval())
 					if ok && !hasUpl {
 						logrus.Warnf("[余额查询] 账户 %s UPL 缓存已陈旧 %.0fs（持仓查询持续异常?），balance 事件省略 equity/upl",
 							acc.Name, time.Since(sample.ObservedAt).Seconds())
@@ -950,7 +990,8 @@ func (am *AccountMonitor) GetROIReport() string {
 
 // startPositionMonitor 启动持仓盈亏监控（5秒一次）
 func (am *AccountMonitor) startPositionMonitor() {
-	ticker := time.NewTicker(am.posQueryInterval)
+	interval := am.PositionInterval()
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -959,6 +1000,12 @@ func (am *AccountMonitor) startPositionMonitor() {
 			return
 		case <-ticker.C:
 			am.checkPositionPnl()
+			// 巡检间隔属于热生效参数，配置发布后不等重启就换节奏。
+			if next := am.PositionInterval(); next != interval {
+				interval = next
+				ticker.Reset(interval)
+				logrus.Infof("[持仓监控] 巡检间隔已热更新为 %v", interval)
+			}
 		}
 	}
 }
@@ -1040,8 +1087,9 @@ func (am *AccountMonitor) checkPositionPnl() {
 // handleFixedPnl 现状逻辑（fixed 模式）：ROI 超过 profit_threshold 整仓平、
 // 超过 -loss_threshold 仅告警；同仓告警 5 分钟冷却。行为与改造前一致。
 func (am *AccountMonitor) handleFixedPnl(tm *trade.TradeManager, acc trade.AccountConfig, pos utils.PositionInfo, pnl, pct decimal.Decimal, key string) {
-	isProfit := pct.GreaterThan(am.pnlProfitThreshold)
-	isLoss := pct.LessThan(am.pnlLossThreshold.Neg())
+	profitThreshold, lossThreshold := am.profitThreshold(), am.lossThreshold()
+	isProfit := pct.GreaterThan(profitThreshold)
+	isLoss := pct.LessThan(lossThreshold.Neg())
 	if !isProfit && !isLoss {
 		return
 	}
@@ -1049,7 +1097,7 @@ func (am *AccountMonitor) handleFixedPnl(tm *trade.TradeManager, acc trade.Accou
 		return
 	}
 	pctStr := signedPctStr(pct)
-	logrus.Warnf("[持仓监控] %s 盈亏比例 %s%% 超过阈值(盈利>%s%%/亏损<-%s%%)", key, pctStr, am.pnlProfitThreshold.String(), am.pnlLossThreshold.String())
+	logrus.Warnf("[持仓监控] %s 盈亏比例 %s%% 超过阈值(盈利>%s%%/亏损<-%s%%)", key, pctStr, profitThreshold.String(), lossThreshold.String())
 
 	closeResultMsg := ""
 	if isProfit {
@@ -1142,7 +1190,7 @@ func (am *AccountMonitor) closeTrailing(tm *trade.TradeManager, acc trade.Accoun
 
 // maybeLossAlert 普通亏损告警：ROI <= -loss_threshold 且过冷却才发（不平仓）。
 func (am *AccountMonitor) maybeLossAlert(acc trade.AccountConfig, pos utils.PositionInfo, pnl, pct decimal.Decimal, key string) {
-	if !pct.LessThan(am.pnlLossThreshold.Neg()) {
+	if !pct.LessThan(am.lossThreshold().Neg()) {
 		return
 	}
 	if !am.passAlertCooldown(key) {
