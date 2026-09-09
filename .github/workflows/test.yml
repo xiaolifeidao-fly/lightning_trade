@@ -1,0 +1,77 @@
+name: test
+
+# 仓库此前没有任何 CI。加它的直接动因：2026-09-09 排查出的两个缺陷
+# （signal_slice 恒 0 行、同批重复键让整批 INSERT 失败）本来都能被**仓库里
+# 已有的**集成测试抓到，但那些用例由 DSN 环境变量门控，没设就 t.Skip，
+# 日常 `go test ./...` 看着全绿，实际 30+ 个用例从没执行过。
+#
+# 真正的门槛只是一个 MySQL 容器，所以这里把 scripts/test.sh 跑起来即可——
+# 本地和 CI 共用同一个入口，避免"CI 绿本地红"。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支上新的 push 取消上一次未跑完的，省 runner 时间。
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go（含真实 MySQL 集成校验）
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # 五个模块的 go.mod 都写 go 1.25.0；这里跟着它走，别让 CI 用更低的
+          # 版本触发 toolchain 自动下载，那会让每次跑都多几十秒。
+          go-version: '1.25'
+          cache-dependency-path: |
+            server/common/go.sum
+            server/service/go.sum
+            server/manager-api/go.sum
+            server/argus_single/go.sum
+            server/oracle/go.sum
+
+      # scripts/test.sh 自己起 MySQL 容器（ubuntu-latest 自带 docker），
+      # 顺带保证本地跑法与 CI 完全一致，而不是在这里另写一套 services: mysql。
+      - name: 编译 + 全量测试
+        run: ./scripts/test.sh
+
+  frontend:
+    name: 前端类型检查与构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: client/manager
+    steps:
+      - uses: actions/checkout@v4
+
+      # 版本对齐部署时实际用的那套（scratchpad/Dockerfile.fe）：
+      # node 22 + pnpm 9.3.0。版本漂移会让 CI 过、部署构建失败。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 启用 pnpm 9.3.0
+        run: corepack enable && corepack prepare pnpm@9.3.0 --activate
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      # tsc 单独跑一遍：next build 对部分类型问题是宽松的，而本次改
+      # catalog carrier 时正是 tsc 先拦下了字段名写错。
+      - name: 类型检查
+        run: pnpm exec tsc --noEmit -p tsconfig.json
+
+      - name: 构建
+        run: pnpm build
+        env:
+          APP_ENV: prod

@@ -2,6 +2,11 @@
 !.gitignore
 !.dockerignore
 !.git/
+# 第 1 行的 .* 会把 .github/ 一起吞掉，CI 工作流将永远提交不上去，
+# 而且 git status 里连未跟踪提示都不给。目录本身必须先反忽略，
+# 否则 git 直接剪掉整棵子树，只写 !.github/** 不起作用。
+!.github/
+!.github/**
 config/config.ini
 .vscode/
 !.env.dev
