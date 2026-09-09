@@ -10,7 +10,6 @@ import (
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 
 	"argus_single/pkg/eventlog"
@@ -47,8 +46,11 @@ func TestInsertUsesOnDuplicateKeyUpdate(t *testing.T) {
 	if kind != ErrNone {
 		t.Fatalf("convert kind=%v", kind)
 	}
+	// 断言的是**生产用的那个子句**，不是测试自己另写一份——旧写法在这里
+	// 内联 clause.OnConflict{DoNothing: true}，与 insert() 实际用的东西脱钩，
+	// 所以 id=id 撞自增列（Error 1869）这件事一直没被测出来。
 	tx := gdb.Session(&gorm.Session{DryRun: true}).
-		Clauses(clause.OnConflict{DoNothing: true}).
+		Clauses(idempotentInsertClause()).
 		Create(rows.Strategy)
 	if tx.Error != nil {
 		t.Fatalf("dry-run create: %v", tx.Error)
@@ -57,8 +59,13 @@ func TestInsertUsesOnDuplicateKeyUpdate(t *testing.T) {
 	if !strings.Contains(sql, "ON DUPLICATE KEY UPDATE") {
 		t.Fatalf("缺少幂等子句: %s", sql)
 	}
-	if !strings.Contains(sql, "`id`=`id`") {
-		t.Fatalf("幂等子句应是 id=id（不更新任何列）: %s", sql)
+	// 绝不能给自增列赋值：同一条 INSERT 内出现重复键时 MySQL 8 会报 1869，
+	// 整批写入全部失败（含同批里没问题的行）。
+	if strings.Contains(sql, "`id`") {
+		t.Fatalf("幂等子句不得触碰自增列 id: %s", sql)
+	}
+	if !strings.Contains(sql, "`instance_key`=`instance_key`") {
+		t.Fatalf("幂等子句应把 instance_key 赋回自身（真空操作且绕开自增列）: %s", sql)
 	}
 	if !strings.Contains(sql, "`strategy_event`") {
 		t.Fatalf("表名不对: %s", sql)

@@ -374,6 +374,11 @@ func (s *Store) flush(batch []Envelope) {
 			rows.Strategy = append(rows.Strategy, converted.Strategy...)
 			rows.Balance = append(rows.Balance, converted.Balance...)
 			rows.Dev = append(rows.Dev, converted.Dev...)
+			// Slice 漏在这里过，signal_slice 就一直是 0 行：Convert 正常产出
+			// Rows{Slice:…}，但累加时没抄过来，len(rows.Slice) 恒为 0，
+			// 下面 insert 的 count==0 直接 return——不报错、不计丢弃，
+			// 计数器只剩 Accepted 涨、Inserted 不涨这一个破绽。
+			rows.Slice = append(rows.Slice, converted.Slice...)
 		case ErrBadTs:
 			if n := atomic.AddUint64(&s.badTs, 1); n%dropWarnEvery == 1 {
 				logrus.Errorf("[eventstore] 事件时间戳无法解析，已丢弃（累计 %d 条）: ts=%q event=%s", n, env.Event.Ts, env.Event.Event)
@@ -395,13 +400,36 @@ func (s *Store) flush(batch []Envelope) {
 	s.insert(len(rows.Slice), func(tx *gorm.DB) error { return tx.CreateInBatches(rows.Slice, sliceBatchSize).Error }, "signal_slice")
 }
 
+// idempotentInsertClause 幂等插入子句：撞唯一键时什么都不改。
+//
+// 不能用 clause.OnConflict{DoNothing: true}——GORM 的 mysql 驱动会把它译成
+// ON DUPLICATE KEY UPDATE `id`=`id`，而 id 是自增列。一旦**同一条 INSERT 语句
+// 内部**出现两行撞同一个唯一键，MySQL 8 直接报
+//
+//	Error 1869: Auto-increment value in UPDATE conflicts with internally generated values
+//
+// 而 insert 是整批提交，于是这一批**全部**写不进去——包括同批里本来没问题的行。
+//
+// 实测两处都会踩：signal_slice 同锚点投两次、strategy_event 同哈希在一个
+// flush 窗口内到两次。跨批重复（先前已落库）不会触发，所以线上只在同批重复
+// 时才丢数据，很难发现。
+//
+// 改成把 instance_key 赋回自身：四张表都有这一列，且它要么是唯一键的一部分
+// （signal_slice），要么由幂等哈希隐含（其余三张），所以这是真正的空操作，
+// 只是绕开了自增列。
+func idempotentInsertClause() clause.OnConflict {
+	return clause.OnConflict{
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"instance_key": clause.Column{Name: "instance_key"},
+		}),
+	}
+}
+
 func (s *Store) insert(count int, do func(tx *gorm.DB) error, table string) {
 	if count == 0 {
 		return
 	}
-	// DoNothing 在 mysql 驱动上会译成 ON DUPLICATE KEY UPDATE id=id：
-	// 幂等哈希撞键时静默跳过，让回灌与补录可以反复重放。
-	tx := s.db.Clauses(clause.OnConflict{DoNothing: true})
+	tx := s.db.Clauses(idempotentInsertClause())
 	if err := do(tx); err != nil {
 		atomic.AddUint64(&s.failed, uint64(count))
 		logrus.Errorf("[eventstore] %s 批量写入失败，已丢弃 %d 行（不影响交易，JSONL 仍是真源）: %v", table, count, err)

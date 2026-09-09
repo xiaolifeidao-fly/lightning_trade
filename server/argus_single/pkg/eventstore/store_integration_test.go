@@ -253,3 +253,42 @@ func waitDrain(t *testing.T, store *Store) {
 	}
 	t.Fatalf("等待写入落库超时: %+v", store.Stats())
 }
+
+// 同一批 INSERT 内出现重复唯一键时，不能把整批带走。
+//
+// 幂等子句原来是 clause.OnConflict{DoNothing: true}，GORM 的 mysql 驱动把它
+// 译成 ON DUPLICATE KEY UPDATE `id`=`id`，而 id 是自增列。跨批重复（前一批
+// 已落库）没问题，但**同一条 INSERT 语句内部**撞键时 MySQL 8 会报
+// Error 1869，insert 是整批提交，于是这一批全军覆没——包括同批里本来
+// 没问题的行。线上表现是「Accepted 在涨、Inserted 不涨、Failed 在涨」，
+// 而两条重复事件本身又不重要，很容易被当成噪声。
+//
+// strategy_event 是主表，两条完全相同的事件落在同一个 flush 窗口就会触发，
+// 因此这条回归必须钉在主表上，而不是只钉在 signal_slice。
+func TestIntegrationIntraBatchDuplicateKeepsRestOfBatch(t *testing.T) {
+	store := integrationStore(t)
+	if err := store.db.Exec("DELETE FROM strategy_event WHERE instance_key = ?", testInstanceKey).Error; err != nil {
+		t.Fatalf("clean: %v", err)
+	}
+	store.Start(context.Background())
+
+	dup := eventlog.Event{Ts: "2026-08-23 10:00:00", Account: "账户A", Event: eventlog.EvOpen,
+		InstId: "BTC-USDT-SWAP", Side: "long", Size: 1, OrderSize: 1}
+	other := eventlog.Event{Ts: "2026-08-23 10:00:01", Account: "账户B", Event: eventlog.EvOpen,
+		InstId: "BTC-USDT-SWAP", Side: "short", Size: 2, OrderSize: 1}
+	store.Emit(dup)
+	store.Emit(dup)   // 同批重复：旧实现会让整批失败
+	store.Emit(other) // 同批里的无辜行：必须活下来
+
+	waitForFlush(t, store, 3)
+	if s := store.Stats(); s.Failed != 0 {
+		t.Errorf("同批重复不该造成写入失败: %+v", s)
+	}
+	var count int64
+	if err := store.db.Table("strategy_event").Where("instance_key = ?", testInstanceKey).Count(&count).Error; err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("重复的去重成 1 行 + 另一条 = 2 行，实际 %d", count)
+	}
+}
