@@ -22,6 +22,7 @@ import type { GateStats, SignalEvent } from "../../argus-signals/api/argus-signa
 import type { EquityCurve, InstanceSummary } from "../api/argus-dashboard.api";
 import { COVERAGE_ERROR_PCT, COVERAGE_WARN_PCT, fmtAge, wallClockAgeSeconds } from "../constants";
 import { EquityChart } from "./EquityChart";
+import { formatRatioAsBp } from "@/components/argus/units";
 
 const { Text } = Typography;
 
@@ -149,7 +150,7 @@ function ParameterSummary({ snapshot, runtime }: { snapshot: ArgusConfigSnapshot
     <div className="manager-dashboard-parameters">
       <SummaryItem label="已发布版本" value={`v${snapshot.version?.version || runtime?.publishedVersion || "—"}`} />
       <SummaryItem label="默认下单量" value={`${snapshot.config?.defaultOrderSize ?? "—"} 张`} />
-      <SummaryItem label="信号阈值" value={snapshot.monitorSymbols?.map((item) => `${item.symbol || "—"} ${item.signalThreshold ?? "—"} bp`).join(" · ") || EMPTY} />
+      <SummaryItem label="信号阈值" value={snapshot.monitorSymbols?.map((item) => `${item.symbol || "—"} ${formatRatioAsBp(item.signalThreshold)}`).join(" · ") || EMPTY} />
       <SummaryItem label="账户上限" value={snapshot.accountRisks?.map((risk) => `${risk.maxContracts ?? "—"} 张`).join(" / ") || EMPTY} />
       <SummaryItem label="配置账户" value={snapshot.accounts?.map((account) => account.accountName || "—").join(" / ") || EMPTY} />
     </div>

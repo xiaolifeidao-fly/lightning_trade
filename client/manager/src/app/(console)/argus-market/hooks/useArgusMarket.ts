@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ratioToBp } from "@/components/argus/units";
 import { useArgusInstanceScope } from "@/components/argus/instanceScope";
 import {
   fetchArgusInstances,
@@ -261,13 +262,19 @@ export function useArgusMarket() {
     [instances, instanceKey],
   );
 
-  /** 信号阈值（bp）：取该实例当前币种的 monitor symbol 行。 */
+  /**
+   * 信号阈值（bp）：取该实例当前币种的 monitor symbol 行。
+   *
+   * 库里存的 signal_threshold 是**比例**（0.0003 = 3bp），而副图纵轴画的
+   * gap_bp 是 `(last − mark) / mark × 10000`，量级在 ±5bp。直接把比例喂给
+   * 参考线会让两条阈值线贴在 0 上——必须先换算。
+   */
   const signalThresholdBp = useMemo(() => {
     if (!snapshot) return null;
     const symbols = snapshot.monitorSymbols ?? [];
     const matched =
       symbols.find((item) => (item.symbol || "").toUpperCase() === filters.instrument.toUpperCase()) ?? symbols[0];
-    return matched?.signalThreshold ?? null;
+    return ratioToBp(matched?.signalThreshold);
   }, [snapshot, filters.instrument]);
 
   /**
