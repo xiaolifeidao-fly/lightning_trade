@@ -266,6 +266,24 @@ func (b *book) onOpen(e *eventstore.StrategyEvent) {
 			b.stats.TruncatedHead++
 			return
 		}
+		if netSide := strOr(e.NetSide); netSide != "" {
+			// 账本第一条就是减仓单（NetSide 非空即在减仓）。减仓单让仓位变小，
+			// 它不是"决定开多少张"的时刻，不能记成建仓决策——旧写法会走下面的
+			// 截断头分支再 applyAdd(orderSize)，凭空造出一笔建仓决策去领归因。
+			//
+			// 减仓前的仓位 = 减完的净仓 + 本单张数，这些张的建仓全在窗口之外，
+			// 因此整段进 hidden：realize 会把这笔已实现盈亏全部记成不可归集，
+			// retire 再按比例退掉减掉的那几张。
+			prior := resulting + intended
+			b.startTruncated(e, netSide, prior)
+			b.stats.TruncatedHead++
+			b.ep.ReduceCount++
+			b.realize(e.Pnl, true)
+			b.observeRoi(e.RoiPct)
+			b.retire(float64(intended))
+			b.net = resulting
+			return
+		}
 		if !b.started && intended > 0 && resulting > intended {
 			// 账本的第一条事件就报出比本次下单量更大的净仓 ⇒ 建仓在数据窗口之前。
 			// 实测 roc 账户B 的首条事件是 open size=6 / orderSize=1，那 5 张的

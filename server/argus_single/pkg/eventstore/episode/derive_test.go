@@ -606,3 +606,40 @@ func TestDeriveFirstEventIsReductionUsesNetSide(t *testing.T) {
 		t.Errorf("建仓在数据窗口之前，opened_at 应留 NULL，实际 %v", ep.OpenedAt)
 	}
 }
+
+// 账本第一条是减仓单时，不能把它记成一笔建仓决策。
+//
+// 减仓单让仓位变小，它不是"决定开多少张"的时刻。旧写法走「截断头 +
+// applyAdd(orderSize)」，会凭空造出一个 1 张的建仓决策行，让它领走一份
+// 归因——而真实的建仓决策在数据窗口之外，本来就该整段记进 hidden。
+//
+// 真实数据：roc 账户A 首条 side=long/net_side=short/size=5/orderSize=1，
+// 意味着减仓前是 6 张空单、减完剩 5 张，这 6 张的建仓全在窗口之外。
+func TestDeriveFirstEventIsReductionMakesNoEntry(t *testing.T) {
+	s := &stream{}
+	s.push("2026-09-08 22:18:50", eventlog.EvOpen, open("long", 5, 1), withNetSide("short"),
+		withPnl(12.5, 0.5))
+	s.push("2026-09-09 00:56:15", eventlog.EvOpen, open("short", 6, 1))
+
+	episodes, stats := Derive(s.rows, rebuiltAt)
+	ep := single(t, episodes)
+
+	if ep.AddCount != 1 {
+		t.Errorf("只有 00:56:15 那笔是建仓决策，AddCount 应为 1，实际 %d", ep.AddCount)
+	}
+	if len(ep.Entries) != 1 {
+		t.Fatalf("决策行应只有 1 条，实际 %d 条", len(ep.Entries))
+	}
+	if got := ep.Entries[0].DecidedAt.Format(eventstore.TsLayout); got != "2026-09-09 00:56:15" {
+		t.Errorf("决策行时刻 = %s，减仓单不该造出决策行", got)
+	}
+	if ep.ReduceCount != 1 {
+		t.Errorf("首条减仓应记进 ReduceCount，实际 %d", ep.ReduceCount)
+	}
+	// 减仓前 6 张全在窗口之外，这 0.5 的已实现盈亏无处可归——如实记账。
+	near(t, ep.UnattributedPnl, 0.5, "episode.unattributed_pnl")
+	near(t, ep.Pnl, 0.5, "episode.pnl")
+	if stats.SideFlipRejected != 0 {
+		t.Errorf("SideFlipRejected = %d，期望 0", stats.SideFlipRejected)
+	}
+}
