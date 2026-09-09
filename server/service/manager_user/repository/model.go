@@ -7,20 +7,22 @@ import (
 
 type User struct {
 	db.BaseEntity
-	Name           string    `gorm:"column:name;type:varchar(100);index:idx_name" orm:"column(name);size(100);null" description:"姓名"`
-	Username       string    `gorm:"column:username;type:varchar(50);uniqueIndex:idx_username" orm:"column(username);size(50);null" description:"用户名"`
-	Email          string    `gorm:"column:email;type:varchar(100);index:idx_email" orm:"column(email);size(100);null" description:"邮箱"`
-	Phone          string    `gorm:"column:phone;type:varchar(32);index:idx_phone" orm:"column(phone);size(32);null" description:"手机号"`
-	Department     string    `gorm:"column:department;type:varchar(100);index:idx_department" orm:"column(department);size(100);null" description:"部门"`
-	Role           string    `gorm:"column:role;type:varchar(50);index:idx_role" orm:"column(role);size(50);null" description:"角色"`
-	Password       string    `gorm:"column:password;type:varchar(50)" orm:"column(password);size(50);null" description:"密码"`
-	OriginPassword string    `gorm:"column:origin_password;type:varchar(50)" orm:"column(origin_password);size(50);null" description:"原始密码"`
-	Status         string    `gorm:"column:status;type:varchar(50)" orm:"column(status);size(50);null" description:"状态"`
-	LastLoginTime  time.Time `gorm:"column:last_login_time;type:datetime" orm:"column(last_login_time);null" description:"最后登录时间"`
-	SecretKey      string    `gorm:"column:secret_key;type:varchar(50);index:idx_secret_key" orm:"column(secret_key);size(50);null" description:"密钥"`
-	Remark         string    `gorm:"column:remark;type:varchar(50)" orm:"column(remark);size(50);null" description:"备注"`
-	PubToken       string    `gorm:"column:pub_token;type:varchar(100);uniqueIndex:pub_token" orm:"column(pub_token);size(100);null" description:"公钥token"`
-	BanCount       uint32    `gorm:"column:ban_count;type:int unsigned;default:0" orm:"column(ban_count);null" description:"封禁次数"`
+	Name       string `gorm:"column:name;type:varchar(100);index:idx_name" orm:"column(name);size(100);null" description:"姓名"`
+	Username   string `gorm:"column:username;type:varchar(50);uniqueIndex:idx_username" orm:"column(username);size(50);null" description:"用户名"`
+	Email      string `gorm:"column:email;type:varchar(100);index:idx_email" orm:"column(email);size(100);null" description:"邮箱"`
+	Phone      string `gorm:"column:phone;type:varchar(32);index:idx_phone" orm:"column(phone);size(32);null" description:"手机号"`
+	Department string `gorm:"column:department;type:varchar(100);index:idx_department" orm:"column(department);size(100);null" description:"部门"`
+	Role       string `gorm:"column:role;type:varchar(50);index:idx_role" orm:"column(role);size(50);null" description:"角色"`
+	Password   string `gorm:"column:password;type:varchar(50)" orm:"column(password);size(50);null" description:"密码（encryptPassword 后的摘要，登录校验用）"`
+	// origin_password（明文口令）字段已从实体移除：登录只校验 Password 摘要，
+	// 明文历来只用于列表页展示，属纯风险项。列还留在库里但代码不再读写，
+	// 存量明文需要另跑一条 UPDATE 清空。
+	Status        string    `gorm:"column:status;type:varchar(50)" orm:"column(status);size(50);null" description:"状态"`
+	LastLoginTime time.Time `gorm:"column:last_login_time;type:datetime" orm:"column(last_login_time);null" description:"最后登录时间"`
+	SecretKey     string    `gorm:"column:secret_key;type:varchar(50);index:idx_secret_key" orm:"column(secret_key);size(50);null" description:"密钥"`
+	Remark        string    `gorm:"column:remark;type:varchar(50)" orm:"column(remark);size(50);null" description:"备注"`
+	PubToken      string    `gorm:"column:pub_token;type:varchar(100);uniqueIndex:pub_token" orm:"column(pub_token);size(100);null" description:"公钥token"`
+	BanCount      uint32    `gorm:"column:ban_count;type:int unsigned;default:0" orm:"column(ban_count);null" description:"封禁次数"`
 }
 
 func (u *User) TableName() string {
@@ -49,20 +51,18 @@ func (u *UserRole) TableName() string {
 
 type UserListRow struct {
 	db.BaseEntity
-	Name           string    `gorm:"column:name"`
-	Username       string    `gorm:"column:username"`
-	Email          string    `gorm:"column:email"`
-	Phone          string    `gorm:"column:phone"`
-	Department     string    `gorm:"column:department"`
-	Role           string    `gorm:"column:role"`
-	Password       string    `gorm:"column:password"`
-	OriginPassword string    `gorm:"column:origin_password"`
-	Status         string    `gorm:"column:status"`
-	LastLoginTime  time.Time `gorm:"column:last_login_time"`
-	SecretKey      string    `gorm:"column:secret_key"`
-	Remark         string    `gorm:"column:remark"`
-	PubToken       string    `gorm:"column:pub_token"`
-	BanCount       uint32    `gorm:"column:ban_count"`
+	Name          string    `gorm:"column:name"`
+	Username      string    `gorm:"column:username"`
+	Email         string    `gorm:"column:email"`
+	Phone         string    `gorm:"column:phone"`
+	Department    string    `gorm:"column:department"`
+	Role          string    `gorm:"column:role"`
+	Status        string    `gorm:"column:status"`
+	LastLoginTime time.Time `gorm:"column:last_login_time"`
+	SecretKey     string    `gorm:"column:secret_key"`
+	Remark        string    `gorm:"column:remark"`
+	PubToken      string    `gorm:"column:pub_token"`
+	BanCount      uint32    `gorm:"column:ban_count"`
 }
 
 type UserAccountRow struct {

@@ -76,10 +76,12 @@ func (r *UserRepository) ListUsersByQuery(query userDTO.UserQueryDTO, pageIndex,
 		return nil, fmt.Errorf("database is not initialized")
 	}
 	whereSQL, values := buildUserListWhere(query)
+	// 列表刻意不查 u.password / u.origin_password：出参不再返回口令，
+	// 把它们捞进内存只是白白多一份可泄露的副本。
 	sql := `SELECT
 		u.id, u.active, u.created_time, u.updated_time, u.created_by, u.updated_by,
-		u.name, u.username, u.email, u.phone, u.department, u.role, u.password,
-		u.origin_password, u.status, u.last_login_time, u.secret_key, u.remark,
+		u.name, u.username, u.email, u.phone, u.department, u.role,
+		u.status, u.last_login_time, u.secret_key, u.remark,
 		u.pub_token, u.ban_count
 	FROM user u ` + whereSQL + ` ORDER BY u.id DESC LIMIT ? OFFSET ?`
 	values = append(values, pageSize, (pageIndex-1)*pageSize)

@@ -51,8 +51,8 @@ export function UserFormModal({
         };
         const password = values.password?.trim();
         if (password) {
+          // 只提交 password：后端不再存明文 origin_password。
           payload.password = password;
-          payload.originPassword = password;
         }
         await onSubmit({
           ...payload,

@@ -29,9 +29,8 @@ export class UserRecord {
 
   tineCurrency = "CNY";
 
-  password = "";
-
-  originPassword = "";
+  // 出参不再包含 password / originPassword：接口已停止返回口令，
+  // 想设置口令用 UserPayload（入参）。留着这两个字段只会让表格渲染出空列。
 
   secretKey = "";
 
@@ -86,7 +85,6 @@ export interface UserPayload {
   tineBalance?: number;
   tineCurrency?: string;
   password?: string;
-  originPassword?: string;
   secretKey?: string;
   pubToken?: string;
   banCount?: number;

@@ -170,7 +170,6 @@ export function UserManagementDemo() {
         }
         await patchUser(record.id, {
           password,
-          originPassword: password,
         });
         message.success("密码已更新");
       },
@@ -247,12 +246,8 @@ export function UserManagementDemo() {
       key: "username",
       width: 160,
     },
-    {
-      title: "密码",
-      key: "password",
-      width: 140,
-      render: (_, record) => record.originPassword || record.password || "-",
-    },
+    // 「密码」列已移除：/users 接口不再返回 password / originPassword。
+    // 口令只能通过编辑弹窗重设，不提供读回。
     {
       title: "密钥",
       dataIndex: "secretKey",

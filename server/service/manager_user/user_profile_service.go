@@ -69,20 +69,18 @@ func (s *UserService) ListUsers(query userDTO.UserQueryDTO) (*baseDTO.PageDTO[us
 				UpdatedTime: row.UpdatedTime,
 				UpdatedBy:   row.UpdatedBy,
 			},
-			Name:           row.Name,
-			Username:       row.Username,
-			Email:          row.Email,
-			Phone:          row.Phone,
-			Department:     row.Department,
-			Role:           row.Role,
-			Password:       row.Password,
-			OriginPassword: row.OriginPassword,
-			Status:         row.Status,
-			LastLoginTime:  row.LastLoginTime,
-			SecretKey:      row.SecretKey,
-			Remark:         row.Remark,
-			PubToken:       row.PubToken,
-			BanCount:       row.BanCount,
+			Name:          row.Name,
+			Username:      row.Username,
+			Email:         row.Email,
+			Phone:         row.Phone,
+			Department:    row.Department,
+			Role:          row.Role,
+			Status:        row.Status,
+			LastLoginTime: row.LastLoginTime,
+			SecretKey:     row.SecretKey,
+			Remark:        row.Remark,
+			PubToken:      row.PubToken,
+			BanCount:      row.BanCount,
 		})
 	}
 	if len(items) == 0 {
@@ -142,7 +140,6 @@ func (s *UserService) CreateUser(req *userDTO.CreateUserDTO) (*userDTO.UserDTO, 
 	role := normalizeUserRole(req.Role)
 	status := normalizeUserStatus(req.Status)
 	password := strings.TrimSpace(req.Password)
-	originPassword := strings.TrimSpace(req.OriginPassword)
 	secretKey := strings.TrimSpace(req.SecretKey)
 	remark := strings.TrimSpace(req.Remark)
 	pubToken := strings.TrimSpace(req.PubToken)
@@ -173,20 +170,19 @@ func (s *UserService) CreateUser(req *userDTO.CreateUserDTO) (*userDTO.UserDTO, 
 		lastLoginTime = time.Time{}
 	}
 	created, err := s.userRepository.Create(&userRepository.User{
-		Name:           name,
-		Username:       username,
-		Email:          email,
-		Phone:          phone,
-		Department:     department,
-		Role:           role,
-		Password:       password,
-		OriginPassword: originPassword,
-		Status:         status,
-		LastLoginTime:  lastLoginTime,
-		SecretKey:      secretKey,
-		Remark:         remark,
-		PubToken:       pubToken,
-		BanCount:       req.BanCount,
+		Name:          name,
+		Username:      username,
+		Email:         email,
+		Phone:         phone,
+		Department:    department,
+		Role:          role,
+		Password:      password,
+		Status:        status,
+		LastLoginTime: lastLoginTime,
+		SecretKey:     secretKey,
+		Remark:        remark,
+		PubToken:      pubToken,
+		BanCount:      req.BanCount,
 	})
 	if err != nil {
 		return nil, err
@@ -251,9 +247,6 @@ func (s *UserService) UpdateUser(id uint, req *userDTO.UpdateUserDTO) (*userDTO.
 	}
 	if req.Password != nil {
 		entity.Password = strings.TrimSpace(*req.Password)
-	}
-	if req.OriginPassword != nil {
-		entity.OriginPassword = strings.TrimSpace(*req.OriginPassword)
 	}
 	if req.Status != nil {
 		status := normalizeUserStatus(*req.Status)
