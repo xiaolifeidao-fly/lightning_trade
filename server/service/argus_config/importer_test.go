@@ -136,3 +136,85 @@ func TestLoadMainConfigImportStillRejectsForeignPropertiesNames(t *testing.T) {
 		}
 	}
 }
+
+// TestResolveLoginTypeIgnoresStaleSessionMode 复现 2026-09-08 的线上故障。
+//
+// 部署用的 properties 从不写 login_type（运维靠 trade.accountN.cookie/token
+// 维护静态凭证），而手上的 session.json 是几个月前的、里面写着
+// loginType=password。旧实现 firstNonBlank(properties, session.LoginType,
+// "config") 会取到 password，导入后账户被判成密码登录，argus_single 启动时
+// 去调未部署的 pl-instance，盘口信号开仓全部失败。
+func TestResolveLoginTypeIgnoresStaleSessionMode(t *testing.T) {
+	properties := map[string]string{
+		"trade.account1.cookie": "fresh-cookie",
+		"trade.account1.token":  "fresh-token",
+	}
+	stale := importSession{LoginType: "password", Cookie: "old-cookie", Token: "old-token"}
+	if got := resolveLoginType(properties, stale, "trade.account1."); got != "config" {
+		t.Fatalf("有静态 cookie/token 时应判为 config，得到 %q（session.json 的 password 不该胜出）", got)
+	}
+}
+
+func TestResolveLoginTypeHonoursExplicitAndInfersPassword(t *testing.T) {
+	// properties 显式声明优先级最高
+	explicit := map[string]string{
+		"trade.account1.login_type": "password",
+		"trade.account1.cookie":     "c",
+		"trade.account1.token":      "t",
+	}
+	if got := resolveLoginType(explicit, importSession{}, "trade.account1."); got != "password" {
+		t.Fatalf("properties 显式声明应优先，得到 %q", got)
+	}
+	// 没有静态凭证、只有账号密码时才推断为 password
+	onlyLogin := map[string]string{
+		"trade.account1.username": "u",
+		"trade.account1.password": "p",
+	}
+	if got := resolveLoginType(onlyLogin, importSession{}, "trade.account1."); got != "password" {
+		t.Fatalf("只有账号密码时应判为 password，得到 %q", got)
+	}
+	// 什么都没有时兜底 config，而不是去调 pl-instance
+	if got := resolveLoginType(map[string]string{}, importSession{}, "trade.account1."); got != "config" {
+		t.Fatalf("无凭证时应兜底 config，得到 %q", got)
+	}
+}
+
+// TestImportRuntimeSessionPrefersPropertiesCredentials 守另一半故障：
+// 运维每周换的是 properties 里的 cookie/token，session.json 只在无头登录成功后
+// 才刷新。旧实现只读 session.json，等于把刚换的新凭证丢掉、把过期的写进库。
+func TestImportRuntimeSessionPrefersPropertiesCredentials(t *testing.T) {
+	properties := map[string]string{
+		"trade.account1.cookie":        "fresh-cookie",
+		"trade.account1.token":         "fresh-token",
+		"trade.account1.sentryRelease": "fresh-release",
+	}
+	stale := importSession{
+		Cookie: "stale-cookie", Token: "stale-token", OToken: "stale-otoken",
+		SentryRelease: "stale-release",
+	}
+	got := importRuntimeSession(properties, stale, "trade.account1.", 1)
+	if got.Cookie != "fresh-cookie" || got.Token != "fresh-token" {
+		t.Fatalf("properties 的凭证应优先，得到 cookie=%q token=%q", got.Cookie, got.Token)
+	}
+	// properties 换了 token 就必须清掉 session.json 的旧 otoken——runtimeAccount
+	// 先取 OToken 再回退 Token，留着旧 otoken 等于新 token 永远不生效。
+	if got.OToken != "" {
+		t.Fatalf("properties 提供 token 时旧 otoken 必须清空，得到 %q", got.OToken)
+	}
+	if got.SentryRelease != "fresh-release" {
+		t.Fatalf("sentryRelease 也应优先取 properties，得到 %q", got.SentryRelease)
+	}
+	if got.Valid != 1 {
+		t.Fatalf("cookie+token 齐备时 valid 应为 1，得到 %d", got.Valid)
+	}
+}
+
+// TestImportRuntimeSessionFallsBackToSessionFile properties 没写时仍要用
+// session.json，否则无头登录刷出来的凭证会丢。
+func TestImportRuntimeSessionFallsBackToSessionFile(t *testing.T) {
+	session := importSession{Cookie: "c-from-json", Token: "t-from-json", OToken: "o-from-json"}
+	got := importRuntimeSession(map[string]string{}, session, "trade.account1.", 1)
+	if got.Cookie != "c-from-json" || got.Token != "t-from-json" || got.OToken != "o-from-json" {
+		t.Fatalf("properties 缺省时应回退 session.json，得到 %+v", got)
+	}
+}

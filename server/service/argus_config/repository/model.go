@@ -2,7 +2,10 @@ package repository
 
 import (
 	"common/middleware/db"
+	"strings"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 const (
@@ -69,7 +72,7 @@ type ArgusConfig struct {
 	AICloseEnabled              uint8           `gorm:"column:ai_close_enabled;type:tinyint unsigned;default:0;check:chk_argus_ai_close_enabled,ai_close_enabled IN (0,1)" description:"AI 平仓开关"`
 	AICloseProvider             string          `gorm:"column:ai_close_provider;type:varchar(64)" description:"AI 平仓服务商"`
 	AICloseAPIURL               string          `gorm:"column:ai_close_api_url;type:varchar(500)" description:"AI 平仓接口地址"`
-	AICloseAPIKey               EncryptedString `gorm:"column:ai_close_api_key;type:text" description:"加密的 AI 平仓密钥"`
+	AICloseAPIKey               string `gorm:"column:ai_close_api_key;type:text" description:"AI 平仓密钥（明文存储，接口返回掩码）"`
 	AICloseModel                string          `gorm:"column:ai_close_model;type:varchar(128)" description:"AI 平仓模型"`
 	AICloseTimeoutSecond        int             `gorm:"column:ai_close_timeout_second;type:int unsigned;default:120" description:"AI 平仓超时"`
 	AICloseMaxTokens            int             `gorm:"column:ai_close_max_tokens;type:int unsigned;default:0" description:"AI 平仓最大 Token"`
@@ -80,7 +83,7 @@ type ArgusConfig struct {
 	AIOpenEnabled               uint8           `gorm:"column:ai_open_enabled;type:tinyint unsigned;default:0;check:chk_argus_ai_open_enabled,ai_open_enabled IN (0,1)" description:"AI 加仓开关"`
 	AIOpenAutoTrade             uint8           `gorm:"column:ai_open_auto_trade;type:tinyint unsigned;default:0;check:chk_argus_ai_open_auto_trade,ai_open_auto_trade IN (0,1)" description:"AI 加仓自动交易"`
 	AIOpenAPIURL                string          `gorm:"column:ai_open_api_url;type:varchar(500)" description:"AI 加仓接口地址，为空时复用平仓"`
-	AIOpenAPIKey                EncryptedString `gorm:"column:ai_open_api_key;type:text" description:"加密的 AI 加仓密钥"`
+	AIOpenAPIKey                string `gorm:"column:ai_open_api_key;type:text" description:"AI 加仓密钥（明文存储，接口返回掩码）"`
 	AIOpenModel                 string          `gorm:"column:ai_open_model;type:varchar(128)" description:"AI 加仓模型"`
 	AIOpenTimeoutSecond         int             `gorm:"column:ai_open_timeout_second;type:int unsigned;default:0" description:"AI 加仓超时"`
 	AIOpenMaxTokens             int             `gorm:"column:ai_open_max_tokens;type:int unsigned;default:0" description:"AI 加仓最大 Token"`
@@ -119,14 +122,20 @@ type ArgusAccount struct {
 	AccountName     string          `gorm:"column:account_name;type:varchar(128);uniqueIndex:idx_argus_account_version_name,priority:2" description:"账户名称"`
 	URL             string          `gorm:"column:url;type:varchar(500)" description:"交易站点地址"`
 	UID             string          `gorm:"column:uid;type:varchar(128);index:idx_argus_account_uid" description:"平台用户 ID"`
-	LoginType       string          `gorm:"column:login_type;type:varchar(32);default:password;check:chk_argus_account_login_type,login_type IN ('password','api_key','cookie')" description:"登录方式"`
+	// LoginType 的取值必须与 argus_single 的 trade.BuildUserProvider 完全一致：
+	// 它只认 "" / "config"（静态 cookie+token）与 "password"（pl-instance 无头登录）。
+	// 原来的约束写的是 IN ('password','api_key','cookie')，与代码只在 password 上
+	// 重叠——'config' 被约束禁止、'cookie' 被代码判为"不支持"，结果是配置一旦入库
+	// 静态凭证模式就永远走不通，只能落到 password 去调未部署的 pl-instance。
+	// default 也从 password 改成 config：静态凭证是当前唯一实际可用的模式。
+	LoginType       string          `gorm:"column:login_type;type:varchar(32);default:config;check:chk_argus_account_login_type,login_type IN ('config','password')" description:"登录方式 config=静态cookie/token password=无头登录"`
 	LoginHeadless   uint8           `gorm:"column:login_headless;type:tinyint unsigned;default:1;check:chk_argus_account_login_headless,login_headless IN (0,1)" description:"无头登录"`
-	Username        EncryptedString `gorm:"column:username;type:text" description:"加密的登录名"`
-	Password        EncryptedString `gorm:"column:password;type:text" description:"加密的密码"`
-	GoogleAuthKey   EncryptedString `gorm:"column:google_auth_key;type:text" description:"加密的 Google 验证器密钥"`
-	APIKey          EncryptedString `gorm:"column:api_key;type:text" description:"加密的 API Key"`
-	SecretKey       EncryptedString `gorm:"column:secret_key;type:text" description:"加密的 API Secret"`
-	Passphrase      EncryptedString `gorm:"column:passphrase;type:text" description:"加密的交易口令"`
+	Username        string `gorm:"column:username;type:text" description:"登录名（明文存储，接口返回掩码）"`
+	Password        string `gorm:"column:password;type:text" description:"密码（明文存储，接口返回掩码）"`
+	GoogleAuthKey   string `gorm:"column:google_auth_key;type:text" description:"Google 验证器密钥（明文存储，接口返回掩码）"`
+	APIKey          string `gorm:"column:api_key;type:text" description:"API Key（明文存储，接口返回掩码）"`
+	SecretKey       string `gorm:"column:secret_key;type:text" description:"API Secret（明文存储，接口返回掩码）"`
+	Passphrase      string `gorm:"column:passphrase;type:text" description:"交易口令（明文存储，接口返回掩码）"`
 	ResourceID      string          `gorm:"column:resource_id;type:varchar(128)" description:"平台资源 ID"`
 	PositionMode    string          `gorm:"column:position_mode;type:varchar(32);default:net;check:chk_argus_account_position_mode,position_mode IN ('net','hedge')" description:"持仓模式"`
 	PositionSide    string          `gorm:"column:position_side;type:varchar(16);default:long;check:chk_argus_account_position_side,position_side IN ('long','short','both')" description:"默认持仓方向"`
@@ -176,8 +185,8 @@ type ArgusNotification struct {
 	db.BaseEntity
 	ConfigVersionID  uint64          `gorm:"column:config_version_id;type:bigint unsigned;uniqueIndex:idx_argus_notification_version" description:"配置版本 ID"`
 	TelegramEnabled  uint8           `gorm:"column:telegram_enabled;type:tinyint unsigned;default:0;check:chk_argus_telegram_enabled,telegram_enabled IN (0,1)" description:"Telegram 通知开关"`
-	TelegramBotToken EncryptedString `gorm:"column:telegram_bot_token;type:text" description:"加密的 Telegram Bot Token"`
-	TelegramChatID   EncryptedString `gorm:"column:telegram_chat_id;type:text" description:"加密的 Telegram Chat ID"`
+	TelegramBotToken string `gorm:"column:telegram_bot_token;type:text" description:"Telegram Bot Token（明文存储，接口返回掩码）"`
+	TelegramChatID   string `gorm:"column:telegram_chat_id;type:text" description:"Telegram Chat ID（明文存储，接口返回掩码）"`
 }
 
 func (n *ArgusNotification) TableName() string { return "argus_notification" }
@@ -187,12 +196,12 @@ func (n *ArgusNotification) TableName() string { return "argus_notification" }
 type ArgusRuntimeSession struct {
 	db.BaseEntity
 	AccountID        uint64          `gorm:"column:account_id;type:bigint unsigned;uniqueIndex:idx_argus_runtime_session_account" description:"Argus 账户 ID"`
-	Cookie           EncryptedString `gorm:"column:cookie;type:text" description:"加密的 Cookie"`
-	Token            EncryptedString `gorm:"column:token;type:text" description:"加密的 Token"`
-	OToken           EncryptedString `gorm:"column:otoken;type:text" description:"加密的 OToken"`
-	SentryRelease    EncryptedString `gorm:"column:sentry_release;type:text" description:"加密的 Sentry Release"`
-	SentryPublicKey  EncryptedString `gorm:"column:sentry_public_key;type:text" description:"加密的 Sentry Public Key"`
-	Baggage          EncryptedString `gorm:"column:baggage;type:text" description:"加密的 Sentry Baggage"`
+	Cookie           string `gorm:"column:cookie;type:text" description:"Cookie（明文存储，接口返回掩码）"`
+	Token            string `gorm:"column:token;type:text" description:"Token（明文存储，接口返回掩码）"`
+	OToken           string `gorm:"column:otoken;type:text" description:"OToken（明文存储，接口返回掩码）"`
+	SentryRelease    string `gorm:"column:sentry_release;type:text" description:"Sentry Release（明文存储，接口返回掩码）"`
+	SentryPublicKey  string `gorm:"column:sentry_public_key;type:text" description:"Sentry Public Key（明文存储，接口返回掩码）"`
+	Baggage          string `gorm:"column:baggage;type:text" description:"Sentry Baggage（明文存储，接口返回掩码）"`
 	LoginURL         string          `gorm:"column:login_url;type:varchar(1000)" description:"登录回跳地址"`
 	FinalURL         string          `gorm:"column:final_url;type:varchar(1000)" description:"登录完成地址"`
 	Valid            uint8           `gorm:"column:valid;type:tinyint unsigned;default:0;check:chk_argus_session_valid,valid IN (0,1)" description:"会话有效状态"`
@@ -202,3 +211,43 @@ type ArgusRuntimeSession struct {
 }
 
 func (s *ArgusRuntimeSession) TableName() string { return "argus_runtime_session" }
+
+// ---------------------------------------------------------------------------
+// JSON 列的空值归一
+//
+// extra_config_json / trailing_stop_tiers_json / extra_risk_json 三列是 MySQL
+// 的 json 类型，而 Go 侧是普通 string。写入空串时 MySQL 直接拒绝：
+//
+//	Error 3140: Invalid JSON text: "The document is empty." at position 0
+//
+// 实测在 cmd/argus-config-import --apply 落 argus_config 时炸掉整次导入
+// （importer 从不给 ExtraConfigJSON 赋值，它一直是 ""）。UI 存草稿走同一条
+// entity 构造链路，同样会炸。
+//
+// 归一成 "null" 而不是 "{}"：读侧三处（tuning.go 的 parseExtraRisk 与
+// accountParamOverrides、signal_baseline.go 的 applyTrailTiers）本来就把
+// "" 与 "null" 当同一回事，用 "null" 语义零变化；"{}" 会让 applyTrailTiers
+// 少记一条「为空」的 note。
+//
+// 放在 BeforeSave 而不是各个 entity 构造函数里：Create 与 Update 都会走到，
+// 将来新增写入路径也不会漏。
+// ---------------------------------------------------------------------------
+
+// normalizeJSONColumn 把空白字符串换成 JSON null，其余原样返回。
+func normalizeJSONColumn(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "null"
+	}
+	return value
+}
+
+func (c *ArgusConfig) BeforeSave(*gorm.DB) error {
+	c.ExtraConfigJSON = normalizeJSONColumn(c.ExtraConfigJSON)
+	return nil
+}
+
+func (r *ArgusAccountRisk) BeforeSave(*gorm.DB) error {
+	r.TrailingStopTiersJSON = normalizeJSONColumn(r.TrailingStopTiersJSON)
+	r.ExtraRiskJSON = normalizeJSONColumn(r.ExtraRiskJSON)
+	return nil
+}

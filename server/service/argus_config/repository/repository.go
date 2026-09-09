@@ -40,7 +40,63 @@ func (r *ArgusConfigRepository) EnsureTable() error {
 	); err != nil {
 		return err
 	}
-	return r.EnsureInstanceScopedIndexes()
+	if err := r.EnsureInstanceScopedIndexes(); err != nil {
+		return err
+	}
+	return r.EnsureLoginTypeConstraint()
+}
+
+// LoginTypeConstraintName 是 argus_account.login_type 的取值约束名。
+const LoginTypeConstraintName = "chk_argus_account_login_type"
+
+// loginTypeAllowedValues 必须与 argus_single 的 trade.BuildUserProvider 支持的
+// 取值完全一致：config = 静态 cookie/token，password = pl-instance 无头登录。
+var loginTypeAllowedValues = []string{"config", "password"}
+
+// EnsureLoginTypeConstraint 把历史库里遗留的 login_type 约束重建成与代码一致。
+//
+// 为什么需要显式重建：AutoMigrate 不会修改已存在的 CHECK 约束（与索引同一类
+// 问题）。历史约束写的是 IN ('password','api_key','cookie')，与代码只在
+// password 上重叠——想把账户改成 config（静态凭证）会被 ERROR 3819 拒绝，
+// 结果是配置入库后只能走 password 模式去调 pl-instance；pl-instance 未部署时
+// 盘口信号开仓全部失败，且现场只看得到"获取 Web 用户凭证失败"，看不到根因。
+//
+// 顺带把不再受支持的存量取值收敛到 config：'cookie' 与 'api_key' 在代码里都会
+// 被 BuildUserProvider 判成"不支持"而直接建不出 Web 客户端。
+func (r *ArgusConfigRepository) EnsureLoginTypeConstraint() error {
+	if r.Db == nil {
+		return fmt.Errorf("database is not initialized")
+	}
+	table := (&ArgusAccount{}).TableName()
+	var clause string
+	if err := r.Db.Raw(
+		"SELECT check_clause FROM information_schema.check_constraints WHERE constraint_schema = DATABASE() AND constraint_name = ?",
+		LoginTypeConstraintName,
+	).Scan(&clause).Error; err != nil {
+		return fmt.Errorf("inspect constraint %s: %w", LoginTypeConstraintName, err)
+	}
+	// 已经只允许 config/password 就不动它，避免每次启动都 DDL。
+	if strings.Contains(clause, "'config'") && !strings.Contains(clause, "'cookie'") && !strings.Contains(clause, "'api_key'") {
+		return nil
+	}
+	// 先把存量非法值收敛，否则新约束建不上。
+	if err := r.Db.Exec(fmt.Sprintf(
+		"UPDATE `%s` SET login_type = 'config' WHERE login_type IS NULL OR login_type NOT IN ('config','password')", table,
+	)).Error; err != nil {
+		return fmt.Errorf("normalize legacy login_type: %w", err)
+	}
+	if strings.TrimSpace(clause) != "" {
+		if err := r.Db.Exec(fmt.Sprintf("ALTER TABLE `%s` DROP CHECK `%s`", table, LoginTypeConstraintName)).Error; err != nil {
+			return fmt.Errorf("drop legacy constraint %s: %w", LoginTypeConstraintName, err)
+		}
+	}
+	values := "'" + strings.Join(loginTypeAllowedValues, "','") + "'"
+	if err := r.Db.Exec(fmt.Sprintf(
+		"ALTER TABLE `%s` ADD CONSTRAINT `%s` CHECK (login_type IN (%s))", table, LoginTypeConstraintName, values,
+	)).Error; err != nil {
+		return fmt.Errorf("create constraint %s: %w", LoginTypeConstraintName, err)
+	}
+	return nil
 }
 
 // EnsureInstanceScopedIndexes 把历史库里遗留的单列唯一索引重建成实例内唯一。

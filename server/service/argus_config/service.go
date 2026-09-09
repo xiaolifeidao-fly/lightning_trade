@@ -1,6 +1,8 @@
 package argus_config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"context"
 	"encoding/json"
 	"errors"
@@ -29,15 +31,14 @@ var (
 
 type ArgusConfigService struct {
 	repository *repository.ArgusConfigRepository
-	redisTTL   time.Duration
 }
 
 func NewArgusConfigService() *ArgusConfigService {
-	return &ArgusConfigService{repository: db.GetRepository[repository.ArgusConfigRepository](), redisTTL: 24 * time.Hour}
+	return &ArgusConfigService{repository: db.GetRepository[repository.ArgusConfigRepository]()}
 }
 
 func NewArgusConfigServiceWithRepository(repo *repository.ArgusConfigRepository) *ArgusConfigService {
-	return &ArgusConfigService{repository: repo, redisTTL: 24 * time.Hour}
+	return &ArgusConfigService{repository: repo}
 }
 
 func (s *ArgusConfigService) EnsureTable() error {
@@ -163,16 +164,10 @@ func (s *ArgusConfigService) mergePublishedSecrets(instanceKey string, req *argu
 	}
 	if config != nil {
 		if value := secretOrEmpty(req.Config.AICloseAPIKey); value == "" {
-			req.Config.AICloseAPIKey, err = config.AICloseAPIKey.Decrypt()
-			if err != nil {
-				return err
-			}
+			req.Config.AICloseAPIKey = config.AICloseAPIKey
 		}
 		if value := secretOrEmpty(req.Config.AIOpenAPIKey); value == "" {
-			req.Config.AIOpenAPIKey, err = config.AIOpenAPIKey.Decrypt()
-			if err != nil {
-				return err
-			}
+			req.Config.AIOpenAPIKey = config.AIOpenAPIKey
 		}
 	}
 	byName := make(map[string]*repository.ArgusAccount, len(accounts))
@@ -184,56 +179,28 @@ func (s *ArgusConfigService) mergePublishedSecrets(instanceKey string, req *argu
 		if old == nil {
 			continue
 		}
-		if req.Accounts[index].Username = preserveSecret(req.Accounts[index].Username, old.Username, &err); err != nil {
-			return err
-		}
-		if req.Accounts[index].Password = preserveSecret(req.Accounts[index].Password, old.Password, &err); err != nil {
-			return err
-		}
-		if req.Accounts[index].GoogleAuthKey = preserveSecret(req.Accounts[index].GoogleAuthKey, old.GoogleAuthKey, &err); err != nil {
-			return err
-		}
-		if req.Accounts[index].APIKey = preserveSecret(req.Accounts[index].APIKey, old.APIKey, &err); err != nil {
-			return err
-		}
-		if req.Accounts[index].SecretKey = preserveSecret(req.Accounts[index].SecretKey, old.SecretKey, &err); err != nil {
-			return err
-		}
-		if req.Accounts[index].Passphrase = preserveSecret(req.Accounts[index].Passphrase, old.Passphrase, &err); err != nil {
-			return err
-		}
+		req.Accounts[index].Username = preserveSecret(req.Accounts[index].Username, old.Username)
+		req.Accounts[index].Password = preserveSecret(req.Accounts[index].Password, old.Password)
+		req.Accounts[index].GoogleAuthKey = preserveSecret(req.Accounts[index].GoogleAuthKey, old.GoogleAuthKey)
+		req.Accounts[index].APIKey = preserveSecret(req.Accounts[index].APIKey, old.APIKey)
+		req.Accounts[index].SecretKey = preserveSecret(req.Accounts[index].SecretKey, old.SecretKey)
+		req.Accounts[index].Passphrase = preserveSecret(req.Accounts[index].Passphrase, old.Passphrase)
 	}
 	if notification != nil {
-		if req.Notification.TelegramBotToken = preserveSecret(req.Notification.TelegramBotToken, notification.TelegramBotToken, &err); err != nil {
-			return err
-		}
-		if req.Notification.TelegramChatID = preserveSecret(req.Notification.TelegramChatID, notification.TelegramChatID, &err); err != nil {
-			return err
-		}
+		req.Notification.TelegramBotToken = preserveSecret(req.Notification.TelegramBotToken, notification.TelegramBotToken)
+		req.Notification.TelegramChatID = preserveSecret(req.Notification.TelegramChatID, notification.TelegramChatID)
 	}
 	for index := range req.Sessions {
 		if index >= len(sessions) {
 			break
 		}
 		old := sessions[index]
-		if req.Sessions[index].Cookie = preserveSecret(req.Sessions[index].Cookie, old.Cookie, &err); err != nil {
-			return err
-		}
-		if req.Sessions[index].Token = preserveSecret(req.Sessions[index].Token, old.Token, &err); err != nil {
-			return err
-		}
-		if req.Sessions[index].OToken = preserveSecret(req.Sessions[index].OToken, old.OToken, &err); err != nil {
-			return err
-		}
-		if req.Sessions[index].SentryRelease = preserveSecret(req.Sessions[index].SentryRelease, old.SentryRelease, &err); err != nil {
-			return err
-		}
-		if req.Sessions[index].SentryPublicKey = preserveSecret(req.Sessions[index].SentryPublicKey, old.SentryPublicKey, &err); err != nil {
-			return err
-		}
-		if req.Sessions[index].Baggage = preserveSecret(req.Sessions[index].Baggage, old.Baggage, &err); err != nil {
-			return err
-		}
+		req.Sessions[index].Cookie = preserveSecret(req.Sessions[index].Cookie, old.Cookie)
+		req.Sessions[index].Token = preserveSecret(req.Sessions[index].Token, old.Token)
+		req.Sessions[index].OToken = preserveSecret(req.Sessions[index].OToken, old.OToken)
+		req.Sessions[index].SentryRelease = preserveSecret(req.Sessions[index].SentryRelease, old.SentryRelease)
+		req.Sessions[index].SentryPublicKey = preserveSecret(req.Sessions[index].SentryPublicKey, old.SentryPublicKey)
+		req.Sessions[index].Baggage = preserveSecret(req.Sessions[index].Baggage, old.Baggage)
 	}
 	return nil
 }
@@ -245,12 +212,15 @@ func secretOrEmpty(value string) string {
 	return value
 }
 
-func preserveSecret(value string, previous repository.EncryptedString, resultErr *error) string {
+// preserveSecret 实现「留空/掩码即不覆盖」：前端回填时敏感字段是 ****** 或空，
+// 表示这一项没改，要沿用库里的旧值。凭证改明文存储后这里不会再失败，
+// 所以不再需要 error 出参——但这条语义本身必须保留，否则一次保存就会把
+// 所有敏感字段写成字面量 ******。
+func preserveSecret(value string, previous string) string {
 	if secretOrEmpty(value) != "" || previous == "" {
 		return value
 	}
-	value, *resultErr = previous.Decrypt()
-	return value
+	return previous
 }
 
 // Publish 只影响目标实例：归档、快照键、广播消息全部带实例键。
@@ -305,8 +275,6 @@ func (s *ArgusConfigService) activateVersion(ctx context.Context, instanceKey st
 	if err := s.validateVersion(resolvedKey, versionID); err != nil {
 		return nil, err
 	}
-	previousVersion, previousVersionErr := s.repository.FindPublished(resolvedKey)
-	previousEnvelope, previousEnvelopeErr := commonRedis.ReadConfigSnapshot(ctx, resolvedKey)
 	version, config, accounts, risks, symbols, notification, sessions, err := s.repository.LoadSnapshot(resolvedKey, versionID)
 	if err != nil {
 		return nil, err
@@ -315,12 +283,15 @@ func (s *ArgusConfigService) activateVersion(ctx context.Context, instanceKey st
 	if strings.TrimSpace(releaseNote) != "" {
 		version.ReleaseNote = strings.TrimSpace(releaseNote)
 	}
+	// 快照校验和仍然要算并入库：它是"发布那一刻的内容摘要"，供管理端显示与
+	// 实例心跳比对（overview.go 的 ChecksumDrift）。但只入库，不再写 Redis——
+	// 配置已改为数据库唯一来源，见需求大纲 §决策记录：配置不经 Redis 缓存。
 	payload := repositorySnapshot{Version: *version, Config: *config, Accounts: accounts, AccountRisks: risks, MonitorSymbols: symbols, Notification: *notification, Sessions: sessions}
-	envelope, err := commonRedis.WriteConfigSnapshot(ctx, resolvedKey, version.Version, payload, s.redisTTL)
+	checksum, err := snapshotChecksum(payload)
 	if err != nil {
 		return nil, err
 	}
-	version.SnapshotChecksum = envelope.Checksum
+	version.SnapshotChecksum = checksum
 	err = s.repository.Db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&repository.ArgusConfigVersion{}).Where("instance_key = ? AND status = ? AND published_slot = ?", resolvedKey, repository.ConfigVersionStatusPublished, 1).Updates(map[string]interface{}{"status": repository.ConfigVersionStatusArchived, "published_slot": nil, "published_at": nil}).Error; err != nil {
 			return err
@@ -331,44 +302,25 @@ func (s *ArgusConfigService) activateVersion(ctx context.Context, instanceKey st
 		return tx.Save(&version).Error
 	})
 	if err != nil {
-		_ = s.restoreRedisSnapshot(ctx, resolvedKey, previousEnvelope, previousEnvelopeErr)
 		return nil, err
 	}
-	if err := commonRedis.PublishConfigVersion(ctx, resolvedKey, version.Version, envelope.Checksum); err != nil {
-		_ = s.rollbackPublishedVersion(resolvedKey, previousVersion, previousVersionErr, version.Id)
-		_ = s.restoreRedisSnapshot(ctx, resolvedKey, previousEnvelope, previousEnvelopeErr)
-		return nil, err
+	// 通知只是加速信号，失败不回滚已提交的发布：实例的定时指纹比对会在一个
+	// 周期内（默认 60 秒）自行发现这次变更。原来这里会因为一条 Redis 消息发不
+	// 出去而把成功的发布整体回滚，属于把可用性问题升级成正确性问题。
+	if err := commonRedis.PublishConfigVersion(ctx, resolvedKey, version.Version, checksum); err != nil {
+		logrus.Warnf("Argus 配置变更通知发送失败，实例将在下一轮比对时自行生效（instanceKey=%s version=%d）: %v", resolvedKey, version.Version, err)
 	}
 	result := versionDTO(version)
 	return &result, nil
 }
 
-// rollbackPublishedVersion 只回滚目标实例的 published 槽位。
-func (s *ArgusConfigService) rollbackPublishedVersion(instanceKey string, previous *repository.ArgusConfigVersion, previousErr error, publishedID int) error {
-	if s.repository.Db == nil {
-		return fmt.Errorf("database is not initialized")
+func snapshotChecksum(payload interface{}) (string, error) {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal config snapshot: %w", err)
 	}
-	if strings.TrimSpace(instanceKey) == "" {
-		return repository.ErrInstanceKeyRequired
-	}
-	return s.repository.Db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&repository.ArgusConfigVersion{}).Where("id = ? AND instance_key = ?", publishedID, instanceKey).Updates(map[string]interface{}{"status": repository.ConfigVersionStatusArchived, "published_slot": nil, "published_at": nil}).Error; err != nil {
-			return err
-		}
-		if previousErr == nil && previous != nil {
-			previous.MarkPublished(time.Now().UTC())
-			return tx.Save(previous).Error
-		}
-		return nil
-	})
-}
-
-func (s *ArgusConfigService) restoreRedisSnapshot(ctx context.Context, instanceKey string, envelope commonRedis.ConfigSnapshotEnvelope, envelopeErr error) error {
-	if envelopeErr != nil {
-		return commonRedis.DeleteConfigSnapshot(ctx, instanceKey)
-	}
-	_, err := commonRedis.WriteConfigSnapshot(ctx, instanceKey, envelope.Version, json.RawMessage(envelope.Payload), s.redisTTL)
-	return err
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 func (s *ArgusConfigService) Validate(req *argusDTO.SaveConfigRequest) error {
@@ -562,14 +514,14 @@ func (s *ArgusConfigService) saveChildren(tx *gorm.DB, version *repository.Argus
 }
 
 func configEntity(versionID int, value argusDTO.ConfigDTO) repository.ArgusConfig {
-	return repository.ArgusConfig{ConfigVersionID: uint64(versionID), ServerPort: value.ServerPort, RequestPath: value.RequestPath, LogDir: value.LogDir, Enabled: value.Enabled, TradeEnabled: value.TradeEnabled, DefaultOrderSize: value.DefaultOrderSize, MonitorIntervalSecond: value.MonitorIntervalSecond, ProfitThreshold: value.ProfitThreshold, LossThreshold: value.LossThreshold, AICloseEnabled: value.AICloseEnabled, AICloseProvider: value.AICloseProvider, AICloseAPIURL: value.AICloseAPIURL, AICloseAPIKey: repository.NewEncryptedString(value.AICloseAPIKey), AICloseModel: value.AICloseModel, AICloseTimeoutSecond: value.AICloseTimeoutSecond, AICloseMaxTokens: value.AICloseMaxTokens, AICloseTemperature: value.AICloseTemperature, AICloseIntervalMinute: value.AICloseIntervalMinute, AICloseMinInterval: value.AICloseMinInterval, AICloseMaxInterval: value.AICloseMaxInterval, AIOpenEnabled: value.AIOpenEnabled, AIOpenAutoTrade: value.AIOpenAutoTrade, AIOpenAPIURL: value.AIOpenAPIURL, AIOpenAPIKey: repository.NewEncryptedString(value.AIOpenAPIKey), AIOpenModel: value.AIOpenModel, AIOpenTimeoutSecond: value.AIOpenTimeoutSecond, AIOpenMaxTokens: value.AIOpenMaxTokens, AIOpenTemperature: value.AIOpenTemperature, AIOpenIntervalMinute: value.AIOpenIntervalMinute, AIOpenMinInterval: value.AIOpenMinInterval, AIOpenMaxInterval: value.AIOpenMaxInterval, AIOpenMinLiqDistancePercent: value.AIOpenMinLiqDistancePercent, AIOpenMinLiqDistanceUSD: value.AIOpenMinLiqDistanceUSD, AIOpenMaxBalancePercent: value.AIOpenMaxBalancePercent, AIOpenMinOrderContracts: value.AIOpenMinOrderContracts, AIOpenMaxOrderContracts: value.AIOpenMaxOrderContracts, AIOpenMaxTotalContracts: value.AIOpenMaxTotalContracts, AIOpenCooldownMinute: value.AIOpenCooldownMinute, AIOpenLiqSafetyFactor: value.AIOpenLiqSafetyFactor, LoginScheduledEnabled: value.LoginScheduledEnabled, LoginScheduledHour: value.LoginScheduledHour, LoginScheduledMinute: value.LoginScheduledMinute, SessionMaxAgeDay: value.SessionMaxAgeDay, ExtraConfigJSON: value.ExtraConfigJSON, ContractFace: value.ContractFace, SignalDelaySecond: value.SignalDelaySecond, SpreadMaxPriceAgeMs: value.SpreadMaxPriceAgeMs, TrendGateWindowHour: value.TrendGateWindowHour, TrendGateThresholdPct: value.TrendGateThresholdPct, ReverseGateMinProfitPct: value.ReverseGateMinProfitPct}
+	return repository.ArgusConfig{ConfigVersionID: uint64(versionID), ServerPort: value.ServerPort, RequestPath: value.RequestPath, LogDir: value.LogDir, Enabled: value.Enabled, TradeEnabled: value.TradeEnabled, DefaultOrderSize: value.DefaultOrderSize, MonitorIntervalSecond: value.MonitorIntervalSecond, ProfitThreshold: value.ProfitThreshold, LossThreshold: value.LossThreshold, AICloseEnabled: value.AICloseEnabled, AICloseProvider: value.AICloseProvider, AICloseAPIURL: value.AICloseAPIURL, AICloseAPIKey: value.AICloseAPIKey, AICloseModel: value.AICloseModel, AICloseTimeoutSecond: value.AICloseTimeoutSecond, AICloseMaxTokens: value.AICloseMaxTokens, AICloseTemperature: value.AICloseTemperature, AICloseIntervalMinute: value.AICloseIntervalMinute, AICloseMinInterval: value.AICloseMinInterval, AICloseMaxInterval: value.AICloseMaxInterval, AIOpenEnabled: value.AIOpenEnabled, AIOpenAutoTrade: value.AIOpenAutoTrade, AIOpenAPIURL: value.AIOpenAPIURL, AIOpenAPIKey: value.AIOpenAPIKey, AIOpenModel: value.AIOpenModel, AIOpenTimeoutSecond: value.AIOpenTimeoutSecond, AIOpenMaxTokens: value.AIOpenMaxTokens, AIOpenTemperature: value.AIOpenTemperature, AIOpenIntervalMinute: value.AIOpenIntervalMinute, AIOpenMinInterval: value.AIOpenMinInterval, AIOpenMaxInterval: value.AIOpenMaxInterval, AIOpenMinLiqDistancePercent: value.AIOpenMinLiqDistancePercent, AIOpenMinLiqDistanceUSD: value.AIOpenMinLiqDistanceUSD, AIOpenMaxBalancePercent: value.AIOpenMaxBalancePercent, AIOpenMinOrderContracts: value.AIOpenMinOrderContracts, AIOpenMaxOrderContracts: value.AIOpenMaxOrderContracts, AIOpenMaxTotalContracts: value.AIOpenMaxTotalContracts, AIOpenCooldownMinute: value.AIOpenCooldownMinute, AIOpenLiqSafetyFactor: value.AIOpenLiqSafetyFactor, LoginScheduledEnabled: value.LoginScheduledEnabled, LoginScheduledHour: value.LoginScheduledHour, LoginScheduledMinute: value.LoginScheduledMinute, SessionMaxAgeDay: value.SessionMaxAgeDay, ExtraConfigJSON: value.ExtraConfigJSON, ContractFace: value.ContractFace, SignalDelaySecond: value.SignalDelaySecond, SpreadMaxPriceAgeMs: value.SpreadMaxPriceAgeMs, TrendGateWindowHour: value.TrendGateWindowHour, TrendGateThresholdPct: value.TrendGateThresholdPct, ReverseGateMinProfitPct: value.ReverseGateMinProfitPct}
 }
 func accountEntity(versionID int, value argusDTO.AccountDTO) repository.ArgusAccount {
 	url := value.URL
 	if url == "" {
 		url = value.Platform
 	}
-	return repository.ArgusAccount{ConfigVersionID: uint64(versionID), AccountName: value.AccountName, URL: url, UID: value.UID, LoginType: value.LoginType, LoginHeadless: value.LoginHeadless, Username: repository.NewEncryptedString(value.Username), Password: repository.NewEncryptedString(value.Password), GoogleAuthKey: repository.NewEncryptedString(value.GoogleAuthKey), APIKey: repository.NewEncryptedString(value.APIKey), SecretKey: repository.NewEncryptedString(value.SecretKey), Passphrase: repository.NewEncryptedString(value.Passphrase), ResourceID: value.ResourceID, PositionMode: value.PositionMode, PositionSide: value.PositionSide, CloseStrategy: value.CloseStrategy, InitialBalance: value.InitialBalance, Enabled: value.Enabled}
+	return repository.ArgusAccount{ConfigVersionID: uint64(versionID), AccountName: value.AccountName, URL: url, UID: value.UID, LoginType: value.LoginType, LoginHeadless: value.LoginHeadless, Username: value.Username, Password: value.Password, GoogleAuthKey: value.GoogleAuthKey, APIKey: value.APIKey, SecretKey: value.SecretKey, Passphrase: value.Passphrase, ResourceID: value.ResourceID, PositionMode: value.PositionMode, PositionSide: value.PositionSide, CloseStrategy: value.CloseStrategy, InitialBalance: value.InitialBalance, Enabled: value.Enabled}
 }
 func riskEntity(versionID int, value argusDTO.AccountRiskDTO) repository.ArgusAccountRisk {
 	return repository.ArgusAccountRisk{ConfigVersionID: uint64(versionID), AccountID: value.AccountID, TakeProfitMode: value.TakeProfitMode, StopLossMode: value.StopLossMode, TrailingStopTiersJSON: value.TrailingStopTiersJSON, RiskBudget: value.RiskBudget, CatastrophicStopLoss: value.CatastrophicStopLoss, ReverseGateEnabled: value.ReverseGateEnabled, MaxContracts: value.MaxContracts, ExtraRiskJSON: value.ExtraRiskJSON, OrderSize: value.OrderSize, RiskEquity: value.RiskEquity, ReverseGateMinProfitPct: value.ReverseGateMinProfitPct, TrendGateThresholdPct: value.TrendGateThresholdPct}
@@ -578,10 +530,10 @@ func symbolEntity(versionID int, value argusDTO.MonitorSymbolDTO) repository.Arg
 	return repository.ArgusMonitorSymbol{ConfigVersionID: uint64(versionID), Symbol: strings.ToUpper(strings.TrimSpace(value.Symbol)), DeepInstrument: value.DeepInstrument, TradeInstrument: value.TradeInstrument, SpreadThreshold: value.SpreadThreshold, SignalThreshold: value.SignalThreshold, Enabled: value.Enabled}
 }
 func notificationEntity(versionID int, value argusDTO.NotificationDTO) repository.ArgusNotification {
-	return repository.ArgusNotification{ConfigVersionID: uint64(versionID), TelegramEnabled: value.TelegramEnabled, TelegramBotToken: repository.NewEncryptedString(value.TelegramBotToken), TelegramChatID: repository.NewEncryptedString(value.TelegramChatID)}
+	return repository.ArgusNotification{ConfigVersionID: uint64(versionID), TelegramEnabled: value.TelegramEnabled, TelegramBotToken: value.TelegramBotToken, TelegramChatID: value.TelegramChatID}
 }
 func sessionEntity(value argusDTO.RuntimeSessionDTO) repository.ArgusRuntimeSession {
-	return repository.ArgusRuntimeSession{AccountID: value.AccountID, Cookie: repository.NewEncryptedString(value.Cookie), Token: repository.NewEncryptedString(value.Token), OToken: repository.NewEncryptedString(value.OToken), SentryRelease: repository.NewEncryptedString(value.SentryRelease), SentryPublicKey: repository.NewEncryptedString(value.SentryPublicKey), Baggage: repository.NewEncryptedString(value.Baggage), LoginURL: value.LoginURL, FinalURL: value.FinalURL, Valid: value.Valid, SessionUpdatedAt: value.SessionUpdatedAt, ExpiresAt: value.ExpiresAt, LastError: value.LastError}
+	return repository.ArgusRuntimeSession{AccountID: value.AccountID, Cookie: value.Cookie, Token: value.Token, OToken: value.OToken, SentryRelease: value.SentryRelease, SentryPublicKey: value.SentryPublicKey, Baggage: value.Baggage, LoginURL: value.LoginURL, FinalURL: value.FinalURL, Valid: value.Valid, SessionUpdatedAt: value.SessionUpdatedAt, ExpiresAt: value.ExpiresAt, LastError: value.LastError}
 }
 
 func versionDTO(v *repository.ArgusConfigVersion) argusDTO.ConfigVersionDTO {
@@ -606,19 +558,14 @@ func sessionDTO(v *repository.ArgusRuntimeSession) argusDTO.RuntimeSessionDTO {
 	return argusDTO.RuntimeSessionDTO{ID: uint64(v.Id), AccountID: v.AccountID, Cookie: maskSecret(v.Cookie), Token: maskSecret(v.Token), OToken: maskSecret(v.OToken), SentryRelease: maskSecret(v.SentryRelease), SentryPublicKey: maskSecret(v.SentryPublicKey), Baggage: maskSecret(v.Baggage), CookieLength: secretLength(v.Cookie), TokenLength: secretLength(v.Token), OTokenLength: secretLength(v.OToken), LoginURL: v.LoginURL, FinalURL: v.FinalURL, Valid: v.Valid, SessionUpdatedAt: v.SessionUpdatedAt, ExpiresAt: v.ExpiresAt, LastError: v.LastError}
 }
 
-// secretLength 只给会话巡检用：回明文长度而不回明文。解密失败返回 0，页面据此
-// 显示「无法读取」，不把解密异常升级成整页加载失败。
-func secretLength(value repository.EncryptedString) int {
-	if value == "" {
-		return 0
-	}
-	plaintext, err := value.Decrypt()
-	if err != nil {
-		return 0
-	}
-	return len(plaintext)
+// secretLength 只给会话巡检用：回长度而不回内容。运维要判断的是「有没有、
+// 是不是被截断了」，长度足够；回显 950 字符的 cookie 只会扩大泄露面。
+func secretLength(value string) int {
+	return len(value)
 }
-func maskSecret(value repository.EncryptedString) string {
+// maskSecret 是接口层脱敏：库里是明文（给运维直接改），但列表与详情接口
+// 一律只回 ******。删掉它等于把交易所凭证暴露给前端与日志。
+func maskSecret(value string) string {
 	if value == "" {
 		return ""
 	}

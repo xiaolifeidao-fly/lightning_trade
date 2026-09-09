@@ -168,8 +168,8 @@ page.innerHTML = `
           <tbody>${INST.accounts.map((a, i) => `<tr>
             <td>${a.short}</td>
             <td><span class="chip ${i === 0 ? 'ok' : 'warn'}"><i class="dot"></i>${i === 0 ? '有效' : '即将过期'}</span></td>
-            <td class="mono" style="color:var(--manager-text-faint)">950 字符 · 已加密</td>
-            <td class="mono" style="color:var(--manager-text-faint)">88 字符 · 已加密</td>
+            <td class="mono" style="color:var(--manager-text-faint)">950 字符</td>
+            <td class="mono" style="color:var(--manager-text-faint)">88 字符</td>
             <td class="mono">${i === 0 ? '12 分钟前' : '6 小时前'}</td>
             <td class="mono ${i === 0 ? '' : 'down'}">${i === 0 ? '2026-09-03 08:00' : '2026-09-01 20:00'}</td>
           </tr>`).join('')}</tbody>
@@ -308,15 +308,17 @@ function renderPipeline(stage) {
   const steps = [
     { t: '管理端保存草稿', d: 'POST /argus-config/drafts', done: stage >= 1 },
     { t: '发布新版本', d: 'POST /argus-config/versions/:id/publish', done: stage >= 2 },
-    { t: '写 Redis 快照并广播', d: `argus:config:snapshot:${INST.key}`, done: stage >= 3 },
+    { t: '广播变更通知（可选加速）', d: `argus:config:changed`, done: stage >= 3 },
     { t: 'argus_single 热加载', d: 'ReplaceManager + ReloadMonitor', done: stage >= 4 },
     { t: '心跳回报已生效版本', d: `argus:heartbeat:${INST.key}`, done: stage >= 5 },
   ];
   const fallback = `<div class="note" style="margin-top:12px">
     <b>兜底：</b>pub/sub 是「发过就没了」，广播那一刻若订阅正好断线重连，消息会永久丢失且不报错。
-    因此 argus_single 另有一个 <b>30 秒轮询</b>：比对
-    <span class="mono">argus:config:version:${INST.key}</span>（Redis 不可用时直接查 DB 的 published 版本），
-    发现与当前 version 不一致就自行 Reload。正常情况秒级生效，漏消息时最坏 30 秒补上。
+    因此 argus_single 以 <b>60 秒定时比对</b>为准据：直接从数据库重新派生运行配置，
+    与当前生效配置比对 <b>内容指纹</b>（sha256），不同就自行 Reload。通知只是「提前触发一次比对」。
+    正常秒级生效，漏消息时最坏 60 秒补上。<br>用指纹而非版本号，是为了覆盖两种真实场景：
+    运维直接改库轮换 cookie/token 不会动 <span class="mono">version</span>；回滚时同一版本号会被重新发布。
+    <br><b>Redis 不参与配置读取</b>——数据库是唯一来源，没有需要清理的缓存。
   </div>`;
   document.getElementById('pipeline').innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px">

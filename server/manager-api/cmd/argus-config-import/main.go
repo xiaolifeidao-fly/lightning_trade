@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"flag"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -51,13 +49,9 @@ func main() {
 	request.InstanceKey = targetInstance
 	log.Printf("validated import: instance=%s source=%s accounts=%d sessions=%d monitorSymbols=%d telegramConfigured=%t", targetInstance, summary.SourceFile, summary.Accounts, summary.Sessions, summary.MonitorSymbols, summary.TelegramSet)
 	if !*apply {
-		log.Print("dry run complete; rerun from server/manager-api with --apply after setting ARGUS_CONFIG_ENCRYPTION_KEY")
+		log.Print("dry run complete; rerun from server/manager-api with --apply to write and publish")
 		return
 	}
-	if !hasValidEncryptionKey(os.Getenv("ARGUS_CONFIG_ENCRYPTION_KEY")) {
-		log.Fatal("ARGUS_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key when --apply is used")
-	}
-
 	vipper.Init()
 	db.InitDB()
 	if db.Db == nil {
@@ -101,7 +95,3 @@ func main() {
 	log.Printf("imported and published Argus configuration instance=%s version=%d checksum=%s", targetInstance, published.Version, published.SnapshotChecksum)
 }
 
-func hasValidEncryptionKey(encodedKey string) bool {
-	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encodedKey))
-	return err == nil && len(key) == 32
-}

@@ -2,7 +2,6 @@ package runtimeconfig
 
 import (
 	"context"
-	"encoding/base64"
 	"testing"
 
 	"argus_single/pkg/trade"
@@ -10,32 +9,19 @@ import (
 	"service/argus_config/repository"
 )
 
-func encryptedValue(t *testing.T, plaintext string) repository.EncryptedString {
-	t.Helper()
-	stored, err := repository.NewEncryptedString(plaintext).Value()
-	if err != nil {
-		t.Fatalf("encrypt %q: %v", plaintext, err)
-	}
-	if stored == nil {
-		return ""
-	}
-	return repository.EncryptedString(stored.(string))
-}
-
 // signalSnapshot 是一份最小可用快照：一个启用账户 + 一个监控币种，
 // 账户参数照 application_1.properties 的 challenger 口径填。
 func signalSnapshot(t *testing.T) Snapshot {
 	t.Helper()
-	t.Setenv("ARGUS_CONFIG_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
 	account := &repository.ArgusAccount{
 		AccountName:  "账户B",
 		URL:          "https://api.deepcoin.com",
 		UID:          "10086",
 		PositionMode: "hedge",
 		PositionSide: "both",
-		APIKey:       encryptedValue(t, "api-key"),
-		SecretKey:    encryptedValue(t, "secret-key"),
-		Passphrase:   encryptedValue(t, "passphrase"),
+		APIKey:       "api-key",
+		SecretKey:    "secret-key",
+		Passphrase:   "passphrase",
 		Enabled:      1,
 	}
 	account.Id = 7
@@ -166,22 +152,20 @@ func TestSetTuningValueRestoresPropertiesWhenUnset(t *testing.T) {
 	}
 }
 
-func TestReconcilePublishedVersionSurvivesUnavailableBackends(t *testing.T) {
-	// Redis 与 DB 都不可用时，兜底轮询只能记一条告警后返回，绝不能 panic
-	// 或把运行中的配置清掉。
-	manager := &Manager{instanceID: "argus-single-roc", current: RuntimeConfig{Version: 4}}
-	manager.reconcilePublishedVersion(context.Background())
+func TestReconcileConfigSurvivesUnavailableDatabase(t *testing.T) {
+	// 数据库不可用时，比对只能记一条告警后返回，绝不能 panic 或把运行中的
+	// 配置清掉。配置改为 DB 唯一来源后这条更要紧：以前 Redis 命中还能兜一下，
+	// 现在查库失败就是唯一的失败面，必须保持"什么都不做"。
+	manager := &Manager{instanceID: "argus-single-roc", current: RuntimeConfig{Version: 4, Fingerprint: "running"}}
+	manager.reconcileConfig(context.Background())
 	if manager.Current().Version != 4 {
 		t.Fatalf("version = %d, want the running config untouched", manager.Current().Version)
 	}
-}
-
-func TestPublishedVersionRequiresInstanceKey(t *testing.T) {
-	manager := &Manager{}
-	if _, err := manager.publishedVersion(context.Background()); err == nil {
-		t.Fatal("want an error when the instance key is missing")
+	if manager.Current().Fingerprint != "running" {
+		t.Fatalf("fingerprint = %q, want the running config untouched", manager.Current().Fingerprint)
 	}
 }
+
 
 func TestHotAppliedReportsTuningChange(t *testing.T) {
 	current := RuntimeConfig{Trade: &trade.TradingSystemConfig{}, Tuning: RuntimeTuning{MonitorIntervalSecond: 5}}

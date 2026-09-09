@@ -35,7 +35,7 @@ function differs(row) { return new Set(INSTANCES.map(i => String(row.get(i)))).s
 
 page.innerHTML = `
   <div class="note err">
-    <b>当前实现的硬约束：</b>配置下发是<b>全局单版本</b>的——
+    <b>【历史：r1 改造前的现状，已于 r1 分域、并于 2026-09-09 整体移除配置键】当时的硬约束：</b>配置下发是<b>全局单版本</b>的——
     <span class="mono">argus_config_version.published_slot</span> 上的唯一索引
     <span class="mono">idx_argus_single_published</span> 只允许全表存在一个 published 版本；
     Redis 的 <span class="mono">argus:config:snapshot</span> / <span class="mono">argus:config:version</span> 是全局单键；
@@ -86,8 +86,8 @@ page.innerHTML = `
           </div>
           <div class="tl-item">
             <div class="h">Redis 键与广播加实例命名空间</div>
-            <div class="d"><span class="mono">argus:config:snapshot:&lt;instance&gt;</span>、
-              <span class="mono">argus:config:version:&lt;instance&gt;</span>；
+            <div class="d">配置键已整体移除（数据库唯一来源，2026-09-09）；保留
+              <span class="mono">argus:heartbeat:&lt;instance&gt;</span> 与通知/控制通道；
               <span class="mono">ConfigVersionMessage</span> 加 <span class="mono">instanceId</span>，
               <span class="mono">handleVersionMessage</span> 按实例过滤（照 <span class="mono">handleControlMessage</span> 已有的写法）。</div>
           </div>

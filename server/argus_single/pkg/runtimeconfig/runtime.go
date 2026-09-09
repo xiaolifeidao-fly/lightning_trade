@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +16,6 @@ import (
 	"common/middleware/vipper"
 	"service/argus_config/repository"
 
-	goRedis "github.com/go-redis/redis"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
@@ -35,8 +33,15 @@ type Snapshot struct {
 }
 
 type RuntimeConfig struct {
-	Version      uint64
-	Checksum     string
+	Version uint64
+	// Checksum 是 argus_config_version.snapshot_checksum，即"发布那一刻的快照
+	// 校验和"。它回答的是「我在跑哪一个已发布版本」，经心跳上报，管理端
+	// overview.go 用它与库里的值比对判漂移——语义不能改。
+	Checksum string
+	// Fingerprint 是"派生后运行配置"的内容指纹，只用于变更检测，不上报。
+	// 与 Checksum 的分工：运维直接改库（每周轮换 cookie/token）不会动
+	// Checksum 与 Version，只有 Fingerprint 会变。见 fingerprint.go。
+	Fingerprint  string
 	Trade        *trade.TradingSystemConfig
 	Symbols      map[string]monitor.SymbolConfig
 	ServerPort   uint16
@@ -65,11 +70,16 @@ type Manager struct {
 	reloadObserver func(version uint64, err error)
 }
 
-// defaultVersionPollInterval 是配置版本兜底轮询周期。
+// defaultVersionPollInterval 是配置比对周期。
+//
+// 它不再是"兜底"而是**主要准据**：配置只从数据库读，每轮重新派生运行配置并比对
+// 内容指纹，不同就热加载。Redis 通知只是"提前触发一次比对"的加速信号。
+// 60 秒的含义是"运维直接改库后最坏 60 秒生效"；一轮约 7 条查询，三实例
+// 合计约 21 次/分钟，对 RDS 可忽略。
 // pub/sub 不保证送达：订阅断线重连的窗口内发布、Redis 主从切换、客户端缓冲区
 // 溢出都会丢消息，结果是「发布成功、程序照跑旧参数、页面和日志都不报错」。
 // 30 秒来自需求的生效口径——发布后 15 秒内应显示已生效，一个轮询周期内必须补上。
-const defaultVersionPollInterval = 30 * time.Second
+const defaultVersionPollInterval = 60 * time.Second
 
 func Initialize(ctx context.Context) (*Manager, RuntimeConfig, error) {
 	if db.Db == nil {
@@ -80,10 +90,9 @@ func Initialize(ctx context.Context) (*Manager, RuntimeConfig, error) {
 	if instanceID == "" {
 		return nil, RuntimeConfig{}, fmt.Errorf("argus.instance.id is required to resolve the instance configuration namespace")
 	}
-	if _, err := commonRedis.GetContext(ctx, commonRedis.ArgusConfigVersionKey(instanceID)); err != nil && !errors.Is(err, goRedis.Nil) {
-		return nil, RuntimeConfig{}, fmt.Errorf("read argus redis configuration: %w", err)
-	}
-
+	// 这里不再预检 Redis 的配置键：配置只从数据库读（见需求大纲 §决策记录：
+	// 配置不经 Redis 缓存）。Redis 仍用于心跳与控制/通知通道，其可用性由
+	// InitRedisClient 在更早的初始化阶段负责，不可用时那些能力自行降级。
 	runtime, err := loadCurrent(ctx, instanceID)
 	if err != nil {
 		return nil, RuntimeConfig{}, err
@@ -108,7 +117,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.cancel = cancel
 	m.started = true
 	go m.subscribe(childCtx)
-	go m.pollPublishedVersion(childCtx)
+	go m.pollConfig(childCtx)
 	return nil
 }
 
@@ -159,6 +168,18 @@ func (m *Manager) subscribe(ctx context.Context) {
 	}
 }
 
+// ownsMessage 判断一条广播是否属于本实例。
+//
+// 版本频道是三实例共用的：不做过滤会让一次发布把三个实例一起触发，而它们的
+// 参数本来就不同（r1 分域改造的起点）。空实例键视为历史消息放行——分域之前
+// 发布的消息没有这个字段。
+//
+// 提成独立方法是为了可直接断言：这条不变量以前只能靠"观察 reload 回调有没有
+// 被触发"间接测，而回调是否触发依赖 DB 可用性，与实例隔离本身无关。
+func (m *Manager) ownsMessage(instanceID string) bool {
+	return instanceID == "" || instanceID == m.instanceID
+}
+
 func (m *Manager) handleVersionMessage(ctx context.Context, payload string) {
 	var message commonRedis.ConfigVersionMessage
 	if err := json.Unmarshal([]byte(payload), &message); err != nil {
@@ -166,36 +187,14 @@ func (m *Manager) handleVersionMessage(ctx context.Context, payload string) {
 		m.notifyReload(0, err)
 		return
 	}
-	// 版本频道是三实例共用的，不属于本实例的消息直接丢弃；空实例键视为历史消息放行。
-	if message.InstanceID != "" && message.InstanceID != m.instanceID {
+	if !m.ownsMessage(message.InstanceID) {
 		return
 	}
-	next, err := loadCurrent(ctx, m.instanceID)
-	if err != nil {
-		logrus.Errorf("Argus 新配置校验失败，继续使用当前配置: %v", err)
-		m.notifyReload(0, err)
-		return
-	}
-	if next.Version != message.Version || next.Checksum != message.Checksum {
-		err := fmt.Errorf("config version message does not match snapshot: message=%d/%s snapshot=%d/%s", message.Version, message.Checksum, next.Version, next.Checksum)
-		logrus.Error(err)
-		m.notifyReload(next.Version, err)
-		return
-	}
-
-	m.mu.Lock()
-	current := m.current
-	if current.Version == next.Version && current.Checksum == next.Checksum {
-		m.mu.Unlock()
-		m.notifyReload(next.Version, nil)
-		return
-	}
-	m.mu.Unlock()
-
-	if err := m.apply(next, current); err != nil {
-		logrus.Errorf("Argus 配置热加载失败，继续使用当前配置: %v", err)
-		return
-	}
+	// 通知只是"现在去查一次库"的信号，不携带正确性责任：消息里的
+	// version/checksum 不再用于校验（数据库才是唯一来源，消息可能过期或丢失），
+	// 走与定时轮询完全相同的一条路径，避免两条链路行为分叉。
+	logrus.Infof("收到 Argus 配置变更通知（version=%d），立即比对数据库", message.Version)
+	m.reconcileConfig(ctx)
 }
 
 func (m *Manager) handleControlMessage(ctx context.Context, payload string) {
@@ -222,7 +221,7 @@ func (m *Manager) handleControlMessage(ctx context.Context, payload string) {
 // argus:config:changed 是即发即弃的：订阅断线重连的窗口内发布、Redis 主从切换、
 // 客户端缓冲区溢出，任何一种都会让消息静静丢掉，结果是发布成功、程序继续跑旧参数、
 // 日志和页面都不报错——这是配置面最危险的失效方式，因为它看起来一切正常。
-func (m *Manager) pollPublishedVersion(ctx context.Context) {
+func (m *Manager) pollConfig(ctx context.Context) {
 	interval := m.pollInterval
 	if interval <= 0 {
 		interval = defaultVersionPollInterval
@@ -234,71 +233,50 @@ func (m *Manager) pollPublishedVersion(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			m.reconcilePublishedVersion(ctx)
+			m.reconcileConfig(ctx)
 		}
 	}
 }
 
-// reconcilePublishedVersion 比对已发布版本与运行中版本，落后就补一次热加载。
-func (m *Manager) reconcilePublishedVersion(ctx context.Context) {
-	published, err := m.publishedVersion(ctx)
+// reconcileConfig 从数据库重新派生运行配置，与当前生效配置比对内容指纹，
+// 不同则热加载。定时轮询与 Redis 通知都走这一条路径。
+//
+// 为什么比指纹而不是比版本号：
+//   - 运维直接改库（每周轮换 cookie/token 是常规操作）不会改动 version，
+//     只比版本号等于这条通道形同虚设；
+//   - 回滚场景下同一版本号会被重新发布，版本号相同而内容不同。
+//
+// 为什么指纹对"派生后的运行配置"求取而不是对数据库原始行：原始行含
+// updated_time / session_updated_at 等审计列，而本进程自己的会话回写
+// （InstallSessionWriteBack）就会改动它们。对原始行求指纹会让进程每次回写会话
+// 都把自己热替换一遍——ReplaceManager + ReloadMonitor 会停掉正在扛仓的交易
+// 管理器与监控器，比参数不生效危险得多。见 fingerprint.go。
+func (m *Manager) reconcileConfig(ctx context.Context) {
+	next, err := loadCurrent(ctx, m.InstanceID())
 	if err != nil {
-		logrus.Warnf("Argus 配置版本兜底轮询失败，等待下一轮: %v", err)
+		// 查库失败不改变现状：继续跑当前配置，等下一轮。不上报 reload 失败，
+		// 否则一次网络抖动会在管理端留下"热加载失败"的假告警。
+		logrus.Warnf("Argus 配置比对读库失败，继续使用当前配置，等待下一轮: %v", err)
 		return
 	}
 	current := m.Current()
-	if published == 0 || published == current.Version {
+	if next.Fingerprint == current.Fingerprint {
 		return
 	}
-	next, err := loadCurrent(ctx, m.InstanceID())
-	if err != nil {
-		logrus.Errorf("Argus 配置兜底轮询加载快照失败，继续使用当前配置: %v", err)
-		m.notifyReload(0, err)
-		return
-	}
-	if next.Version == current.Version && next.Checksum == current.Checksum {
-		// 版本键已经往前走了但快照还是旧的（发布方写键与写快照之间的窗口）。
-		// 这里不重载，避免每 30 秒空转一次 ReplaceManager。
-		logrus.Warnf("Argus 已发布版本 %d 与可读快照版本 %d 不一致，本轮不重载", published, next.Version)
-		return
-	}
-	logrus.Warnf("Argus 配置版本落后（运行中=%d 已发布=%d），pub/sub 可能漏消息，执行兜底热加载", current.Version, published)
+	logrus.Warnf("Argus 检测到配置变更（运行中 version=%d fingerprint=%s… → 数据库 version=%d fingerprint=%s…），执行热加载",
+		current.Version, shortFingerprint(current.Fingerprint), next.Version, shortFingerprint(next.Fingerprint))
 	if err := m.apply(next, current); err != nil {
-		logrus.Errorf("Argus 配置兜底热加载失败，继续使用当前配置: %v", err)
+		logrus.Errorf("Argus 配置热加载失败，继续使用当前配置: %v", err)
 	}
 }
 
-// publishedVersion 先读 Redis 的实例版本键；Redis 不可用或键缺失时回落查库的
-// published 版本，两条路都断才算失败——兜底通道本身不能依赖单点。
-func (m *Manager) publishedVersion(ctx context.Context) (uint64, error) {
-	instanceKey := m.InstanceID()
-	if strings.TrimSpace(instanceKey) == "" {
-		return 0, commonRedis.ErrInstanceKeyRequired
+// shortFingerprint 只截前 12 位用于日志，完整 sha256 在日志里没有可读性。
+func shortFingerprint(value string) string {
+	if len(value) <= 12 {
+		return value
 	}
-	raw, err := commonRedis.GetContext(ctx, commonRedis.ArgusConfigVersionKey(instanceKey))
-	switch {
-	case err == nil:
-		version, parseErr := strconv.ParseUint(strings.TrimSpace(raw), 10, 64)
-		if parseErr == nil && version > 0 {
-			return version, nil
-		}
-		logrus.Warnf("Argus 配置版本键内容非法(%q)，回落查库", raw)
-	case errors.Is(err, goRedis.Nil):
-		// 键过期或尚未写入，属于正常降级，直接查库。
-	default:
-		logrus.Warnf("Argus 配置版本键读取失败，回落查库: %v", err)
-	}
-	if db.Db == nil {
-		return 0, fmt.Errorf("database is not initialized")
-	}
-	repo := db.GetRepository[repository.ArgusConfigRepository]()
-	version, err := repo.FindPublishedContext(ctx, instanceKey)
-	if err != nil {
-		return 0, err
-	}
-	return version.Version, nil
+	return value[:12]
 }
-
 func (m *Manager) Reload(ctx context.Context) error {
 	next, err := loadCurrent(ctx, m.instanceID)
 	if err != nil {
@@ -333,31 +311,26 @@ func (m *Manager) notifyReload(version uint64, err error) {
 	}
 }
 
+// loadCurrent 从数据库读该实例的已发布配置并派生运行配置。
+//
+// 这里没有缓存：配置读取一天只有数次（启动 + 每次比对发现变更），而缓存换来的
+// 是"改了库、没清缓存"这种静默失效——实例继续跑旧配置，日志照样打"已热加载"。
+// 2026-09-08 的会话凭证故障就是这个形状。详见需求大纲 §决策记录。
+//
+// Checksum 取库里存的 snapshot_checksum（发布时算的），不重算：它要回答的是
+// "我在跑哪一个已发布版本"，重算会让手改库之后与管理端的比对永远显示漂移。
 func loadCurrent(ctx context.Context, instanceKey string) (RuntimeConfig, error) {
 	if strings.TrimSpace(instanceKey) == "" {
 		return RuntimeConfig{}, commonRedis.ErrInstanceKeyRequired
 	}
-	envelope, err := commonRedis.ReadConfigSnapshot(ctx, instanceKey)
-	if err == nil {
-		runtime, err := runtimeFromEnvelope(envelope)
-		if err != nil {
-			return RuntimeConfig{}, err
-		}
-		return runtime, nil
+	if err := ctx.Err(); err != nil {
+		return RuntimeConfig{}, err
 	}
-	if !errors.Is(err, goRedis.Nil) {
-		return RuntimeConfig{}, fmt.Errorf("read redis config snapshot: %w", err)
-	}
-
 	snapshot, err := loadPublishedSnapshot(instanceKey)
 	if err != nil {
-		return RuntimeConfig{}, fmt.Errorf("restore config snapshot from database: %w", err)
+		return RuntimeConfig{}, fmt.Errorf("load published config from database: %w", err)
 	}
-	envelope, err = commonRedis.WriteConfigSnapshot(ctx, instanceKey, snapshot.Version.Version, snapshot, 24*time.Hour)
-	if err != nil {
-		return RuntimeConfig{}, fmt.Errorf("restore redis config snapshot: %w", err)
-	}
-	return runtimeFromSnapshot(snapshot, envelope.Checksum)
+	return runtimeFromSnapshot(snapshot, snapshot.Version.SnapshotChecksum)
 }
 
 func loadPublishedSnapshot(instanceKey string) (Snapshot, error) {
@@ -371,17 +344,6 @@ func loadPublishedSnapshot(instanceKey string) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	return Snapshot{Version: *loadedVersion, Config: *config, Accounts: accounts, AccountRisks: risks, MonitorSymbols: symbols, Notification: *notification, Sessions: sessions}, nil
-}
-
-func runtimeFromEnvelope(envelope commonRedis.ConfigSnapshotEnvelope) (RuntimeConfig, error) {
-	var snapshot Snapshot
-	if err := json.Unmarshal(envelope.Payload, &snapshot); err != nil {
-		return RuntimeConfig{}, fmt.Errorf("decode config snapshot payload: %w", err)
-	}
-	if snapshot.Version.Version != envelope.Version {
-		return RuntimeConfig{}, fmt.Errorf("config snapshot version mismatch")
-	}
-	return runtimeFromSnapshot(snapshot, envelope.Checksum)
 }
 
 func runtimeFromSnapshot(snapshot Snapshot, checksum string) (RuntimeConfig, error) {
@@ -438,38 +400,30 @@ func runtimeFromSnapshot(snapshot Snapshot, checksum string) (RuntimeConfig, err
 		return RuntimeConfig{}, fmt.Errorf("config snapshot has no enabled monitor symbols")
 	}
 
-	notification, err := decryptNotification(snapshot.Notification)
+	notification, err := notificationFromSnapshot(snapshot.Notification)
 	if err != nil {
 		return RuntimeConfig{}, err
 	}
-	return RuntimeConfig{Version: snapshot.Version.Version, Checksum: checksum, Trade: tradeConfig, Symbols: symbols, ServerPort: snapshot.Config.ServerPort, RequestPath: snapshot.Config.RequestPath, LogDir: snapshot.Config.LogDir, Notification: notification, Tuning: snapshotTuning(snapshot.Config), Overrides: overrides}, nil
+	result := RuntimeConfig{Version: snapshot.Version.Version, Checksum: checksum, Trade: tradeConfig, Symbols: symbols, ServerPort: snapshot.Config.ServerPort, RequestPath: snapshot.Config.RequestPath, LogDir: snapshot.Config.LogDir, Notification: notification, Tuning: snapshotTuning(snapshot.Config), Overrides: overrides}
+	// 指纹在这里一次算好：下游的比对全部只读 Fingerprint，不重复计算，
+	// 避免"两处算法漂移导致每轮都判定为变更"这种自触发热替换。
+	fingerprint, err := configFingerprint(result)
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
+	result.Fingerprint = fingerprint
+	return result, nil
 }
 
 func runtimeAccount(account *repository.ArgusAccount, risk *repository.ArgusAccountRisk, session *repository.ArgusRuntimeSession, index int) (trade.AccountConfig, error) {
-	apiKey, err := decrypt(account.APIKey)
-	if err != nil {
-		return trade.AccountConfig{}, fmt.Errorf("decrypt api key for %s: %w", account.AccountName, err)
-	}
-	secretKey, err := decrypt(account.SecretKey)
-	if err != nil {
-		return trade.AccountConfig{}, fmt.Errorf("decrypt secret key for %s: %w", account.AccountName, err)
-	}
-	passphrase, err := decrypt(account.Passphrase)
-	if err != nil {
-		return trade.AccountConfig{}, fmt.Errorf("decrypt passphrase for %s: %w", account.AccountName, err)
-	}
-	username, err := decrypt(account.Username)
-	if err != nil {
-		return trade.AccountConfig{}, err
-	}
-	password, err := decrypt(account.Password)
-	if err != nil {
-		return trade.AccountConfig{}, err
-	}
-	googleAuthKey, err := decrypt(account.GoogleAuthKey)
-	if err != nil {
-		return trade.AccountConfig{}, err
-	}
+	// 凭证明文存储（见需求大纲 §决策记录），这里直接取值。下面对
+	// URL/APIKey/SecretKey/Passphrase 的非空校验仍在，缺项照样拒绝这份快照。
+	apiKey := account.APIKey
+	secretKey := account.SecretKey
+	passphrase := account.Passphrase
+	username := account.Username
+	password := account.Password
+	googleAuthKey := account.GoogleAuthKey
 	// extra_risk_json 里的三项决定走哪套策略与事件归因。解析失败必须报错而不是
 	// 静默继续：TradeLogic 停在空串会被归一化成 spread，盘口信号策略整套不走，
 	// 且没有任何错误可见。宁可拒绝这份快照、继续跑当前配置。
@@ -482,26 +436,15 @@ func runtimeAccount(account *repository.ArgusAccount, risk *repository.ArgusAcco
 		result.ReverseGate = "on"
 	}
 	if session != nil {
-		if result.Cookie, err = decrypt(session.Cookie); err != nil {
-			return trade.AccountConfig{}, err
-		}
-		if result.Token, err = decrypt(session.OToken); err != nil {
-			return trade.AccountConfig{}, err
-		}
+		result.Cookie = session.Cookie
+		// OToken 优先，空则回退 Token——两者语义相同，历史上换过字段名。
+		result.Token = session.OToken
 		if result.Token == "" {
-			if result.Token, err = decrypt(session.Token); err != nil {
-				return trade.AccountConfig{}, err
-			}
+			result.Token = session.Token
 		}
-		if result.SentryRelease, err = decrypt(session.SentryRelease); err != nil {
-			return trade.AccountConfig{}, err
-		}
-		if result.SentryPublicKey, err = decrypt(session.SentryPublicKey); err != nil {
-			return trade.AccountConfig{}, err
-		}
-		if result.Baggage, err = decrypt(session.Baggage); err != nil {
-			return trade.AccountConfig{}, err
-		}
+		result.SentryRelease = session.SentryRelease
+		result.SentryPublicKey = session.SentryPublicKey
+		result.Baggage = session.Baggage
 		result.LoginURL = session.LoginURL
 	}
 	if strings.TrimSpace(result.URL) == "" || strings.TrimSpace(result.APIKey) == "" || strings.TrimSpace(result.SecretKey) == "" || strings.TrimSpace(result.Passphrase) == "" {
@@ -523,20 +466,14 @@ func runtimePositionMode(value string) string {
 	return value
 }
 
-func decrypt(value repository.EncryptedString) (string, error) { return value.Decrypt() }
-
-func decryptNotification(notification repository.ArgusNotification) (notificationConfig, error) {
+// notificationFromSnapshot 取 Telegram 凭证。开了通知但凭证缺项仍然报错——
+// 静默降级会让告警整条链路失效而没人知道。
+func notificationFromSnapshot(notification repository.ArgusNotification) (notificationConfig, error) {
 	if notification.TelegramEnabled == 0 {
 		return notificationConfig{}, nil
 	}
-	token, err := decrypt(notification.TelegramBotToken)
-	if err != nil {
-		return notificationConfig{}, err
-	}
-	chatID, err := decrypt(notification.TelegramChatID)
-	if err != nil {
-		return notificationConfig{}, err
-	}
+	token := notification.TelegramBotToken
+	chatID := notification.TelegramChatID
 	if token == "" || chatID == "" {
 		return notificationConfig{}, fmt.Errorf("telegram notification is enabled without credentials")
 	}
@@ -672,7 +609,7 @@ func persistSession(ctx context.Context, instanceKey string, account trade.Accou
 	if err != nil {
 		updatedAt = time.Now().UTC()
 	}
-	value := repository.ArgusRuntimeSession{AccountID: uint64(storedAccount.Id), Cookie: repository.NewEncryptedString(session.Cookie), Token: repository.NewEncryptedString(session.Token), OToken: repository.NewEncryptedString(session.OToken), SentryRelease: repository.NewEncryptedString(session.SentryRelease), SentryPublicKey: repository.NewEncryptedString(session.SentryPublicKey), Baggage: repository.NewEncryptedString(session.Baggage), LoginURL: session.LoginURL, FinalURL: session.FinalURL, Valid: 1, SessionUpdatedAt: updatedAt}
+	value := repository.ArgusRuntimeSession{AccountID: uint64(storedAccount.Id), Cookie: session.Cookie, Token: session.Token, OToken: session.OToken, SentryRelease: session.SentryRelease, SentryPublicKey: session.SentryPublicKey, Baggage: session.Baggage, LoginURL: session.LoginURL, FinalURL: session.FinalURL, Valid: 1, SessionUpdatedAt: updatedAt}
 	if err := db.Db.Transaction(func(tx *gorm.DB) error {
 		var existing repository.ArgusRuntimeSession
 		err := tx.Where("account_id = ? AND active = ?", storedAccount.Id, 1).First(&existing).Error
@@ -687,13 +624,12 @@ func persistSession(ctx context.Context, instanceKey string, account trade.Accou
 	}); err != nil {
 		return err
 	}
-	snapshot, err := loadPublishedSnapshot(instanceKey)
-	if err != nil {
-		return err
-	}
-	envelope, err := commonRedis.WriteConfigSnapshot(ctx, instanceKey, snapshot.Version.Version, snapshot, 24*time.Hour)
-	if err != nil {
-		return err
-	}
-	return commonRedis.PublishConfigVersion(ctx, instanceKey, envelope.Version, envelope.Checksum)
+	// 写完库就结束：不再写 Redis 快照、也不再广播。
+	//
+	// 原来这里会 WriteConfigSnapshot + PublishConfigVersion，有两个问题：
+	//  1. 管理端发布与本进程会话回写共享同一份 Redis 快照，两个写入方谁后写谁赢；
+	//  2. 广播的是自己刚写的数据，其他实例并不关心，本实例收到后还要再走一遍
+	//     加载流程。配置改为数据库唯一来源后，本进程下一轮指纹比对会自然发现
+	//     这次会话变更（cookie/token 参与指纹），不需要任何额外通知。
+	return nil
 }

@@ -39,17 +39,42 @@ func TestGetPublishedHonorsCanceledRequestContext(t *testing.T) {
 	}
 }
 
+// TestSensitiveFieldsAreMaskedAndNeverSerialized 守的是取消落库加密之后最要紧的
+// 一条不变量：库里现在是明文，接口就绝不能把真值序列化出去。加密时代这个测试
+// 只需证明密文不外泄，现在它必须证明**明文**不外泄——责任比以前更重。
 func TestSensitiveFieldsAreMaskedAndNeverSerialized(t *testing.T) {
-	account := accountDTO(&repository.ArgusAccount{AccountName: "primary", Username: repository.NewEncryptedString("enc:v1:opaque"), APIKey: repository.NewEncryptedString("enc:v1:key")})
+	const (
+		plainUsername = "trader@example.com"
+		plainAPIKey   = "ak-live-must-never-appear"
+	)
+	account := accountDTO(&repository.ArgusAccount{AccountName: "primary", Username: plainUsername, APIKey: plainAPIKey})
 	encoded, err := json.Marshal(account)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), "enc:v1") || strings.Contains(string(encoded), "opaque") {
-		t.Fatalf("serialized DTO leaked encrypted material: %s", encoded)
+	if strings.Contains(string(encoded), plainUsername) || strings.Contains(string(encoded), plainAPIKey) {
+		t.Fatalf("serialized DTO leaked plaintext credentials: %s", encoded)
 	}
 	if account.Username != "******" || account.APIKey != "******" {
 		t.Fatalf("secrets were not masked: %+v", account)
+	}
+}
+
+// TestPreserveSecretKeepsStoredValue 守另一条不变量：前端回填时敏感字段是
+// ****** 或空，表示「此项未改」，必须沿用库里旧值。丢了它，一次保存就会把
+// 所有凭证写成字面量 ******，实盘直接登不上。
+func TestPreserveSecretKeepsStoredValue(t *testing.T) {
+	const stored = "ak-live-stored"
+	for _, incoming := range []string{"", "   ", "******"} {
+		if got := preserveSecret(incoming, stored); got != stored {
+			t.Fatalf("preserveSecret(%q, %q) = %q, 期望沿用旧值 %q", incoming, stored, got, stored)
+		}
+	}
+	if got := preserveSecret("ak-live-new", stored); got != "ak-live-new" {
+		t.Fatalf("显式传新值时应覆盖，得到 %q", got)
+	}
+	if got := preserveSecret("", ""); got != "" {
+		t.Fatalf("旧值也为空时应返回空，得到 %q", got)
 	}
 }
 

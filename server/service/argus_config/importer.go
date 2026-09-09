@@ -261,7 +261,7 @@ func buildImportRequest(properties map[string]string, sessionByKey map[string]im
 		request.AccountRisks = append(request.AccountRisks, importRisk(properties, prefix, index))
 		if sessionKey != "" {
 			matchedSessions[sessionKey] = true
-			request.Sessions = append(request.Sessions, importRuntimeSession(session, index))
+			request.Sessions = append(request.Sessions, importRuntimeSession(properties, session, prefix, index))
 		}
 	}
 	for key := range sessionByKey {
@@ -290,7 +290,7 @@ func importAccount(properties map[string]string, sessions map[string]importSessi
 		Platform:       "deepcoin",
 		URL:            firstNonBlank(properties[prefix+"url"], session.URL),
 		UID:            firstNonBlank(properties[prefix+"uid"], session.UID),
-		LoginType:      firstNonBlank(properties[prefix+"login_type"], session.LoginType, "config"),
+		LoginType:      resolveLoginType(properties, session, prefix),
 		Username:       firstNonBlank(properties[prefix+"username"], session.Username),
 		Password:       firstNonBlank(properties[prefix+"password"], session.Password),
 		GoogleAuthKey:  firstNonBlank(properties[prefix+"google_auth_key"], session.GoogleAuthKey),
@@ -353,16 +353,64 @@ func importRisk(properties map[string]string, prefix string, index int) argusDTO
 	}
 }
 
-func importRuntimeSession(session importSession, accountID int) argusDTO.RuntimeSessionDTO {
+// resolveLoginType 决定账户走静态凭证还是密码登录。
+//
+// 原来是 firstNonBlank(properties[login_type], session.LoginType, "config")，
+// 三个候选里 session.json 排在兜底之前。实测踩坑：部署用的 properties 从来
+// 不写 login_type（运维靠 trade.accountN.cookie/token 维护静态凭证），而手上
+// 那份 session.json 是几个月前的、里面写着 loginType=password —— 导入后账户
+// 被判成密码登录模式，启动时去调 pl-instance 无头登录，而它并未部署，
+// 于是盘口信号开仓全部失败（"获取 Web 用户凭证失败"）。
+//
+// 现在的顺序：properties 显式声明 > 按实际持有的凭证推断 > config。
+// session.json 的 loginType 不再参与——它是运行态产物，不该决定模式。
+func resolveLoginType(properties map[string]string, session importSession, prefix string) string {
+	if explicit := strings.TrimSpace(properties[prefix+"login_type"]); explicit != "" {
+		return explicit
+	}
+	// 有静态 cookie+token 就是 config 模式，与 argus_single 的
+	// trade.BuildUserProvider / HasStaticWebCredentials 判定保持一致。
+	if sessionCookie(properties, session, prefix) != "" && sessionToken(properties, session, prefix) != "" {
+		return "config"
+	}
+	if strings.TrimSpace(firstNonBlank(properties[prefix+"username"], session.Username)) != "" &&
+		strings.TrimSpace(firstNonBlank(properties[prefix+"password"], session.Password)) != "" {
+		return "password"
+	}
+	return "config"
+}
+
+// sessionCookie / sessionToken 让 properties 里的值优先于 session.json。
+//
+// 运维每周更新的是 trade.accountN.cookie / trade.accountN.token，而
+// session.json 只在 argus_single 无头登录成功后才被刷新。旧的 session.json
+// 覆盖新的 properties，等于把刚换的凭证丢掉。
+func sessionCookie(properties map[string]string, session importSession, prefix string) string {
+	return firstNonBlank(properties[prefix+"cookie"], session.Cookie)
+}
+
+func sessionToken(properties map[string]string, session importSession, prefix string) string {
+	return firstNonBlank(properties[prefix+"token"], session.Token)
+}
+
+func importRuntimeSession(properties map[string]string, session importSession, prefix string, accountID int) argusDTO.RuntimeSessionDTO {
 	updatedAt := time.Now().UTC()
 	if parsed, err := time.Parse(time.RFC3339, session.UpdatedAt); err == nil {
 		updatedAt = parsed
 	}
+	cookie := sessionCookie(properties, session, prefix)
+	token := sessionToken(properties, session, prefix)
+	// otoken 只有 session.json 有；properties 里换了 token 却留着旧 otoken，
+	// 会让 runtimeAccount 优先用旧 otoken（它先取 OToken 再回退 Token）。
+	otoken := session.OToken
+	if strings.TrimSpace(properties[prefix+"token"]) != "" {
+		otoken = strings.TrimSpace(properties[prefix+"otoken"])
+	}
 	valid := uint8(0)
-	if strings.TrimSpace(session.Cookie) != "" && strings.TrimSpace(session.Token) != "" {
+	if strings.TrimSpace(cookie) != "" && strings.TrimSpace(token) != "" {
 		valid = 1
 	}
-	return argusDTO.RuntimeSessionDTO{AccountID: uint64(accountID), Cookie: session.Cookie, Token: session.Token, OToken: session.OToken, SentryRelease: session.SentryRelease, SentryPublicKey: session.SentryPublicKey, Baggage: session.Baggage, LoginURL: session.LoginURL, FinalURL: session.FinalURL, Valid: valid, SessionUpdatedAt: updatedAt}
+	return argusDTO.RuntimeSessionDTO{AccountID: uint64(accountID), Cookie: cookie, Token: token, OToken: otoken, SentryRelease: firstNonBlank(properties[prefix+"sentryRelease"], session.SentryRelease), SentryPublicKey: firstNonBlank(properties[prefix+"SentryPublicKey"], session.SentryPublicKey), Baggage: firstNonBlank(properties[prefix+"baggage"], session.Baggage), LoginURL: session.LoginURL, FinalURL: session.FinalURL, Valid: valid, SessionUpdatedAt: updatedAt}
 }
 
 func importMonitorSymbols(properties map[string]string) ([]argusDTO.MonitorSymbolDTO, error) {
