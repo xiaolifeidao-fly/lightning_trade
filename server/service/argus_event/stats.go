@@ -328,7 +328,12 @@ func aggregateInstanceSummary(rows []*repository.StrategyEventRow, latest []*rep
 		if row.Ts > s.LastTs {
 			s.LastTs = row.Ts
 		}
-		if row.Pnl != nil {
+		// 只累加真正实现了盈亏的事件。loss_alert 的 pnl 是**未实现浮亏**
+		// （account_monitor.go 取 pos.UnrealizedProfit），而且同一个持仓每过
+		// 告警冷却就再报一次——累进「已实现盈亏」既错了口径，也把同一笔浮亏
+		// 重复计数。实测 roc 实例 6 条 loss_alert 合计 -53.89，把真实的 +3.36
+		// 算成了 -50.53。
+		if row.Pnl != nil && ResultKindOf(row.Event) != ResultKindAlert {
 			sum := *row.Pnl
 			if acc.pnl != nil {
 				sum += *acc.pnl

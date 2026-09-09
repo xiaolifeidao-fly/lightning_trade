@@ -1,6 +1,7 @@
 package argus_event
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -232,5 +233,51 @@ func TestIntervalDuration(t *testing.T) {
 	// 1w 是唯一刻意拒绝的周期：Truncate 的整除点落在周四，与交易所周线对不上
 	if _, ok := intervalDuration("1w"); ok {
 		t.Error("1w 分桶会整体错位，应拒绝")
+	}
+}
+
+// loss_alert 的 pnl 是**未实现浮亏**（account_monitor.go 取 pos.UnrealizedProfit），
+// 且同一个持仓每过冷却就再报一次。把它累进「已实现盈亏」既是口径错误，也会把
+// 同一笔浮亏重复计数多次。
+//
+// 真实数据：roc 实例 6 条 loss_alert 合计 -53.89，而真正实现的只有
+// 减仓 +0.33 与移动止盈 +3.03，共 +3.36。旧写法把总额算成 -50.53，
+// 符号反了、量级差 15 倍。
+func TestRealizedPnlExcludesLossAlert(t *testing.T) {
+	rows := []*repository.StrategyEventRow{
+		{Ts: "2026-08-18 10:00:00", InstanceKey: "inst-a", AccountLabel: "A", Event: "open", Size: intp(5), OrderSize: intp(1)},
+		// 同一个持仓的三次浮亏告警：金额相近且反复出现，正是重复计数的来源
+		{Ts: "2026-08-18 10:01:00", InstanceKey: "inst-a", AccountLabel: "A", Event: "loss_alert", Size: intp(5), Pnl: fltp(-18.0), RoiPct: fltp(-160)},
+		{Ts: "2026-08-18 10:06:00", InstanceKey: "inst-a", AccountLabel: "A", Event: "loss_alert", Size: intp(5), Pnl: fltp(-17.5), RoiPct: fltp(-155)},
+		{Ts: "2026-08-18 10:11:00", InstanceKey: "inst-a", AccountLabel: "A", Event: "loss_alert", Size: intp(5), Pnl: fltp(-18.4), RoiPct: fltp(-162)},
+		// 真正实现的两笔
+		{Ts: "2026-08-18 10:20:00", InstanceKey: "inst-a", AccountLabel: "A", Event: "open", Size: intp(4), OrderSize: intp(1), Pnl: fltp(0.33)},
+		{Ts: "2026-08-18 10:30:00", InstanceKey: "inst-a", AccountLabel: "A", Event: "trailing_close", Size: intp(4), Pnl: fltp(3.03)},
+	}
+
+	// 1) 实例汇总
+	out := aggregateInstanceSummary(rows, nil, map[string]argusDTO.InstanceSummaryDTO{})
+	if len(out) != 1 {
+		t.Fatalf("应输出 1 个实例, got %d", len(out))
+	}
+	if out[0].RealizedPnl == nil {
+		t.Fatal("已实现盈亏不应为 nil")
+	}
+	if got := *out[0].RealizedPnl; math.Abs(got-3.36) > 1e-9 {
+		t.Errorf("已实现盈亏 = %.4f，期望 3.36（浮亏告警必须排除）", got)
+	}
+
+	// 2) 时间轴分桶：浮亏告警所在的桶不该冒出「已实现盈亏」
+	start, _ := parseEventTime("2026-08-18 10:00:00", false)
+	end, _ := parseEventTime("2026-08-18 10:30:00", false)
+	buckets := buildTimelineBuckets(rows, start, end, 10*time.Minute)
+	var total float64
+	for _, b := range buckets {
+		if b.RealizedPnl != nil {
+			total += *b.RealizedPnl
+		}
+	}
+	if math.Abs(total-3.36) > 1e-9 {
+		t.Errorf("时间轴各桶已实现盈亏合计 = %.4f，期望 3.36", total)
 	}
 }
