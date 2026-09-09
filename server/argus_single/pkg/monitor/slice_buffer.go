@@ -182,6 +182,10 @@ func (pm *PriceMonitor) armSlice(now time.Time, symbol string, instIdRaw string)
 		dueAt:     now.Add(marketslice.HalfWindowSeconds * time.Second),
 		instIdRaw: instIdRaw,
 	})
+	// 这条链路此前全程无日志：signal_slice 落 0 行时，从日志上分不清是没登记、
+	// 没到期、还是写库失败。按触发频率（实测 ~28 次/天）打 info 不构成噪声。
+	logrus.Infof("[slice] 已登记：symbol=%s instId=%s anchor=%d 待落盘=%d",
+		symbol, instIdRaw, anchorSec, len(pm.slicePendings[symbol]))
 }
 
 // takeDueSlices 取出全部已到期的切片并从待办里摘掉。
@@ -204,6 +208,10 @@ func (pm *PriceMonitor) takeDueSlices(now time.Time, force bool) []marketslice.S
 			}
 			buf := pm.sliceBuffers[symbol]
 			if buf == nil {
+				// 静默丢弃点：登记过但没有秒级缓冲，说明这个 symbol 从没进过
+				// observeSliceQuote（双流没喂进来 / symbol 键不一致）。
+				logrus.Warnf("[slice] 丢弃：symbol=%s anchor=%d 没有秒级缓冲（缓冲键=%v）",
+					symbol, p.anchorSec, sliceBufferKeys(pm.sliceBuffers))
 				continue
 			}
 			dcLast, dcMark, binLast, dcPoints, binPoints := buf.Snapshot(p.anchorSec, marketslice.HalfWindowSeconds)
@@ -251,7 +259,21 @@ func (pm *PriceMonitor) runSliceFlusher() {
 }
 
 func emitSlices(list []marketslice.Slice) {
+	if len(list) == 0 {
+		return
+	}
 	for _, s := range list {
+		logrus.Infof("[slice] 投递：instId=%s anchor=%s dcPoints=%d binPoints=%d",
+			s.InstIdRaw, s.Anchor.Format("15:04:05"), s.DcPoints, s.BinPoints)
 		marketslice.Emit(s)
 	}
+}
+
+// sliceBufferKeys 仅用于诊断日志：列出当前有秒级缓冲的 symbol。
+func sliceBufferKeys(m map[string]*SliceBuffer) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
