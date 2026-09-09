@@ -3,7 +3,7 @@
 import { Alert, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { SliceCompare, SliceCompareRow } from "../api/argus-signals.api";
-import { EMPTY, fmtNum, fmtSigned, shortTs, signColor } from "../constants";
+import { EMPTY, fmtNum, fmtRate, fmtSigned, shortTs, signColor } from "../constants";
 
 const { Text } = Typography;
 
@@ -66,7 +66,7 @@ export function SliceCompareTable({ data, loading }: SliceCompareTableProps) {
       width: 130,
       render: (value: number, row) => (
         <span className="manager-argus-mono">
-          {value} · {fmtNum(row.openRate, 1, "%")}
+          {value} · {fmtRate(row.openRate)}
         </span>
       ),
     },

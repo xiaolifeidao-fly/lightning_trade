@@ -3,7 +3,7 @@
 import { AimOutlined, FilterOutlined, PieChartOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { Empty, Skeleton, Tag, Tooltip, Typography } from "antd";
 import type { EpisodeStats, GateStats } from "../api/argus-signals.api";
-import { EVENT_COLORS, EXIT_KIND_COLORS, STRENGTH_COLORS, fmtNum, fmtSigned, signColor } from "../constants";
+import { EVENT_COLORS, EXIT_KIND_COLORS, STRENGTH_COLORS, fmtNum, fmtRate, fmtSigned, signColor } from "../constants";
 
 const { Text } = Typography;
 
@@ -52,7 +52,7 @@ export function ReviewStats({ gateStats, episodeStats, loading }: ReviewStatsPro
           <div className="manager-argus-tile__value" style={{ color: "var(--manager-success)" }}>
             {gateStats?.opened ?? 0}
             <span style={{ fontSize: 15, color: "var(--argus-faint)", marginInlineStart: 8 }}>
-              {fmtNum(gateStats?.openRate, 1, "%")}
+              {fmtRate(gateStats?.openRate)}
             </span>
           </div>
           <span className="manager-argus-tile__hint">其余 {blocked} 条被条件挡住</span>
@@ -164,7 +164,7 @@ export function ReviewStats({ gateStats, episodeStats, loading }: ReviewStatsPro
               <div className="manager-argus-bar__label">
                 <div>{item.label}</div>
                 <div className="manager-argus-bar__detail">
-                  开仓 {item.opened} / {item.count} · 成交率 {fmtNum(item.openRate, 1, "%")}
+                  开仓 {item.opened} / {item.count} · 成交率 {fmtRate(item.openRate)}
                 </div>
               </div>
               <div className="manager-argus-bar__track">

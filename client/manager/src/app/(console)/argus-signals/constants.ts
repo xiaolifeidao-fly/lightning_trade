@@ -101,6 +101,19 @@ export function fmtNum(value: number | null | undefined, digits = 2, suffix = ""
   return `${value.toFixed(digits)}${suffix}`;
 }
 
+/**
+ * 比率字段（openRate 等）转百分比显示。
+ *
+ * 后端的 openRate 是**分数**（0..1，见 service/argus_event/stats.go 的
+ * `round4(opened/total)`，aggregate_test.go 也按分数断言），而同一批出参里的
+ * winRate 已经是百分数。这里显式乘 100，别再直接把分数丢给 fmtNum 加个 "%"——
+ * 那会把 41.8% 显示成 0.4%。
+ */
+export function fmtRate(value: number | null | undefined, digits = 1): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return EMPTY;
+  return `${(value * 100).toFixed(digits)}%`;
+}
+
 /** 带符号的数值，涨跌色由调用方按 signOf 决定。 */
 export function fmtSigned(value: number | null | undefined, digits = 2, suffix = ""): string {
   if (value === null || value === undefined || Number.isNaN(value)) return EMPTY;
