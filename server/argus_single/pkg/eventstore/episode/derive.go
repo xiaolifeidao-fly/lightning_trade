@@ -233,10 +233,33 @@ func (b *book) onOpen(e *eventstore.StrategyEvent) {
 	intended := intOr(e.OrderSize, 0)
 	side := strOr(e.Side)
 
+	// e.Side 是**下单方向**，不是净仓方向：给 short 减仓要买入，落库就是
+	// side=long。manager.go 只在 isReduction 成立时才写 NetSide（见
+	// pkg/trade/manager.go 的 openEv.NetSide 赋值），所以 NetSide 非空等价于
+	// 「这一单在减仓」，且它才是真实净仓方向。
+	//
+	// 建账本必须用净仓方向。账本第一条恰好是减仓单时（实测 roc 账户A
+	// 2026-09-08 22:18:50 首条即 side=long/net_side=short/size=5），按下单方向
+	// 建账会把 short 记成 long，此后 18 笔真正的加空仓（side=short）全部撞进
+	// 下面 delta<0 的分支被记成「反向单做大仓位」，net 从此冻结在 5，
+	// 而 3 笔真减仓被当成加仓把峰值抬到 7——reverse_gate 其实一次都没漏。
+	//
+	// 加仓单没有 NetSide，此时下单方向就是净仓方向。
+	posSide := side
+	if netSide := strOr(e.NetSide); netSide != "" {
+		posSide = netSide
+	}
+
 	if b.ep == nil {
 		if resulting <= 0 {
 			// 只看到"把仓位减到 0"的那一笔：建仓在数据窗口之前，opened_at 只能留 NULL。
-			b.startTruncated(e, opposite(side), intOr(e.OrderSize, 0))
+			// 净仓方向优先读 NetSide；老事件没这个字段时退回「下单方向的反面」
+			// ——减到 0 必然是减仓单，其下单方向与净仓方向相反。
+			zeroSide := strOr(e.NetSide)
+			if zeroSide == "" {
+				zeroSide = opposite(side)
+			}
+			b.startTruncated(e, zeroSide, intOr(e.OrderSize, 0))
 			b.realize(e.Pnl, true)
 			b.ep.ReduceCount++
 			b.closeEpisode(e, ExitReduceToZero)
@@ -252,11 +275,11 @@ func (b *book) onOpen(e *eventstore.StrategyEvent) {
 			// 代价：§6.5 的"信号突发累加一次下单多张"（7/05 01:39 A 0→3，orderSize=1）
 			// 若恰好发生在账本第一条，会被误判成截断头。两种误判里这个方向更安全——
 			// 少归因是缺数据，多归因是假数据，而 opened_at=NULL 让下游能直接排除。
-			b.startTruncated(e, side, resulting-intended)
+			b.startTruncated(e, posSide, resulting-intended)
 			b.applyAdd(e, intended, intended)
 			return
 		}
-		b.start(e, side)
+		b.start(e, posSide)
 		b.applyAdd(e, resulting, intended)
 		return
 	}

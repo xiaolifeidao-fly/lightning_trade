@@ -80,6 +80,12 @@ func withVariant(v string) func(*eventstore.StrategyEvent) {
 	return func(row *eventstore.StrategyEvent) { row.Variant = strPtr(v) }
 }
 
+// withNetSide 标出「这一笔是减仓」：manager.go 只在 isReduction 成立时才写
+// netSide，所以 net_side 非空等价于本单在减仓，且它就是真实净仓方向。
+func withNetSide(side string) func(*eventstore.StrategyEvent) {
+	return func(row *eventstore.StrategyEvent) { row.NetSide = strPtr(side) }
+}
+
 func strPtr(v string) *string     { return &v }
 func intPtr(v int) *int           { return &v }
 func floatPtr(v float64) *float64 { return &v }
@@ -563,5 +569,40 @@ func TestDeriveBurstAddAfterFlatIsNotTruncated(t *testing.T) {
 	}
 	if burst.EntrySizeTotal != 3 || burst.HasPositionGap != 1 {
 		t.Fatalf("应把 3 张全记给这一笔并标跳变：total=%d gap=%d", burst.EntrySizeTotal, burst.HasPositionGap)
+	}
+}
+
+// 账本第一条事件是「减仓单」时，episode 方向必须取 net_side，不能取 side。
+//
+// manager.go 的 open 事件里 Side 是**下单方向**：给 short 减仓要买入，落库就是
+// side=long；只有减仓单才带 netSide，且它才是真实净仓方向。若按 side 建账本，
+// 净仓 short 会被记成 long，此后每一笔真正的加空仓（side=short）都会撞进
+// delta<0 分支被当成「反向单做大仓位」，net 从此冻结。
+//
+// 真实数据：roc 账户A 2026-09-08 22:18:50 首条即 side=long/net_side=short/size=5，
+// 之后 18 笔 side=short 的 1 张加仓全被误判，reverse_gate 其实一次都没漏。
+func TestDeriveFirstEventIsReductionUsesNetSide(t *testing.T) {
+	s := &stream{}
+	// 首条：买 1 张给 short 减仓，减完净仓还剩 5 张空单（建仓在窗口之前）
+	s.push("2026-09-08 22:18:50", eventlog.EvOpen, open("long", 5, 1), withNetSide("short"))
+	// 之后三笔都是真正的加空仓：净仓 5→6→7→8，每次 1 张
+	s.push("2026-09-09 00:56:15", eventlog.EvOpen, open("short", 6, 1))
+	s.push("2026-09-09 01:53:30", eventlog.EvOpen, open("short", 7, 1))
+	s.push("2026-09-09 01:54:24", eventlog.EvOpen, open("short", 8, 1))
+
+	episodes, stats := Derive(s.rows, rebuiltAt)
+	ep := single(t, episodes)
+
+	if ep.Side != "short" {
+		t.Errorf("episode 方向应取 net_side=short，实际 %q（取成了下单方向）", ep.Side)
+	}
+	if stats.SideFlipRejected != 0 {
+		t.Errorf("这三笔是正常加空仓，不该记成翻转单：SideFlipRejected=%d", stats.SideFlipRejected)
+	}
+	if ep.MaxSize != 8 {
+		t.Errorf("净仓应跟到 8 张，实际峰值 %d（net 被冻结了）", ep.MaxSize)
+	}
+	if ep.OpenedAt != nil {
+		t.Errorf("建仓在数据窗口之前，opened_at 应留 NULL，实际 %v", ep.OpenedAt)
 	}
 }
