@@ -21,8 +21,8 @@ export type ParamCarrier =
   /** argus_monitor_symbol 的结构化列 */
   | { kind: "symbol"; field: "signalThreshold" | "spreadThreshold" }
   /** argus_account_risk 的结构化列 */
-  | { kind: "risk"; field: "riskBudget" | "catastrophicStopLoss" | "maxContracts" | "reverseGateEnabled" }
-  /** argus_config.extra_config_json 里的键（DB 还没有独立列，由 r5 收敛） */
+  | { kind: "risk"; field: "riskBudget" | "catastrophicStopLoss" | "maxContracts" | "reverseGateEnabled" | "reverseGateMinProfitPct" }
+  /** argus_config.extra_config_json 里的键。r5 之后只剩没有独立列的项才该走这里 */
   | { kind: "configExtra"; key: string }
   /** argus_account_risk.extra_risk_json 里的键 */
   | { kind: "riskExtra"; key: string }
@@ -34,7 +34,12 @@ type ConfigNumberField =
   | "monitorIntervalSecond"
   | "profitThreshold"
   | "lossThreshold"
-  | "serverPort";
+  | "serverPort"
+  | "contractFace"
+  | "signalDelaySecond"
+  | "spreadMaxPriceAgeMs"
+  | "trendGateWindowHour"
+  | "trendGateThresholdPct";
 
 export interface ParamDef {
   /** 表单内的唯一键，同时用于 diff */
@@ -56,8 +61,14 @@ export interface ParamDef {
   /** 关键参数：直接影响实盘下单与风控，发布前必须二次确认 */
   critical?: boolean;
   /**
-   * true = DB 侧可写，但 argus_single 运行时还没消费这个值（r5「配置面完整收敛到
-   * DB」负责打通）。页面必须把它和「改完就生效」的参数区分开。
+   * true = DB 侧可写，但 argus_single 运行时还没消费这个值。页面必须把它和
+   * 「改完就生效」的参数区分开。
+   *
+   * r5 收敛完成后，本目录里**已没有参数**处于这个状态：每一项都能从
+   * argus_config/argus_account_risk 的列经 runtimeconfig/tuning.go 推进 viper，
+   * 再由 price_monitor / account_monitor / trend_gate / account_params 实际读取。
+   * 新增参数时若确实还没接运行时，再把这个标记打上——判据是「viper 键在
+   * argus_single 里没有任何消费点」，不是「看起来没接」。
    */
   pendingRuntime?: boolean;
   /** 开关型参数用下拉，其余用数字输入 */
@@ -117,11 +128,10 @@ export const PARAM_GROUPS: ParamGroup[] = [
         precision: 0,
         min: 0,
         scope: "global",
-        carrier: { kind: "configExtra", key: "trade.signal.delay_seconds" },
+        carrier: { kind: "config", field: "signalDelaySecond" },
         propertyKey: "trade.signal.delay_seconds",
-        storeKey: "argus_config.extra_config_json[trade.signal.delay_seconds]",
+        storeKey: "argus_config.signal_delay_second",
         hot: true,
-        pendingRuntime: true,
       },
       {
         key: "max_price_age_ms",
@@ -131,11 +141,10 @@ export const PARAM_GROUPS: ParamGroup[] = [
         precision: 0,
         min: 0,
         scope: "global",
-        carrier: { kind: "configExtra", key: "monitor.spread.max_price_age_ms" },
+        carrier: { kind: "config", field: "spreadMaxPriceAgeMs" },
         propertyKey: "monitor.spread.max_price_age_ms",
-        storeKey: "argus_config.extra_config_json[monitor.spread.max_price_age_ms]",
+        storeKey: "argus_config.spread_max_price_age_ms",
         hot: true,
-        pendingRuntime: true,
       },
     ],
   },
@@ -209,11 +218,10 @@ export const PARAM_GROUPS: ParamGroup[] = [
         precision: 6,
         min: 0,
         scope: "global",
-        carrier: { kind: "configExtra", key: "position.risk.contract_face" },
+        carrier: { kind: "config", field: "contractFace" },
         propertyKey: "position.risk.contract_face",
-        storeKey: "argus_config.extra_config_json[position.risk.contract_face]",
+        storeKey: "argus_config.contract_face",
         hot: false,
-        pendingRuntime: true,
       },
     ],
   },
@@ -259,11 +267,10 @@ export const PARAM_GROUPS: ParamGroup[] = [
         precision: 2,
         min: 0,
         scope: "account",
-        carrier: { kind: "riskExtra", key: "reverse_gate_min_profit_pct" },
+        carrier: { kind: "risk", field: "reverseGateMinProfitPct" },
         propertyKey: "trade.accountN.reverse_gate_min_profit_pct",
-        storeKey: "argus_account_risk.extra_risk_json[reverse_gate_min_profit_pct]",
+        storeKey: "argus_account_risk.reverse_gate_min_profit_pct",
         hot: true,
-        pendingRuntime: true,
       },
     ],
   },
@@ -280,11 +287,10 @@ export const PARAM_GROUPS: ParamGroup[] = [
         precision: 0,
         min: 0,
         scope: "global",
-        carrier: { kind: "configExtra", key: "trade.trend_gate.window_hours" },
+        carrier: { kind: "config", field: "trendGateWindowHour" },
         propertyKey: "trade.trend_gate.window_hours",
-        storeKey: "argus_config.extra_config_json[trade.trend_gate.window_hours]",
+        storeKey: "argus_config.trend_gate_window_hour",
         hot: true,
-        pendingRuntime: true,
       },
       {
         key: "trend_gate_threshold_pct",
@@ -294,11 +300,10 @@ export const PARAM_GROUPS: ParamGroup[] = [
         precision: 2,
         min: 0,
         scope: "global",
-        carrier: { kind: "configExtra", key: "trade.trend_gate.threshold_pct" },
+        carrier: { kind: "config", field: "trendGateThresholdPct" },
         propertyKey: "trade.trend_gate.threshold_pct",
-        storeKey: "argus_config.extra_config_json[trade.trend_gate.threshold_pct]",
+        storeKey: "argus_config.trend_gate_threshold_pct",
         hot: true,
-        pendingRuntime: true,
       },
     ],
   },
@@ -319,7 +324,6 @@ export const PARAM_GROUPS: ParamGroup[] = [
         propertyKey: "position.monitor.interval_seconds",
         storeKey: "argus_config.monitor_interval_second",
         hot: true,
-        pendingRuntime: true,
       },
       {
         key: "profit_threshold",
@@ -333,7 +337,6 @@ export const PARAM_GROUPS: ParamGroup[] = [
         propertyKey: "position.monitor.profit_threshold",
         storeKey: "argus_config.profit_threshold",
         hot: true,
-        pendingRuntime: true,
       },
       {
         key: "loss_threshold",
@@ -347,7 +350,6 @@ export const PARAM_GROUPS: ParamGroup[] = [
         propertyKey: "position.monitor.loss_threshold",
         storeKey: "argus_config.loss_threshold",
         hot: true,
-        pendingRuntime: true,
       },
       {
         key: "server_port",
@@ -379,7 +381,6 @@ function trailTier(key: string, label: string, unit: string, step: number, preci
     propertyKey: `position.monitor.trail.${key}`,
     storeKey: `argus_account_risk.trailing_stop_tiers_json[${key}]`,
     hot: true,
-    pendingRuntime: true,
   };
 }
 

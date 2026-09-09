@@ -28,6 +28,14 @@ export class ArgusConfig {
   declare loginScheduledMinute: number;
   declare sessionMaxAgeDay: number;
   declare extraConfigJson?: string;
+  // r5 把下面这几项从 extra_config_json 收敛成了独立列，运行时读的就是这些列
+  // （argus_single/pkg/runtimeconfig/tuning.go 的 config.XXX）。
+  declare contractFace: number;
+  declare signalDelaySecond: number;
+  declare spreadMaxPriceAgeMs: number;
+  declare trendGateWindowHour: number;
+  declare trendGateThresholdPct: number;
+  declare reverseGateMinProfitPct: number;
   declare aiCloseEnabled: number;
   declare aiCloseProvider: string;
   declare aiCloseApiUrl: string;
@@ -93,6 +101,9 @@ export class ArgusAccountRisk {
   declare reverseGateEnabled: number;
   declare maxContracts: number;
   declare extraRiskJson?: string;
+  // 账户级覆盖也已收敛成独立列，运行时优先取 >0 的账户级值。
+  declare reverseGateMinProfitPct: number;
+  declare trendGateThresholdPct: number;
 }
 
 export class ArgusMonitorSymbol {
