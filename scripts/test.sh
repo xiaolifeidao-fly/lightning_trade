@@ -35,6 +35,8 @@ BUILD_MODULES=(common service manager-api argus_single oracle)
 DB_EVENTSTORE=lt_test_eventstore
 DB_ARGUS_EVENT=lt_test_argus_event
 DB_SIGNAL_BT=lt_test_signal_bt
+# argus_config 的凭证轮换集成用例：会建表、按 it- 前缀的实例键增删自己的行。
+DB_ARGUS_CONFIG=lt_test_argus_config
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
@@ -73,11 +75,11 @@ start_db() {
   done
 
   local db
-  for db in "$DB_EVENTSTORE" "$DB_ARGUS_EVENT" "$DB_SIGNAL_BT"; do
+  for db in "$DB_EVENTSTORE" "$DB_ARGUS_EVENT" "$DB_SIGNAL_BT" "$DB_ARGUS_CONFIG"; do
     docker exec "$CONTAINER" mysql -uroot -p"$PASSWORD" \
       -e "CREATE DATABASE IF NOT EXISTS \`$db\` DEFAULT CHARACTER SET utf8mb4;" 2>/dev/null
   done
-  log "已备好 3 个库：$DB_EVENTSTORE / $DB_ARGUS_EVENT / $DB_SIGNAL_BT"
+  log "已备好 4 个库：$DB_EVENTSTORE / $DB_ARGUS_EVENT / $DB_SIGNAL_BT / $DB_ARGUS_CONFIG"
 }
 
 stop_db() {
@@ -160,7 +162,7 @@ main() {
   build_all || exit 1
 
   if [ "$MODE" = "unit" ]; then
-    unset EVENTSTORE_TEST_DSN ARGUS_EVENT_TEST_DSN SIGNAL_BACKTEST_TEST_DSN
+    unset EVENTSTORE_TEST_DSN ARGUS_EVENT_TEST_DSN SIGNAL_BACKTEST_TEST_DSN ARGUS_CONFIG_TEST_DSN
     run_modules "单元测试（不带 DSN，集成用例会 SKIP）" || rc=1
     exit $rc
   fi
@@ -174,6 +176,7 @@ main() {
   export EVENTSTORE_TEST_DSN="$(dsn_for "$DB_EVENTSTORE")"
   export ARGUS_EVENT_TEST_DSN="$(dsn_for "$DB_ARGUS_EVENT")"
   export SIGNAL_BACKTEST_TEST_DSN="$(dsn_for "$DB_SIGNAL_BT")"
+  export ARGUS_CONFIG_TEST_DSN="$(dsn_for "$DB_ARGUS_CONFIG")"
 
   if [ "$MODE" = "integration" ]; then
     log "只跑集成用例"

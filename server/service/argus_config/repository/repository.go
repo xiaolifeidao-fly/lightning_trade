@@ -284,6 +284,78 @@ func (r *ArgusConfigRepository) SaveInstance(instance *ArgusInstance) error {
 	return r.Db.Save(instance).Error
 }
 
+// LoadAccountsWithSessions 只读某个配置版本的账户与其会话行。
+//
+// 为什么不复用 LoadSnapshotContext：那个函数要求 argus_config 行必须存在
+// （缺了直接返回 record not found），而凭证轮换只依赖账户与会话两张表。
+// 用整份快照的加载器等于让轮换被一堆无关行的存在性绑住，出错信息还会指向
+// argus_config 这种和轮换毫无关系的地方。
+func (r *ArgusConfigRepository) LoadAccountsWithSessions(ctx context.Context, versionID uint64) ([]*ArgusAccount, []*ArgusRuntimeSession, error) {
+	if r.Db == nil {
+		return nil, nil, fmt.Errorf("database is not initialized")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	database := r.Db.WithContext(ctx)
+	var accounts []*ArgusAccount
+	if err := database.Where("config_version_id = ? AND active = 1", versionID).Order("id ASC").Find(&accounts).Error; err != nil {
+		return nil, nil, err
+	}
+	if len(accounts) == 0 {
+		return accounts, nil, nil
+	}
+	ids := make([]uint64, 0, len(accounts))
+	for _, account := range accounts {
+		ids = append(ids, uint64(account.Id))
+	}
+	var sessions []*ArgusRuntimeSession
+	if err := database.Where("account_id IN ? AND active = 1", ids).Order("id ASC").Find(&sessions).Error; err != nil {
+		return nil, nil, err
+	}
+	return accounts, sessions, nil
+}
+
+// UpsertRuntimeSession 只改会话列，不碰配置版本与参数行。
+//
+// 轮换 cookie/token 是每周的常规运维，它不是"改参数"：新建一个配置版本会让
+// 版本历史里全是凭证轮换的噪音，也会让"这版改了什么参数"变得没法看。
+// Id 为 0 时插入（新导入的实例可能还没有会话行），否则按主键更新。
+//
+// 显式列出要写的列而不是 Save 整个结构体：Save 会把零值也写进去，
+// expires_at / last_error 这些不属于本次轮换的列会被顺手清掉。
+func (r *ArgusConfigRepository) UpsertRuntimeSession(ctx context.Context, row *ArgusRuntimeSession, actor string) error {
+	if r.Db == nil {
+		return fmt.Errorf("database is not initialized")
+	}
+	if row == nil || row.AccountID == 0 {
+		return fmt.Errorf("runtime session requires an account id")
+	}
+	database := r.Db.WithContext(ctx)
+	if row.Id == 0 {
+		row.Active = 1
+		row.CreatedBy = actor
+		row.UpdatedBy = actor
+		return database.Create(row).Error
+	}
+	return database.Model(&ArgusRuntimeSession{}).Where("id = ?", row.Id).Updates(map[string]interface{}{
+		"cookie":             row.Cookie,
+		"token":              row.Token,
+		"otoken":             row.OToken,
+		"sentry_release":     row.SentryRelease,
+		"sentry_public_key":  row.SentryPublicKey,
+		"baggage":            row.Baggage,
+		"login_url":          row.LoginURL,
+		"final_url":          row.FinalURL,
+		"valid":              row.Valid,
+		"session_updated_at": row.SessionUpdatedAt,
+		// 换了新凭证，上一次的失败原因就过期了；留着会让巡检页一直挂着旧告警。
+		"last_error": "",
+		"active":     1,
+		"updated_by": actor,
+	}).Error
+}
+
 // DuplicateInstanceKeys 找出同一实例键的多条有效记录。唯一索引正常时结果必为空，
 // 历史库缺索引时用它触发重复告警。
 func (r *ArgusConfigRepository) DuplicateInstanceKeys() ([]string, error) {
