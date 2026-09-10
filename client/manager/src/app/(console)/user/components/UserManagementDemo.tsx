@@ -44,16 +44,18 @@ const roleColors: Record<string, string> = {
   member: "rgba(255,255,255,0.04)",
 };
 
+// 键一律小写，取值前先 toLowerCase。原来靠同时列 active/ACTIVE、expire/EXPIRE
+// 来兜大小写，漏一个就退到默认灰色，看不出是"未知"还是"没配色"。
 const statusColors: Record<string, string> = {
   normal: "rgba(95,198,163,0.14)",
-  frozen: "rgba(239,107,120,0.14)",
   active: "rgba(95,198,163,0.14)",
-  ACTIVE: "rgba(95,198,163,0.14)",
+  pending: "rgba(95,198,163,0.14)",
+  frozen: "rgba(239,107,120,0.14)",
   expire: "rgba(239,107,120,0.14)",
-  EXPIRE: "rgba(239,107,120,0.14)",
-  inactive: "rgba(170,192,238,0.16)",
   locked: "rgba(239,107,120,0.14)",
   disabled: "rgba(239,107,120,0.14)",
+  deleted: "rgba(239,107,120,0.14)",
+  inactive: "rgba(170,192,238,0.16)",
 };
 
 export function UserManagementDemo() {
@@ -73,7 +75,9 @@ export function UserManagementDemo() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<UserRecord | null>(null);
 
-  const activeCount = users.filter((item) => resolveUserStatus(item) === "normal").length;
+  // "活跃用户"数的是能登录的人，与钱包是否冻结无关；
+  // 而且 user.status 存的是 "active" 不是 "normal"，旧写法恒为 0。
+  const activeCount = users.filter((item) => !isBlockedStatus(resolveUserStatus(item))).length;
   const totalBalance = users.reduce((sum, item) => sum + resolveBalance(item), 0);
 
   const heroStats = useMemo(
@@ -213,7 +217,8 @@ export function UserManagementDemo() {
   };
 
   const handleToggleFreeze = (record: UserRecord) => {
-    const currentStatus = resolveUserStatus(record);
+    // 这个按钮切的是**钱包**，所以读账户维度。
+    const currentStatus = resolveAccountStatus(record);
     const nextStatus = currentStatus === "frozen" ? "normal" : "frozen";
     Modal.confirm({
       title: nextStatus === "frozen" ? "冻结账户" : "解冻账户",
@@ -283,24 +288,45 @@ export function UserManagementDemo() {
     {
       title: "余额",
       key: "balanceAmount",
-      width: 140,
+      width: 190,
       align: "right",
+      // 冻结是**钱包**的属性，就显示在钱包旁边。放到「状态」列里会和用户能否
+      // 登录混成一个值——那正是之前"点了冻结界面毫无反应"的根源。
       render: (_, record) => {
         const balance = resolveBalance(record);
-        return <Text style={{ color: "var(--manager-text)" }}>{formatNumber(balance)}</Text>;
+        const frozen = resolveAccountStatus(record) === "frozen";
+        return (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 8, justifyContent: "flex-end" }}>
+            <Text style={{ color: "var(--manager-text)" }}>{formatNumber(balance)}</Text>
+            {frozen ? (
+              <Tag
+                style={{
+                  color: "var(--manager-text)",
+                  background: statusColors.frozen,
+                  border: "none",
+                  margin: 0,
+                }}
+              >
+                已冻结
+              </Tag>
+            ) : null}
+          </span>
+        );
       },
     },
     {
-      title: "状态",
+      // 明确写成「用户状态」：不带限定词的"状态"在这张表里有歧义，
+      // 钱包的冻结状态在「余额」列展示。
+      title: "用户状态",
       key: "status",
       width: 110,
       render: (_, record) => {
-        const value = resolveDisplayStatus(record);
+        const value = resolveUserStatus(record);
         return (
           <Tag
             style={{
               color: "var(--manager-text)",
-              background: statusColors[value] || "rgba(170,192,238,0.16)",
+              background: statusColors[value.toLowerCase()] || "rgba(170,192,238,0.16)",
               border: "none",
             }}
           >
@@ -315,7 +341,7 @@ export function UserManagementDemo() {
       width: 248,
       fixed: "right",
       render: (_, record) => {
-        const frozen = resolveUserStatus(record) === "frozen";
+        const frozen = resolveAccountStatus(record) === "frozen";
 
         return (
           <Space size={4} wrap>
@@ -502,12 +528,32 @@ function resolveBalance(record: UserRecord) {
   return Number(record.balanceAmount || 0);
 }
 
+// user.status 与 account_status 是**两个互相独立的状态**，不是一个东西的两种叫法：
+// 前者管"这个人能不能登录"，后者管"这个钱包能不能动"，可以任意组合
+// （能登录但钱包冻结、被封禁但钱包正常）。
+//
+// 这里原本有两个优先级相反的解析函数（一个账户优先、一个用户优先），
+// 于是冻结按钮读到的和状态列显示的不是同一个值——点完冻结，按钮标签翻成
+// 「解冻」了，状态列却纹丝不动，用户只能靠再点一次来确认自己有没有成功。
+// 现在拆成各读各的，谁也不再兜底到对方。
+
+/** 用户维度：这个人能不能登录。只读 user.status。 */
 function resolveUserStatus(record: UserRecord) {
-  return record.accountStatus || record.status || "normal";
+  return (record.status || "active").toLowerCase();
 }
 
-function resolveDisplayStatus(record: UserRecord) {
-  return record.status || record.accountStatus || "active";
+/** 账户维度：这个钱包能不能动。只读 account_status；还没有账户时按 normal。 */
+function resolveAccountStatus(record: UserRecord) {
+  return (record.accountStatus || "normal").toLowerCase();
+}
+
+// 库里大小写不统一：user.status 存的是大写 "ACTIVE"，account_status 是小写
+// "normal"。统一小写后再判定，别再靠往颜色表里堆 ACTIVE/EXPIRE 这种重复键。
+const BLOCKED_STATUSES = new Set(["expire", "frozen", "locked", "inactive", "disabled", "deleted"]);
+const ACTIVE_STATUSES = new Set(["active", "normal", "pending"]);
+
+function isBlockedStatus(value: string) {
+  return BLOCKED_STATUSES.has(value.toLowerCase());
 }
 
 function formatRole(value: string) {
@@ -526,23 +572,12 @@ function formatRole(value: string) {
 }
 
 function formatStatus(value: string) {
-  switch (value) {
-    case "ACTIVE":
-    case "normal":
-    case "active":
-    case "pending":
-      return "激活";
-    case "expire":
-    case "EXPIRE":
-    case "frozen":
-    case "locked":
-    case "inactive":
-    case "disabled":
-    case "deleted":
-      return "冻结";
-    default:
-      return value ? `未知(${value})` : "-";
-  }
+  if (!value) return "-";
+  const key = value.toLowerCase();
+  if (ACTIVE_STATUSES.has(key)) return "激活";
+  if (BLOCKED_STATUSES.has(key)) return "冻结";
+  // 认不出来的值原样露出来，别悄悄归到"激活"那一边。
+  return `未知(${value})`;
 }
 
 function formatNumber(value: number) {
