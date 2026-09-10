@@ -3,7 +3,6 @@ package user
 import (
 	"os"
 	"testing"
-	"time"
 
 	"common/middleware/db"
 	userDTO "service/manager_user/dto"
@@ -59,22 +58,19 @@ func accountIntegrationService(t *testing.T) (*UserService, *gorm.DB) {
 	// 下一次 CreateUser 直接撞 "username already exists"。
 	gdb.Exec("DELETE FROM account")
 	gdb.Exec("DELETE FROM user WHERE username LIKE 'acct-it-%'")
-	gdb.Exec("DELETE FROM user WHERE username LIKE 'acct-it-notok-%' OR username LIKE 'acct-it-tok-%'")
+	gdb.Exec("DELETE FROM user WHERE username LIKE 'acct-it-notok-%' OR username LIKE 'acct-it-tok-%' OR username = 'acct-it-nologin'")
 	return svc, gdb
 }
 
 // seedUser 造一个生效用户，返回其 id。CreateAccount 会校验用户存在。
 //
-// LastLoginTime 必须显式给：CreateUser 收到零值 time.Time 会往
-// last_login_time 写 '0000-00-00'，生产库的 sql_mode 不含 NO_ZERO_DATE 所以
-// 能存进去，而 MySQL 8 默认（也就是 CI 容器）是严格的，直接 Error 1292。
-// 这是 CreateUser 自身的可移植性问题，与资金账户无关，这里绕开它以免噪声
-// 盖住本用例真正要验的东西。
+// 刻意**不传** LastLoginTime，走的就是前端新建用户表单那条路径
+// （UserPayload 里根本没有这个字段）。以前不传会往 last_login_time 写
+// '0000-00-00'，在严格 sql_mode 下直接 Error 1292；现在零值存 NULL。
 func seedUser(t *testing.T, svc *UserService, username string) uint64 {
 	t.Helper()
 	created, err := svc.CreateUser(&userDTO.CreateUserDTO{
 		Name: "集成测试用户", Username: username, Role: "admin", Status: "active",
-		LastLoginTime: time.Now(),
 		// pub_token 上有唯一索引，而字段是非指针 string，不给就写空串。
 		// MySQL 里空串是一个值（不像 NULL），所以第二个不带 pub_token 的用户
 		// 必然撞 Duplicate entry '' for key 'user.pub_token'。这同样是
@@ -212,7 +208,6 @@ func TestIntegrationCreateMultipleUsersWithoutPubToken(t *testing.T) {
 	mk := func(username string) error {
 		_, err := svc.CreateUser(&userDTO.CreateUserDTO{
 			Name: "无 token 用户", Username: username, Role: "admin", Status: "active",
-			LastLoginTime: time.Now(), // 见 seedUser 注释：零值会撞 NO_ZERO_DATE
 		})
 		return err
 	}
@@ -238,13 +233,13 @@ func TestIntegrationCreateMultipleUsersWithoutPubToken(t *testing.T) {
 	tok := "dup-token-shared"
 	if _, err := svc.CreateUser(&userDTO.CreateUserDTO{
 		Name: "带 token", Username: "acct-it-tok-1", Role: "admin", Status: "active",
-		LastLoginTime: time.Now(), PubToken: tok,
+		PubToken: tok,
 	}); err != nil {
 		t.Fatalf("带 token 的用户应能建出来: %v", err)
 	}
 	if _, err := svc.CreateUser(&userDTO.CreateUserDTO{
 		Name: "带同样的 token", Username: "acct-it-tok-2", Role: "admin", Status: "active",
-		LastLoginTime: time.Now(), PubToken: tok,
+		PubToken: tok,
 	}); err == nil {
 		t.Error("重复的 pub_token 必须被唯一索引挡住，否则这次修复等于把约束删了")
 	}
@@ -261,5 +256,49 @@ func TestIntegrationCreateMultipleUsersWithoutPubToken(t *testing.T) {
 	}
 	if rows.Total < 3 {
 		t.Errorf("列表应至少列出成功建出的 3 个用户，实际 total=%d", rows.Total)
+	}
+}
+
+// 不传 LastLoginTime 时必须存 NULL，而不是 '0000-00-00'。
+//
+// 前端新建用户表单**根本不发**这个字段（UserPayload 里都没有），所以走界面
+// 建的每个用户都会命中这条路径。原来 CreateUser 写的是零值 time.Time，
+// 落库成 '0000-00-00 00:00:00'：
+//   - 生产库 sql_mode 不含 NO_ZERO_DATE，能存进去，但那是个脏日期
+//   - MySQL 8 默认（含本 CI 容器）严格，直接 Error 1292 Incorrect datetime value
+//
+// repository.go 统计查询里那句 last_login_time > '1970-01-02' 就是当初为了
+// 绕开这个脏值加的。
+func TestIntegrationCreateUserWithoutLoginTimeStoresNull(t *testing.T) {
+	svc, gdb := accountIntegrationService(t)
+
+	created, err := svc.CreateUser(&userDTO.CreateUserDTO{
+		Name: "没登录过的用户", Username: "acct-it-nologin", Role: "admin", Status: "active",
+	})
+	if err != nil {
+		t.Fatalf("不传 LastLoginTime 应能建出用户（严格 sql_mode 下原实现会 Error 1292）: %v", err)
+	}
+
+	var isNull bool
+	if err := gdb.Raw("SELECT last_login_time IS NULL FROM user WHERE id = ?", created.Id).Scan(&isNull).Error; err != nil {
+		t.Fatalf("查库: %v", err)
+	}
+	if !isNull {
+		var raw string
+		gdb.Raw("SELECT CAST(last_login_time AS CHAR) FROM user WHERE id = ?", created.Id).Scan(&raw)
+		t.Errorf("没登录过应存 NULL，实际存了 %q", raw)
+	}
+	// 出参里也不该冒出假日期
+	if created.LastLoginTime != nil {
+		t.Errorf("没登录过时出参应为 null，实际 %v", *created.LastLoginTime)
+	}
+
+	// 列表要能扫过 NULL：UserListRow.LastLoginTime 也已改成指针
+	rows, err := svc.ListUsers(userDTO.UserQueryDTO{PageIndex: 1, PageSize: 50})
+	if err != nil {
+		t.Fatalf("列表在有 NULL 登录时间时炸了: %v", err)
+	}
+	if rows == nil || rows.Total < 1 {
+		t.Error("列表应能列出刚建的用户")
 	}
 }

@@ -165,9 +165,13 @@ func (s *UserService) CreateUser(req *userDTO.CreateUserDTO) (*userDTO.UserDTO, 
 	if err != nil && err != gorm.ErrRecordNotFound {
 		return nil, err
 	}
-	lastLoginTime := req.LastLoginTime
-	if lastLoginTime.IsZero() {
-		lastLoginTime = time.Time{}
+	// 零值 → NULL。原来这段把零值又赋回零值，等于什么都没做，最终往
+	// last_login_time 写 '0000-00-00'：生产 sql_mode 宽松能存，严格库直接
+	// Error 1292。而"从没登录过"本来就该是 NULL。
+	var lastLoginTime *time.Time
+	if !req.LastLoginTime.IsZero() {
+		t := req.LastLoginTime
+		lastLoginTime = &t
 	}
 	created, err := s.userRepository.Create(&userRepository.User{
 		Name:          name,
@@ -256,7 +260,7 @@ func (s *UserService) UpdateUser(id uint, req *userDTO.UpdateUserDTO) (*userDTO.
 		entity.Status = status
 	}
 	if req.LastLoginTime != nil {
-		entity.LastLoginTime = *req.LastLoginTime
+		entity.LastLoginTime = req.LastLoginTime
 	}
 	if req.SecretKey != nil {
 		entity.SecretKey = strings.TrimSpace(*req.SecretKey)

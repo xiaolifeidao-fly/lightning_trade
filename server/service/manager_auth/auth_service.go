@@ -34,12 +34,12 @@ var (
 )
 
 type LoginUser struct {
-	ID        uint64   `json:"id"`
-	Name      string   `json:"name"`
-	Username  string   `json:"username"`
-	Role      string   `json:"role"`
-	Status    string   `json:"status"`
-	RoleIDs   []uint64 `json:"roleIds,omitempty"`
+	ID       uint64   `json:"id"`
+	Name     string   `json:"name"`
+	Username string   `json:"username"`
+	Role     string   `json:"role"`
+	Status   string   `json:"status"`
+	RoleIDs  []uint64 `json:"roleIds,omitempty"`
 }
 
 type AuthService struct {
@@ -94,7 +94,8 @@ func (s *AuthService) Login(username, password, ip string, maxLoginErrorNum int6
 		return "", nil, ErrInvalidCredential
 	}
 
-	user.LastLoginTime = time.Now()
+	now := time.Now()
+	user.LastLoginTime = &now
 	if _, err := s.userRepository.SaveOrUpdate(user); err != nil {
 		return "", nil, err
 	}

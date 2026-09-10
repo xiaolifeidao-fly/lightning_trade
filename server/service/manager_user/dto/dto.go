@@ -13,21 +13,23 @@ import (
 // 设置口令走 CreateUserDTO / UpdateUserDTO 的入参，与出参分离。
 type UserDTO struct {
 	baseDTO.BaseDTO
-	Name          string    `json:"name"`
-	Username      string    `json:"username"`
-	Email         string    `json:"email"`
-	Phone         string    `json:"phone"`
-	Department    string    `json:"department"`
-	Role          string    `json:"role"`
-	Status        string    `json:"status"`
-	LastLoginTime time.Time `json:"lastLoginTime"`
-	SecretKey     string    `json:"secretKey"`
-	Remark        string    `json:"remark"`
-	PubToken      string    `json:"pubToken"`
-	BanCount      uint32    `json:"banCount"`
-	AccountID     int       `json:"accountId"`
-	AccountStatus string    `json:"accountStatus"`
-	BalanceAmount string    `json:"balanceAmount"`
+	Name       string `json:"name"`
+	Username   string `json:"username"`
+	Email      string `json:"email"`
+	Phone      string `json:"phone"`
+	Department string `json:"department"`
+	Role       string `json:"role"`
+	Status     string `json:"status"`
+	// 可空：从没登录过回 null，而不是 0001-01-01 这种假日期。
+	// 入参的 CreateUserDTO 保持非指针——那里零值就表示"没提供"。
+	LastLoginTime *time.Time `json:"lastLoginTime,omitempty"`
+	SecretKey     string     `json:"secretKey"`
+	Remark        string     `json:"remark"`
+	PubToken      string     `json:"pubToken"`
+	BanCount      uint32     `json:"banCount"`
+	AccountID     int        `json:"accountId"`
+	AccountStatus string     `json:"accountStatus"`
+	BalanceAmount string     `json:"balanceAmount"`
 }
 
 type CreateUserDTO struct {

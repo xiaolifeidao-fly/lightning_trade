@@ -18,10 +18,17 @@ type User struct {
 	// origin_password（明文口令）字段已从实体移除：登录只校验 Password 摘要，
 	// 明文历来只用于列表页展示，属纯风险项。列还留在库里但代码不再读写，
 	// 存量明文需要另跑一条 UPDATE 清空。
-	Status        string    `gorm:"column:status;type:varchar(50)" orm:"column(status);size(50);null" description:"状态"`
-	LastLoginTime time.Time `gorm:"column:last_login_time;type:datetime" orm:"column(last_login_time);null" description:"最后登录时间"`
-	SecretKey     string    `gorm:"column:secret_key;type:varchar(50);index:idx_secret_key" orm:"column(secret_key);size(50);null" description:"密钥"`
-	Remark        string    `gorm:"column:remark;type:varchar(50)" orm:"column(remark);size(50);null" description:"备注"`
+	Status string `gorm:"column:status;type:varchar(50)" orm:"column(status);size(50);null" description:"状态"`
+	// 指针类型：从没登录过就该是 NULL，不是 '0000-00-00'。
+	// 非指针 time.Time 的零值会被写成 '0000-00-00 00:00:00'——生产库的 sql_mode
+	// 不含 NO_ZERO_DATE 所以能存进去，而 MySQL 8 默认（含 CI 容器）直接
+	// Error 1292 Incorrect datetime value。前端新建用户表单根本不发这个字段
+	// （UserPayload 里都没有），所以走界面建的每个用户都在写这个脏日期。
+	// repository.go 的统计查询里那句 "last_login_time > '1970-01-02'"
+	// 就是当初为了绕开它加的。
+	LastLoginTime *time.Time `gorm:"column:last_login_time;type:datetime" orm:"column(last_login_time);null" description:"最后登录时间"`
+	SecretKey     string     `gorm:"column:secret_key;type:varchar(50);index:idx_secret_key" orm:"column(secret_key);size(50);null" description:"密钥"`
+	Remark        string     `gorm:"column:remark;type:varchar(50)" orm:"column(remark);size(50);null" description:"备注"`
 	// 指针类型是必须的，不是风格问题：pub_token 上有唯一索引，而 MySQL 的唯一
 	// 索引**不约束 NULL**、却把空串当成一个值。用非指针 string 时未设置就写 ''，
 	// 于是第二个不带 token 的用户必然撞
@@ -57,18 +64,18 @@ func (u *UserRole) TableName() string {
 
 type UserListRow struct {
 	db.BaseEntity
-	Name          string    `gorm:"column:name"`
-	Username      string    `gorm:"column:username"`
-	Email         string    `gorm:"column:email"`
-	Phone         string    `gorm:"column:phone"`
-	Department    string    `gorm:"column:department"`
-	Role          string    `gorm:"column:role"`
-	Status        string    `gorm:"column:status"`
-	LastLoginTime time.Time `gorm:"column:last_login_time"`
-	SecretKey     string    `gorm:"column:secret_key"`
-	Remark        string    `gorm:"column:remark"`
-	PubToken      string    `gorm:"column:pub_token"`
-	BanCount      uint32    `gorm:"column:ban_count"`
+	Name          string     `gorm:"column:name"`
+	Username      string     `gorm:"column:username"`
+	Email         string     `gorm:"column:email"`
+	Phone         string     `gorm:"column:phone"`
+	Department    string     `gorm:"column:department"`
+	Role          string     `gorm:"column:role"`
+	Status        string     `gorm:"column:status"`
+	LastLoginTime *time.Time `gorm:"column:last_login_time"`
+	SecretKey     string     `gorm:"column:secret_key"`
+	Remark        string     `gorm:"column:remark"`
+	PubToken      string     `gorm:"column:pub_token"`
+	BanCount      uint32     `gorm:"column:ban_count"`
 }
 
 // Account 用户资金账户。用户列表里的「资金账户 / 钱包总额」以及用户管理页的
