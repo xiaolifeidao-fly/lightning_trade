@@ -8,7 +8,8 @@ import {
   type InstanceSummaryResult,
   type InstanceAccount,
 } from "../../argus-dashboard/api/argus-dashboard.api";
-import { fetchEpisodeStats, type EpisodeStats } from "../../argus-signals/api/argus-signals.api";
+import { fetchEpisodeStats, fetchSignals, type EpisodeStats } from "../../argus-signals/api/argus-signals.api";
+import { fetchPublishedArgusConfig } from "../../argus-config/api/argus-config.api";
 
 /** 30 秒轮询：这一页是落地页，会被长时间挂在屏幕上。 */
 const REFRESH_INTERVAL = 30_000;
@@ -21,13 +22,24 @@ export interface AccountRow extends InstanceAccount {
   instanceName: string;
 }
 
+/** 一个实例算名义敞口需要的三样东西。任一缺失就不参与合计。 */
+export interface NotionalPart {
+  instanceKey: string;
+  netSize: number;
+  contractFace: number;
+  lastPx: number;
+  /** 取到这个价的时刻。价来自最近一次触发事件，不是实时行情，必须标出来。 */
+  pxTs: string;
+}
+
 export interface ManagerDashboardData {
   overview: ArgusInstanceOverview | null;
   summary: InstanceSummaryResult | null;
   episodes: EpisodeStats | null;
+  notional: NotionalPart[];
 }
 
-const empty: ManagerDashboardData = { overview: null, summary: null, episodes: null };
+const empty: ManagerDashboardData = { overview: null, summary: null, episodes: null, notional: [] };
 
 /** 把本地时间格式化成后端要的 'YYYY-MM-DD HH:mm:ss'（事件接口全程按串走，不带时区）。 */
 function wallClock(d: Date): string {
@@ -75,10 +87,42 @@ export function useManagerDashboard() {
       return null;
     };
 
+    const summary = pick(summaryRes, "事件汇总");
+
+    // 名义敞口 = 张数 × 合约面值 × 最近价。
+    //
+    // 库里**没有实时价**：trade_kline 的回填是手动的（实测落后 17 小时），
+    // balance_sample 每 30 秒写但不带价。最新的价只能取自最近一次触发事件
+    // （strategy_event.last_px），今天 162 次触发≈每 9 分钟一次，对市值估算
+    // 够用——但必须把取价时刻一并显示，不能假装它是实时价。
+    const notional: NotionalPart[] = [];
+    for (const inst of summary?.instances ?? []) {
+      if (inst.netSizeTotal === null || inst.netSizeTotal === undefined) continue;
+      const [cfgRes, sigRes] = await Promise.allSettled([
+        fetchPublishedArgusConfig(inst.instanceKey),
+        fetchSignals({ pageIndex: 1, pageSize: 1, instanceKey: inst.instanceKey, order: "ts_desc" }),
+      ]);
+      if (cfgRes.status !== "fulfilled" || sigRes.status !== "fulfilled") continue;
+      const face = cfgRes.value?.config?.contractFace ?? 0;
+      const row = sigRes.value?.data?.[0];
+      const px = row?.lastPx ?? row?.sigLast ?? 0;
+      // 面值或价拿不到就整条跳过：宁可这一格显示"—"，也不要凑一个偏小的合计。
+      if (!face || !px || !row?.ts) continue;
+      notional.push({
+        instanceKey: inst.instanceKey,
+        netSize: inst.netSizeTotal,
+        contractFace: face,
+        lastPx: px,
+        pxTs: row.ts,
+      });
+    }
+    if (generation !== generationRef.current) return;
+
     setData({
       overview: pick(overviewRes, "实例总览"),
-      summary: pick(summaryRes, "事件汇总"),
+      summary,
       episodes: pick(episodeRes, "持仓统计"),
+      notional,
     });
     setError(failed.length ? `部分数据读取失败：${failed.join("；")}。缺失项以「—」显示，不按 0 处理。` : "");
     setLoading(false);

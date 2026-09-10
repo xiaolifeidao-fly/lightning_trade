@@ -120,6 +120,20 @@ export default function ManagerDashboardPage() {
   const online = runtimes.filter((r) => r.online).length;
   const registered = runtimes.length;
 
+  // 名义敞口：逐实例 张数 × 合约面值 × 最近价 再求和。
+  // 只要有一个实例算不出（拿不到面值或价），整格显示"—"——凑一个偏小的
+  // 合计比不显示更糟，它看起来像个真数。
+  const notionalParts = dash.notional;
+  const allInstancesPriced =
+    (dash.summary?.instances.length ?? 0) > 0 && notionalParts.length === (dash.summary?.instances.length ?? 0);
+  const notionalTotal = allInstancesPriced
+    ? notionalParts.reduce((sum, p) => sum + p.netSize * p.contractFace * p.lastPx, 0)
+    : null;
+  // 取价时刻取最旧的那个，别用最新的粉饰。
+  const oldestPxTs = notionalParts.length
+    ? notionalParts.map((p) => p.pxTs).sort()[0]
+    : null;
+
   const rebuild = dash.episodes?.rebuild;
   const winRate = dash.episodes?.winRate ?? null;
 
@@ -207,6 +221,24 @@ export default function ManagerDashboardPage() {
           value={fmtNum(netSizeTotal)}
           unit=" 张"
           hint="各账户最新余额样本之和"
+          icon={<FundOutlined />}
+        />
+        <Metric
+          label="名义敞口"
+          value={notionalTotal === null ? EMPTY : fmtNum(notionalTotal, 2)}
+          unit=" USDT"
+          hint={
+            notionalTotal === null ? (
+              "缺合约面值或最近价，不按 0 计"
+            ) : (
+              <Tooltip title="库里没有实时行情：trade_kline 的回填是手动的，balance_sample 每 30 秒写但不带价。这里用的是最近一次触发事件的成交价。">
+                <span>
+                  张数 × 合约面值 × 最近价（
+                  {oldestPxTs ? oldestPxTs.slice(5, 16) : EMPTY} 的价）
+                </span>
+              </Tooltip>
+            )
+          }
           icon={<FundOutlined />}
         />
         <Metric
