@@ -40,6 +40,11 @@ func (h *UserHandler) RegisterHandler(engine *gin.RouterGroup) {
 	engine.PUT("/user-login-records/:id", h.updateUserLoginRecord)
 	engine.DELETE("/user-login-records/:id", h.deleteUserLoginRecord)
 
+	// 资金账户：用户管理页的充值与冻结/解冻打的就是这两条。
+	// 之前只有 resource_new 里的权限行，路由从来没实现过，按钮点下去是 404。
+	engine.POST("/accounts", h.createAccount)
+	engine.PUT("/accounts/:id", h.updateAccount)
+
 	engine.GET("/user-roles", h.listUserRoles)
 	engine.GET("/user-roles/:id", h.getUserRoleByID)
 	engine.POST("/user-roles", h.createUserRole)
@@ -134,6 +139,34 @@ func (h *UserHandler) getUserLoginRecordByID(context *gin.Context) {
 	result, err := h.userService.GetUserLoginRecordByID(id)
 	if err == gorm.ErrRecordNotFound {
 		commonRouter.ToError(context, "user login record not found")
+		return
+	}
+	commonRouter.ToJson(context, result, err)
+}
+
+func (h *UserHandler) createAccount(context *gin.Context) {
+	var req userDTO.CreateAccountDTO
+	if err := context.ShouldBindJSON(&req); err != nil {
+		commonRouter.ToError(context, "参数错误")
+		return
+	}
+	result, err := h.userService.CreateAccount(&req)
+	commonRouter.ToJson(context, result, err)
+}
+
+func (h *UserHandler) updateAccount(context *gin.Context) {
+	id, ok := parseUserID(context)
+	if !ok {
+		return
+	}
+	var req userDTO.UpdateAccountDTO
+	if err := context.ShouldBindJSON(&req); err != nil {
+		commonRouter.ToError(context, "参数错误")
+		return
+	}
+	result, err := h.userService.UpdateAccount(int(id), &req)
+	if err == gorm.ErrRecordNotFound {
+		commonRouter.ToError(context, "account not found")
 		return
 	}
 	commonRouter.ToJson(context, result, err)

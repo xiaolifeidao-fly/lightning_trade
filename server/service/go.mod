@@ -9,7 +9,9 @@ require (
 
 require (
 	github.com/go-redis/redis v6.15.9+incompatible
+	github.com/shopspring/decimal v1.4.0
 	github.com/sirupsen/logrus v1.9.3
+	gorm.io/driver/mysql v1.3.6
 	gorm.io/gorm v1.23.8
 )
 
@@ -28,7 +30,6 @@ require (
 	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.2 // indirect
 	github.com/rogpeppe/go-internal v1.8.0 // indirect
-	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/spf13/afero v1.9.2 // indirect
 	github.com/spf13/cast v1.5.0 // indirect
 	github.com/spf13/jwalterweatherman v1.1.0 // indirect
@@ -42,7 +43,6 @@ require (
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	gorm.io/driver/mysql v1.3.6 // indirect
 )
 
 replace common => ../common

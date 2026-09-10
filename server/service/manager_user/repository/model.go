@@ -2,6 +2,7 @@ package repository
 
 import (
 	"common/middleware/db"
+	"github.com/shopspring/decimal"
 	"time"
 )
 
@@ -63,6 +64,23 @@ type UserListRow struct {
 	Remark        string    `gorm:"column:remark"`
 	PubToken      string    `gorm:"column:pub_token"`
 	BanCount      uint32    `gorm:"column:ban_count"`
+}
+
+// Account 用户资金账户。用户列表里的「资金账户 / 钱包总额」以及用户管理页的
+// 充值、冻结/解冻都落在这张表上。
+//
+// 注意这张表是**手工建的**，不是 AutoMigrate 建的：它的 id 是 signed bigint，
+// 而 user / user_role 都是 bigint unsigned。因此本模型只用于读写，不要挂进
+// AutoMigrate——让 GORM 去"纠正"主键列类型没有任何收益，只有风险。
+type Account struct {
+	db.BaseEntity
+	UserID        uint64          `gorm:"column:user_id;type:bigint unsigned;index:idx_user_id" description:"所属用户"`
+	AccountStatus string          `gorm:"column:account_status;type:varchar(32)" description:"账户状态：normal / frozen"`
+	BalanceAmount decimal.Decimal `gorm:"column:balance_amount;type:decimal(38,8);not null;default:0" description:"余额，decimal 存储不用浮点"`
+}
+
+func (a *Account) TableName() string {
+	return "account"
 }
 
 type UserAccountRow struct {

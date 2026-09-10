@@ -14,6 +14,7 @@ type UserService struct {
 	userRepository            *userRepository.UserRepository
 	userLoginRecordRepository *userRepository.UserLoginRecordRepository
 	userRoleRepository        *userRepository.UserRoleRepository
+	accountRepository         *userRepository.AccountRepository
 }
 
 func NewUserService() *UserService {
@@ -21,6 +22,7 @@ func NewUserService() *UserService {
 		userRepository:            db.GetRepository[userRepository.UserRepository](),
 		userLoginRecordRepository: db.GetRepository[userRepository.UserLoginRecordRepository](),
 		userRoleRepository:        db.GetRepository[userRepository.UserRoleRepository](),
+		accountRepository:         db.GetRepository[userRepository.AccountRepository](),
 	}
 }
 

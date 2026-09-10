@@ -13,6 +13,41 @@ type UserRepository struct {
 	db.Repository[*User]
 }
 
+// AccountRepository 资金账户仓储。
+//
+// 刻意**不提供 EnsureTable**：account 表是手工建的，id 是 signed bigint 而不是
+// 与其它表一致的 unsigned，挂进 AutoMigrate 只会让 GORM 尝试 ALTER 主键列——
+// 没有收益，只有风险。表结构变更走 DDL 脚本。
+type AccountRepository struct {
+	db.Repository[*Account]
+}
+
+// FindActiveByID 按主键取一条生效账户。
+func (r *AccountRepository) FindActiveByID(id int) (*Account, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	var entity Account
+	if err := r.QueryOneBySQL(&entity, "SELECT * FROM account WHERE id = ? AND active = 1 LIMIT 1", id); err != nil {
+		return nil, err
+	}
+	return &entity, nil
+}
+
+// FindActiveByUserID 一个用户最多一个生效账户；前端的充值/冻结都按这个前提写的
+// （record.accountId 为空才走新建）。这里按 id 升序取第一条，避免历史脏数据下
+// 每次拿到不同的一条。
+func (r *AccountRepository) FindActiveByUserID(userID uint64) (*Account, error) {
+	if r.Db == nil {
+		return nil, fmt.Errorf("database is not initialized")
+	}
+	var entity Account
+	if err := r.QueryOneBySQL(&entity, "SELECT * FROM account WHERE user_id = ? AND active = 1 ORDER BY id ASC LIMIT 1", userID); err != nil {
+		return nil, err
+	}
+	return &entity, nil
+}
+
 func (r *UserRepository) EnsureTable() error {
 	if r.Db == nil {
 		return fmt.Errorf("database is not initialized")
