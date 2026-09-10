@@ -62,6 +62,23 @@ function matchArgusRoute(pathname: string) {
   return argusRoutes.find((route) => pathname.startsWith(route.path)) ?? null;
 }
 
+/**
+ * 顶栏实例选择器出现的路由。除 Argus 七页之外，数据总览也吃同一份作用域——
+ * 它每一个数字都来自 argus_instance / strategy_event / balance_sample，
+ * 多实例上线后「权益合计」若不能落到单个部署单元，出了问题没法追到是谁。
+ *
+ * 它不并进 argusRoutes：那张表还兼着菜单分组与页面标题，把数据总览塞进去，
+ * 侧边栏会在打开工作台时展开 Argus 分组。
+ */
+const scopeRoutes: { path: string; allowAll: boolean }[] = [
+  { path: "/manager-dashboard", allowAll: true },
+  ...argusRoutes.map(({ path, allowAll }) => ({ path, allowAll })),
+];
+
+function matchScopeRoute(pathname: string) {
+  return scopeRoutes.find((route) => pathname.startsWith(route.path)) ?? null;
+}
+
 function getOpenKeys(pathname: string) {
   if (pathname.startsWith("/user") || pathname.startsWith("/permission")) {
     return ["/system-group"];
@@ -253,8 +270,9 @@ export function ManagerShell({ children }: ManagerShellProps) {
   const pageTitle =
     Object.entries(pageTitleMap).find(([path]) => activePath.startsWith(path))?.[1] ??
     "管理工作台";
-  // 实例选择器只在 Argus 页面出现：别的模块没有实例维度，常驻一个空选择器只会误导。
-  const argusRoute = matchArgusRoute(activePath);
+  // 实例选择器只在有实例维度的页面出现（Argus 七页 + 数据总览）：
+  // 用户、权限、币种这些模块没有实例维度，常驻一个空选择器只会误导。
+  const scopeRoute = matchScopeRoute(activePath);
 
   return (
     <div className="manager-app-frame">
@@ -372,7 +390,7 @@ export function ManagerShell({ children }: ManagerShellProps) {
                 </div>
 
                 <Space size={12} wrap>
-                  {argusRoute ? <ArgusInstanceSelector allowAll={argusRoute.allowAll} /> : null}
+                  {scopeRoute ? <ArgusInstanceSelector allowAll={scopeRoute.allowAll} /> : null}
                   <Badge dot offset={[-2, 2]}>
                     <div
                       className="manager-icon-button"

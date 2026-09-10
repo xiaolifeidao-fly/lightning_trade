@@ -4,6 +4,7 @@ import {
   AlertOutlined,
   ApiOutlined,
   CloudServerOutlined,
+  ClusterOutlined,
   FundOutlined,
   LineChartOutlined,
   ReloadOutlined,
@@ -15,6 +16,7 @@ import { Alert, Button, Empty, Skeleton, Table, Tag, Tooltip, Typography } from 
 import type { ColumnsType } from "antd/es/table";
 import type { ReactNode } from "react";
 
+import { ALL_INSTANCES } from "@/components/argus/instanceScope";
 import { flattenAccounts, sumOf, useManagerDashboard, type AccountRow } from "./hooks/useManagerDashboard";
 
 const { Text, Title } = Typography;
@@ -106,6 +108,12 @@ export default function ManagerDashboardPage() {
   const runtimes = dash.overview?.instances ?? [];
   const accounts = flattenAccounts(dash.summary);
 
+  // 作用域来自顶栏选择器（与 Argus 各页共用）。锁到某个实例时页面上每个数字
+  // 都只算这一个实例——这件事必须写在页面上，不能只体现在顶栏那个下拉框里：
+  // 「权益合计」少了一截却看不出原因，比显示「—」更危险。
+  const scoped = dash.scope !== ALL_INSTANCES;
+  const scopeName = runtimes[0]?.instanceName || instances[0]?.instanceName || dash.scope;
+
   // 可加的才加：权益/净持仓/信号/成交是可加的。
   const equityTotal = sumOf(instances, (i) => i.equityTotal);
   const netSizeTotal = sumOf(instances, (i) => i.netSizeTotal);
@@ -141,28 +149,56 @@ export default function ManagerDashboardPage() {
     <div className="manager-page-stack manager-dashboard">
       <section className="manager-dashboard-hero">
         <div>
-          <Text className="manager-section-label">实盘总览 · 近 {dash.windowHours}H</Text>
+          <Text className="manager-section-label">
+            实盘总览 · 近 {dash.windowHours}H ·{" "}
+            <ClusterOutlined /> {scoped ? `仅 ${scopeName}` : `全部实例（${registered} 个）`}
+          </Text>
           <Title level={1} className="manager-dashboard-hero__title">
             {dash.loading && !dash.summary ? (
               <Skeleton active paragraph={false} title={{ width: 420 }} />
             ) : (
               <>
-                权益合计 {fmtNum(equityTotal, 2)} USDT，近 {dash.windowHours} 小时已实现{" "}
-                {fmtSigned(realizedPnl)} USDT，{online} / {registered} 个实例在跑。
+                {scoped ? "本实例权益" : "权益合计"} {fmtNum(equityTotal, 2)} USDT，近{" "}
+                {dash.windowHours} 小时已实现 {fmtSigned(realizedPnl)} USDT，
+                {scoped
+                  ? `${scopeName} ${online ? "心跳正常" : "心跳超时"}。`
+                  : `${online} / ${registered} 个实例在跑。`}
               </>
             )}
           </Title>
           <Text className="manager-dashboard-hero__subtitle">
             全部数字来自 argus_instance 心跳、strategy_event 事件表与 balance_sample
             采样，跨实例只做并排与可加汇总。取不到的指标一律显示「—」，不用 0 顶。
+            {scoped
+              ? "（当前已按顶栏选择锁定到单个实例，下面每个数字都只算它一个。）"
+              : ""}
           </Text>
         </div>
         <div className="manager-dashboard-hero__actions">
+          {scoped ? (
+            <Button icon={<ClusterOutlined />} onClick={() => dash.setScope(ALL_INSTANCES)}>
+              看全部实例
+            </Button>
+          ) : null}
           <Button icon={<ReloadOutlined />} loading={dash.loading} onClick={() => void dash.refresh()}>
             刷新
           </Button>
         </div>
       </section>
+
+      {dash.scopeMissing ? (
+        <Alert
+          type="warning"
+          showIcon
+          message={`顶栏锁定的实例「${dash.scope}」在近 ${dash.windowHours} 小时里既没有事件，也不在注册表里`}
+          description="所以下面整屏都是「—」。多半是浏览器里存着一个已经下线的实例键——切回「全部实例」即可。"
+          action={
+            <Button size="small" onClick={() => dash.setScope(ALL_INSTANCES)}>
+              看全部实例
+            </Button>
+          }
+        />
+      ) : null}
 
       {dash.error ? <Alert type="warning" showIcon message="部分数据读取失败" description={dash.error} /> : null}
 

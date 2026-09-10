@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { fetchArgusInstanceOverview, type ArgusInstanceOverview } from "@/components/argus/argus-instance.api";
+import { ALL_INSTANCES, useArgusInstanceScope } from "@/components/argus/instanceScope";
 import {
   fetchInstanceSummary,
   type InstanceSummaryResult,
@@ -37,9 +38,20 @@ export interface ManagerDashboardData {
   summary: InstanceSummaryResult | null;
   episodes: EpisodeStats | null;
   notional: NotionalPart[];
+  /**
+   * 作用域锁定了某个实例，但两个接口都没有它。多半是 localStorage 里留着已下线
+   * 实例的键。这时页面会整屏「—」，必须说清是"选错了实例"而不是"没数据"。
+   */
+  scopeMissing: boolean;
 }
 
-const empty: ManagerDashboardData = { overview: null, summary: null, episodes: null, notional: [] };
+const empty: ManagerDashboardData = {
+  overview: null,
+  summary: null,
+  episodes: null,
+  notional: [],
+  scopeMissing: false,
+};
 
 /** 把本地时间格式化成后端要的 'YYYY-MM-DD HH:mm:ss'（事件接口全程按串走，不带时区）。 */
 function wallClock(d: Date): string {
@@ -57,8 +69,14 @@ function wallClock(d: Date): string {
  *     胜率直接用 episode-stats 的跨实例口径（它自己会说明哪些不计入）。
  *  2. **拿不到就显示"—"**，不要用 0 顶。0 是一个有含义的值（真的没成交），
  *     和"这个数取不到"必须区分开，否则页面会重新变成假数据。
+ *  3. **作用域要露在页面上**。本页与 Argus 各页共用顶栏那一个实例选择器，
+ *     锁到单实例后这里所有"合计"都只剩它一个。工作台是落地页，会被挂在屏幕上
+ *     长时间不动，只靠顶栏下拉框体现范围，权益少一截也看不出原因。
  */
 export function useManagerDashboard() {
+  // 与 Argus 五页共用同一个全局作用域（顶栏选择器写、这里读），切了实例
+  // 工作台跟着变，回到 Argus 页面也还是同一个实例，不会两边对着不同口径。
+  const [scope, setScope] = useArgusInstanceScope();
   const [data, setData] = useState<ManagerDashboardData>(empty);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -71,12 +89,15 @@ export function useManagerDashboard() {
     const end = new Date();
     const start = new Date(end.getTime() - WINDOW_HOURS * 3600_000);
     const range = { start: wallClock(start), end: wallClock(end) };
+    const scoped = scope !== ALL_INSTANCES;
 
     // onlyEnabled=false：要能算出「在跑 / 已登记」，停用的实例也得进分母。
     const [overviewRes, summaryRes, episodeRes] = await Promise.allSettled([
       fetchArgusInstanceOverview(false),
       fetchInstanceSummary(range),
-      fetchEpisodeStats(range),
+      // 胜率必须由服务端按实例算：前端拿不到 attributable 分母，把各实例胜率
+      // 再平均一次是错的。episode-stats 支持 instanceKey，直接下推。
+      fetchEpisodeStats(scoped ? { ...range, instanceKey: scope } : range),
     ]);
     if (generation !== generationRef.current) return;
 
@@ -87,7 +108,28 @@ export function useManagerDashboard() {
       return null;
     };
 
-    const summary = pick(summaryRes, "事件汇总");
+    const summaryAll = pick(summaryRes, "事件汇总");
+    const overviewAll = pick(overviewRes, "实例总览");
+
+    // instance-summary 与 instance-overview 都**故意**不接 instanceKey——它们的
+    // 职责就是把每个实例分开列出来（服务端一行注释写着「不做任何跨实例求和」）。
+    // 所以作用域裁剪放在这里：先按实例键过滤，页面里所有合计再对裁剪后的列表求和。
+    const summary =
+      scoped && summaryAll
+        ? { ...summaryAll, instances: summaryAll.instances.filter((i) => i.instanceKey === scope) }
+        : summaryAll;
+    const overview =
+      scoped && overviewAll
+        ? { ...overviewAll, instances: overviewAll.instances.filter((i) => i.instanceKey === scope) }
+        : overviewAll;
+
+    // 两个接口都读到了、却都没有这个实例键 —— 是选错实例，不是没数据。
+    const scopeMissing =
+      scoped &&
+      summaryAll !== null &&
+      overviewAll !== null &&
+      !summaryAll.instances.some((i) => i.instanceKey === scope) &&
+      !overviewAll.instances.some((i) => i.instanceKey === scope);
 
     // 名义敞口 = 张数 × 合约面值 × 最近价。
     //
@@ -119,14 +161,15 @@ export function useManagerDashboard() {
     if (generation !== generationRef.current) return;
 
     setData({
-      overview: pick(overviewRes, "实例总览"),
+      overview,
       summary,
       episodes: pick(episodeRes, "持仓统计"),
       notional,
+      scopeMissing,
     });
     setError(failed.length ? `部分数据读取失败：${failed.join("；")}。缺失项以「—」显示，不按 0 处理。` : "");
     setLoading(false);
-  }, []);
+  }, [scope]);
 
   useEffect(() => {
     void refresh();
@@ -137,7 +180,7 @@ export function useManagerDashboard() {
     return () => window.clearInterval(timer);
   }, [refresh]);
 
-  return { ...data, loading, error, refresh, windowHours: WINDOW_HOURS };
+  return { ...data, scope, setScope, loading, error, refresh, windowHours: WINDOW_HOURS };
 }
 
 /** sumOf 对可空字段求和：全为 null 时返回 null，而不是 0。 */
