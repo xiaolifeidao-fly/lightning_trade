@@ -181,7 +181,7 @@ func (s *UserService) CreateUser(req *userDTO.CreateUserDTO) (*userDTO.UserDTO, 
 		LastLoginTime: lastLoginTime,
 		SecretKey:     secretKey,
 		Remark:        remark,
-		PubToken:      pubToken,
+		PubToken:      nullableToken(pubToken),
 		BanCount:      req.BanCount,
 	})
 	if err != nil {
@@ -265,7 +265,7 @@ func (s *UserService) UpdateUser(id uint, req *userDTO.UpdateUserDTO) (*userDTO.
 		entity.Remark = strings.TrimSpace(*req.Remark)
 	}
 	if req.PubToken != nil {
-		entity.PubToken = strings.TrimSpace(*req.PubToken)
+		entity.PubToken = nullableToken(strings.TrimSpace(*req.PubToken))
 	}
 	if req.BanCount != nil {
 		entity.BanCount = *req.BanCount
@@ -291,4 +291,15 @@ func (s *UserService) DeleteUser(id uint) error {
 	entity.Active = 0
 	_, err = s.userRepository.SaveOrUpdate(entity)
 	return err
+}
+
+// nullableToken 把空 token 归一成 NULL。
+//
+// pub_token 上有唯一索引，MySQL 不约束 NULL 但把空串当值，所以"没有 token"
+// 必须存 NULL——存空串的话第二个没 token 的用户就插不进去了。
+func nullableToken(value string) *string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return &value
 }

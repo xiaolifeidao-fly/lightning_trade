@@ -22,8 +22,13 @@ type User struct {
 	LastLoginTime time.Time `gorm:"column:last_login_time;type:datetime" orm:"column(last_login_time);null" description:"最后登录时间"`
 	SecretKey     string    `gorm:"column:secret_key;type:varchar(50);index:idx_secret_key" orm:"column(secret_key);size(50);null" description:"密钥"`
 	Remark        string    `gorm:"column:remark;type:varchar(50)" orm:"column(remark);size(50);null" description:"备注"`
-	PubToken      string    `gorm:"column:pub_token;type:varchar(100);uniqueIndex:pub_token" orm:"column(pub_token);size(100);null" description:"公钥token"`
-	BanCount      uint32    `gorm:"column:ban_count;type:int unsigned;default:0" orm:"column(ban_count);null" description:"封禁次数"`
+	// 指针类型是必须的，不是风格问题：pub_token 上有唯一索引，而 MySQL 的唯一
+	// 索引**不约束 NULL**、却把空串当成一个值。用非指针 string 时未设置就写 ''，
+	// 于是第二个不带 token 的用户必然撞
+	// Duplicate entry '' for key 'user.pub_token' —— 生产只有 1 个用户所以一直没暴露。
+	// 改成 *string 后：没有 token 就存 NULL（可以有任意多个），真有 token 时唯一性照旧生效。
+	PubToken *string `gorm:"column:pub_token;type:varchar(100);uniqueIndex:pub_token" orm:"column(pub_token);size(100);null" description:"公钥token"`
+	BanCount uint32  `gorm:"column:ban_count;type:int unsigned;default:0" orm:"column(ban_count);null" description:"封禁次数"`
 }
 
 func (u *User) TableName() string {

@@ -117,7 +117,9 @@ func (r *UserRepository) ListUsersByQuery(query userDTO.UserQueryDTO, pageIndex,
 		u.id, u.active, u.created_time, u.updated_time, u.created_by, u.updated_by,
 		u.name, u.username, u.email, u.phone, u.department, u.role,
 		u.status, u.last_login_time, u.secret_key, u.remark,
-		u.pub_token, u.ban_count
+		-- pub_token 现在允许为 NULL（见 model.go 的说明），而 UserListRow.PubToken
+		-- 是 string，扫 NULL 会报 converting NULL to string is unsupported。
+		IFNULL(u.pub_token, '') AS pub_token, u.ban_count
 	FROM user u ` + whereSQL + ` ORDER BY u.id DESC LIMIT ? OFFSET ?`
 	values = append(values, pageSize, (pageIndex-1)*pageSize)
 	var rows []UserListRow

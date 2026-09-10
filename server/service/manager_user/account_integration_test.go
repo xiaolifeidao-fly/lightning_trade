@@ -59,6 +59,7 @@ func accountIntegrationService(t *testing.T) (*UserService, *gorm.DB) {
 	// 下一次 CreateUser 直接撞 "username already exists"。
 	gdb.Exec("DELETE FROM account")
 	gdb.Exec("DELETE FROM user WHERE username LIKE 'acct-it-%'")
+	gdb.Exec("DELETE FROM user WHERE username LIKE 'acct-it-notok-%' OR username LIKE 'acct-it-tok-%'")
 	return svc, gdb
 }
 
@@ -193,3 +194,72 @@ func TestIntegrationAccountRejectsDuplicateAndBadInput(t *testing.T) {
 }
 
 func strPtr(v string) *string { return &v }
+
+// 两个都不带 pub_token 的用户必须都能建出来。
+//
+// 这是本仓库真实存在过的缺陷：User.PubToken 原本是非指针 string，未设置就写空串，
+// 而 pub_token 上有唯一索引。MySQL 的唯一索引不约束 NULL，却把空串当成一个值，
+// 于是**第二个**不带 token 的用户必然撞
+//
+//	Duplicate entry '' for key 'user.pub_token'
+//
+// 生产库当时只有 1 个用户，所以这个"新建用户只能用一次"的问题一直没暴露。
+// 前端的新建用户表单根本没有 pub_token 输入项，后端也不自动生成，
+// 所以走界面建的每个用户都会踩。
+func TestIntegrationCreateMultipleUsersWithoutPubToken(t *testing.T) {
+	svc, gdb := accountIntegrationService(t)
+
+	mk := func(username string) error {
+		_, err := svc.CreateUser(&userDTO.CreateUserDTO{
+			Name: "无 token 用户", Username: username, Role: "admin", Status: "active",
+			LastLoginTime: time.Now(), // 见 seedUser 注释：零值会撞 NO_ZERO_DATE
+		})
+		return err
+	}
+	if err := mk("acct-it-notok-1"); err != nil {
+		t.Fatalf("第一个用户就建不出来: %v", err)
+	}
+	if err := mk("acct-it-notok-2"); err != nil {
+		t.Fatalf("第二个不带 pub_token 的用户也必须能建出来（原缺陷正是在这一步炸）: %v", err)
+	}
+
+	// 空 token 必须落成 NULL 而不是空串，否则唯一索引照样会撞。
+	var nulls int64
+	if err := gdb.Raw("SELECT COUNT(*) FROM user WHERE username LIKE 'acct-it-notok-%' AND pub_token IS NULL").Scan(&nulls).Error; err != nil {
+		t.Fatalf("查库: %v", err)
+	}
+	if nulls != 2 {
+		var empties int64
+		gdb.Raw("SELECT COUNT(*) FROM user WHERE username LIKE 'acct-it-notok-%' AND pub_token = ''").Scan(&empties)
+		t.Fatalf("空 token 应存 NULL，实际 NULL=%d 空串=%d", nulls, empties)
+	}
+
+	// 真有 token 时唯一性必须照旧生效——修复不能把约束一起弄丢了。
+	tok := "dup-token-shared"
+	if _, err := svc.CreateUser(&userDTO.CreateUserDTO{
+		Name: "带 token", Username: "acct-it-tok-1", Role: "admin", Status: "active",
+		LastLoginTime: time.Now(), PubToken: tok,
+	}); err != nil {
+		t.Fatalf("带 token 的用户应能建出来: %v", err)
+	}
+	if _, err := svc.CreateUser(&userDTO.CreateUserDTO{
+		Name: "带同样的 token", Username: "acct-it-tok-2", Role: "admin", Status: "active",
+		LastLoginTime: time.Now(), PubToken: tok,
+	}); err == nil {
+		t.Error("重复的 pub_token 必须被唯一索引挡住，否则这次修复等于把约束删了")
+	}
+
+	// 列表查询必须能扫过 NULL：UserListRow.PubToken 是 string，
+	// 直接 SELECT 会报 converting NULL to string is unsupported，所以 SQL 里用了 IFNULL。
+	rows, err := svc.ListUsers(userDTO.UserQueryDTO{PageIndex: 1, PageSize: 50})
+	if err != nil {
+		t.Fatalf("列表查询在有 NULL token 时炸了: %v", err)
+	}
+	// 3 个而不是 4 个：acct-it-tok-2 用了重复 token，本来就该被唯一索引挡住。
+	if rows == nil {
+		t.Fatal("列表返回 nil")
+	}
+	if rows.Total < 3 {
+		t.Errorf("列表应至少列出成功建出的 3 个用户，实际 total=%d", rows.Total)
+	}
+}
