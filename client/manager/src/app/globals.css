@@ -1929,6 +1929,82 @@ select {
   }
 }
 
+/* ---------------------------------------------------------------------------
+ * Alert 的深色底。
+ *
+ * antd 的 Alert 默认是浅底深字（warning 是 #fffbe6），而本控制台把正文色压成了
+ * 浅色，于是**任何没加 .manager-argus-alert 的 <Alert> 都是浅底浅字**——
+ * 「更新会话凭证」弹窗里那条整块看不清就是这么来的。
+ *
+ * 原来的办法是每个调用点自己记得加类：12 个文件记住了，剩下的没有，
+ * 下一个人写 <Alert> 照样踩。所以这里按语义色给 .ant-alert 兜底，
+ * 调用点不加类也不会白底白字；.manager-argus-alert 的黄色强调仍然优先
+ * （.manager-argus-alert.ant-alert 是两个类，权重高于单类的 .ant-alert-warning）。
+ * --------------------------------------------------------------------------- */
+.ant-alert {
+  border: 1px solid var(--manager-border);
+  background: var(--manager-surface-soft, rgba(255, 255, 255, 0.04));
+}
+
+.ant-alert .ant-alert-message {
+  color: var(--manager-text);
+  font-weight: 600;
+}
+
+.ant-alert .ant-alert-description {
+  color: var(--manager-text-soft);
+  line-height: 1.7;
+}
+
+.ant-alert-info {
+  border-color: rgba(79, 140, 255, 0.32);
+  background: rgba(79, 140, 255, 0.10);
+}
+
+.ant-alert-info .ant-alert-icon,
+.ant-alert-info .ant-alert-message {
+  color: #4f8cff;
+}
+
+.ant-alert-success {
+  border-color: rgba(14, 203, 129, 0.32);
+  background: rgba(14, 203, 129, 0.10);
+}
+
+.ant-alert-success .ant-alert-icon,
+.ant-alert-success .ant-alert-message {
+  color: var(--manager-success);
+}
+
+.ant-alert-warning {
+  border-color: rgba(240, 185, 11, 0.35);
+  background: rgba(240, 185, 11, 0.09);
+}
+
+.ant-alert-warning .ant-alert-icon,
+.ant-alert-warning .ant-alert-message {
+  color: var(--manager-primary);
+}
+
+.ant-alert-error {
+  border-color: rgba(246, 70, 93, 0.35);
+  background: rgba(246, 70, 93, 0.10);
+}
+
+.ant-alert-error .ant-alert-icon,
+.ant-alert-error .ant-alert-message {
+  color: var(--manager-danger);
+}
+
+/* 关闭按钮与 action 区在深色底上也要看得见。 */
+.ant-alert .ant-alert-close-icon .anticon-close {
+  color: var(--manager-text-faint);
+}
+
+.ant-alert .ant-alert-close-icon:hover .anticon-close {
+  color: var(--manager-text);
+}
+
 .manager-argus-alert.ant-alert {
   border-color: rgba(240, 185, 11, 0.35);
   background: rgba(240, 185, 11, 0.09);

@@ -1,17 +1,30 @@
 "use client";
 
 import {
+  ApartmentOutlined,
   AppstoreOutlined,
+  AreaChartOutlined,
+  BankOutlined,
   BarChartOutlined,
   BellOutlined,
+  ClusterOutlined,
   CompassOutlined,
   ControlOutlined,
   DashboardOutlined,
+  DiffOutlined,
   ExperimentOutlined,
+  FundOutlined,
   GlobalOutlined,
+  GoldOutlined,
+  HistoryOutlined,
+  KeyOutlined,
   LogoutOutlined,
   SafetyCertificateOutlined,
+  SlidersOutlined,
+  StockOutlined,
   TeamOutlined,
+  ThunderboltOutlined,
+  TransactionOutlined,
   WalletOutlined,
 } from "@ant-design/icons";
 import { Avatar, Badge, Button, Layout, Menu, Space, Tag, Typography } from "antd";
@@ -165,19 +178,22 @@ export function ManagerShell({ children }: ManagerShellProps) {
           },
           {
             key: "/argus-instances",
+            icon: <ClusterOutlined />,
             label: "实例与参数对比",
           },
           {
             key: "/argus-market",
+            icon: <StockOutlined />,
             label: "历史行情与触发点",
           },
           {
             key: "/argus-signals",
+            icon: <ThunderboltOutlined />,
             label: "信号复盘",
           },
           {
             key: "/argus-backtest",
-            icon: <BarChartOutlined />,
+            icon: <FundOutlined />,
             label: "盘口信号回测",
           },
           {
@@ -187,6 +203,7 @@ export function ManagerShell({ children }: ManagerShellProps) {
           },
           {
             key: "/argus-config",
+            icon: <SlidersOutlined />,
             label: "参数与运行控制",
           },
         ],
@@ -198,22 +215,27 @@ export function ManagerShell({ children }: ManagerShellProps) {
         children: [
           {
             key: "/trade-orders",
+            icon: <TransactionOutlined />,
             label: "真实交易",
           },
           {
             key: "/trade-simulation-analysis",
+            icon: <AreaChartOutlined />,
             label: "模拟盘分析",
           },
           {
             key: "/trade-strategy-backtest",
+            icon: <HistoryOutlined />,
             label: "策略回测",
           },
           {
             key: "/trade-strategy",
+            icon: <ApartmentOutlined />,
             label: "策略管理",
           },
           {
             key: "/trade-backtest-runs",
+            icon: <DiffOutlined />,
             label: "回测对比",
           },
         ],
@@ -225,10 +247,12 @@ export function ManagerShell({ children }: ManagerShellProps) {
         children: [
           {
             key: "/platform",
+            icon: <BankOutlined />,
             label: "平台管理",
           },
           {
             key: "/coin",
+            icon: <GoldOutlined />,
             label: "币种管理",
           },
         ],
@@ -245,6 +269,7 @@ export function ManagerShell({ children }: ManagerShellProps) {
           },
           {
             key: "/permission",
+            icon: <KeyOutlined />,
             label: "角色管理",
           },
         ],
