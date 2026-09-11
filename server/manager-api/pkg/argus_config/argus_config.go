@@ -39,6 +39,10 @@ func (h *ArgusConfigHandler) RegisterHandler(engine *gin.RouterGroup) {
 	engine.POST("/argus-config/drafts", h.saveDraft)
 	engine.POST("/argus-config/versions/:id/publish", h.publish)
 	engine.POST("/argus-config/versions/:id/rollback", h.rollback)
+
+	// 会话凭证轮换。**写入式**：服务端从不回显明文，所以没有对应的 GET。
+	// 与 argus-session-rotate CLI 共用服务层同一条路径。
+	engine.POST("/argus-config/sessions/rotate", h.rotateSession)
 }
 
 func (h *ArgusConfigHandler) listVersions(c *gin.Context) {
@@ -122,6 +126,20 @@ func (h *ArgusConfigHandler) rollback(c *gin.Context) {
 
 // instanceKey 从 query 或请求头读取实例键；为空时交给 Service 解析默认实例，
 // 请求体里的 instanceKey 由 Service 兜底回落。
+// rotateSession 更新单个账户的 cookie / token。
+//
+// 管理端唯一能改凭证的入口。参数编辑那套走的是配置版本（草稿→发布），凭证不能
+// 混进去：它不是参数，重发一版只为换 cookie 会让版本历史失去意义。
+func (h *ArgusConfigHandler) rotateSession(c *gin.Context) {
+	var request argusDTO.RotateSessionRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		commonRouter.ToError(c, "参数错误")
+		return
+	}
+	result, err := h.service.RotateAccountSession(c.Request.Context(), instanceKey(c), &request, actor(c))
+	commonRouter.ToJson(c, result, err)
+}
+
 func instanceKey(c *gin.Context) string {
 	if value := c.Query("instanceKey"); value != "" {
 		return value

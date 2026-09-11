@@ -248,3 +248,40 @@ export function fetchArgusRuntimeStatus(instanceKey: string): Promise<ArgusRunti
 export function reloadArgus(instanceKey: string): Promise<ArgusControlResult> {
   return post<ArgusControlResult>("/argus/runtime/reload", undefined, { instanceKey });
 }
+
+/** 会话轮换结果。只有长度与时间，服务端从不回显明文。 */
+export class ArgusSessionRotateResult {
+  declare accountId: number;
+  declare accountName: string;
+  /** rotate=已更新 / unchanged=与库里一致，未写入 */
+  declare action: string;
+  declare cookieLength: number;
+  declare tokenLength: number;
+  declare sessionUpdatedAt: string;
+  /** false 表示 Redis 通知没发出去，实例会在 60 秒内自行热加载，不是失败。 */
+  declare notified: boolean;
+}
+
+export interface ArgusSessionRotatePayload {
+  accountId: number;
+  cookie: string;
+  token: string;
+  otoken?: string;
+  sentryRelease?: string;
+  sentryPublicKey?: string;
+  baggage?: string;
+}
+
+/**
+ * 更新单个账户的 cookie / token。
+ *
+ * 写入式接口：没有对应的读接口，页面上也永远不显示现有明文。服务端复用
+ * argus-session-rotate 那条路径，守卫完全一致（两项必须同时给、值没变不写、
+ * 账户必须属于本实例的已发布版本）。
+ */
+export function rotateArgusSession(
+  instanceKey: string,
+  payload: ArgusSessionRotatePayload,
+): Promise<ArgusSessionRotateResult> {
+  return post<ArgusSessionRotateResult>("/argus-config/sessions/rotate", payload, { instanceKey });
+}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"common/middleware/db"
+	argusDTO "service/argus_config/dto"
 	"service/argus_config/repository"
 
 	"gorm.io/driver/mysql"
@@ -227,5 +228,106 @@ func TestIntegrationSessionRotateMissingPublishedConfig(t *testing.T) {
 	}
 	if !contains(err.Error(), "argus-config-import") {
 		t.Errorf("错误信息应指出该去导配置，实际：%v", err)
+	}
+}
+
+// 管理端入口的越界守卫：账户行 id 是全局自增的，管理端传来的 id 必须校验它
+// **属于本实例的已发布版本**。不校验的话，一个改错的请求就能把 A 实例的凭证
+// 写到 B 实例的账户上——两个实例拿同一套 web 凭证下单，是这条链路上后果最严重
+// 的错误，而且事后极难从现象反推。
+func TestIntegrationRotateAccountSessionRejectsForeignAccount(t *testing.T) {
+	database := rotateIntegrationDB(t)
+	accountA, _ := seedRotateFixture(t, database)
+	t.Cleanup(func() { cleanupRotateFixture(t, database) })
+
+	service := NewArgusConfigService()
+	ctx := context.Background()
+
+	// 另造一个实例，它的已发布版本里没有 accountA。
+	other := repository.ArgusConfigVersion{
+		InstanceKey: itRotateInstance + "-other", Version: 1, SnapshotChecksum: "it-other",
+	}
+	other.MarkPublished(time.Date(2026, 9, 11, 10, 0, 0, 0, time.UTC))
+	other.Active = 1
+	if err := database.Create(&other).Error; err != nil {
+		t.Fatalf("造第二个实例失败: %v", err)
+	}
+	otherAccount := repository.ArgusAccount{
+		ConfigVersionID: uint64(other.Id), AccountName: "it-别的实例的账户", UID: "999",
+		LoginType: "config", Enabled: 1,
+	}
+	otherAccount.Active = 1
+	if err := database.Create(&otherAccount).Error; err != nil {
+		t.Fatalf("造第二个实例的账户失败: %v", err)
+	}
+	t.Cleanup(func() {
+		database.Where("id = ?", otherAccount.Id).Delete(&repository.ArgusAccount{})
+		database.Where("id = ?", other.Id).Delete(&repository.ArgusConfigVersion{})
+	})
+
+	_, err := service.RotateAccountSession(ctx, itRotateInstance+"-other", &argusDTO.RotateSessionRequest{
+		AccountID: accountA, // 属于第一个实例，不属于 -other
+		Cookie:    "hijack-cookie", Token: "hijack-token",
+	}, "it-actor")
+	if err == nil {
+		t.Fatal("拿别的实例的账户 id 提交，必须被拒绝")
+	}
+	if !contains(err.Error(), "不属于实例") {
+		t.Errorf("报错要说清是越界，实际：%v", err)
+	}
+
+	// 而且不能留下任何写入痕迹。
+	var row repository.ArgusRuntimeSession
+	if err := database.Where("account_id = ? AND active = 1", accountA).First(&row).Error; err != nil {
+		t.Fatalf("读回账户 A 的会话失败: %v", err)
+	}
+	if row.Cookie == "hijack-cookie" {
+		t.Error("被拒绝的请求居然写进去了")
+	}
+}
+
+// 管理端入口的正常路径：写入、清 last_error、再提交同样的值判 unchanged 不重写。
+func TestIntegrationRotateAccountSessionWritesAndIsIdempotent(t *testing.T) {
+	database := rotateIntegrationDB(t)
+	accountA, _ := seedRotateFixture(t, database)
+	t.Cleanup(func() { cleanupRotateFixture(t, database) })
+
+	service := NewArgusConfigService()
+	ctx := context.Background()
+	request := &argusDTO.RotateSessionRequest{
+		AccountID: accountA, Cookie: "ui-cookie", Token: "ui-token", OToken: "ui-otoken",
+	}
+
+	first, err := service.RotateAccountSession(ctx, itRotateInstance, request, "it-ui-actor")
+	if err != nil {
+		t.Fatalf("更新失败: %v", err)
+	}
+	if first.Action != RotateActionRotate {
+		t.Fatalf("首次提交应写入，实际 %s", first.Action)
+	}
+	if first.CookieLength != len("ui-cookie") || first.TokenLength != len("ui-token") {
+		t.Errorf("返回的长度不对：cookie=%d token=%d", first.CookieLength, first.TokenLength)
+	}
+
+	var row repository.ArgusRuntimeSession
+	if err := database.Where("account_id = ? AND active = 1", accountA).First(&row).Error; err != nil {
+		t.Fatalf("读回失败: %v", err)
+	}
+	if row.Cookie != "ui-cookie" || row.Token != "ui-token" || row.OToken != "ui-otoken" {
+		t.Errorf("库里的凭证不对：%q / %q / %q", row.Cookie, row.Token, row.OToken)
+	}
+	if row.LastError != "" {
+		t.Errorf("last_error 应被清空，实际 %q", row.LastError)
+	}
+	if row.UpdatedBy != "it-ui-actor" {
+		t.Errorf("updated_by 应记下操作者，实际 %q", row.UpdatedBy)
+	}
+
+	second, err := service.RotateAccountSession(ctx, itRotateInstance, request, "it-ui-actor")
+	if err != nil {
+		t.Fatalf("第二次提交失败: %v", err)
+	}
+	if second.Action != RotateActionUnchanged {
+		t.Errorf("同样的值再提交应判 unchanged 不重写，实际 %s", second.Action)
 	}
 }

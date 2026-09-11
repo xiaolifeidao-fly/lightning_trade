@@ -321,7 +321,12 @@ export default function ArgusConfigPage() {
                 children: (
                   <div className="manager-argus-view manager-argus-view--split">
                     <CoveragePanel />
-                    <SessionAudit sessions={snapshot?.sessions ?? []} accounts={snapshot?.accounts ?? []} />
+                    <SessionAudit
+                      sessions={snapshot?.sessions ?? []}
+                      accounts={snapshot?.accounts ?? []}
+                      instanceKey={instanceKey}
+                      onRotated={() => void refresh().catch(() => undefined)}
+                    />
                   </div>
                 ),
               },

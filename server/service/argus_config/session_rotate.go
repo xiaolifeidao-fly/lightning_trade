@@ -9,8 +9,10 @@ import (
 	"time"
 
 	commonRedis "common/middleware/redis"
+	argusDTO "service/argus_config/dto"
 	"service/argus_config/repository"
 
+	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
 
@@ -305,4 +307,104 @@ func (s *ArgusConfigService) NotifyReload(ctx context.Context, instanceKey strin
 		return err
 	}
 	return commonRedis.PublishArgusControl(ctx, "reload", resolvedKey)
+}
+
+// RotateAccountSession 从管理端更新**单个账户**的会话凭证。
+//
+// 为什么不另写一套：它走的就是 CLI 那条路径（planSessionRotate → ApplySessionRotate），
+// 于是两个入口共享同一批守卫——cookie 与 token 必须同时给、值没变就不写、
+// 写完统一发 reload 通知。两套实现迟早会在某个守卫上分叉，而分叉的那一侧就是
+// 把错凭证写进生产的那一侧。
+//
+// 与 CLI 的唯一区别是匹配方式：这里按 argus_account 行 id 定位，并且**校验这行
+// 属于本实例的已发布版本**。管理端传的是它自己列表里的 id，但 id 是全局自增的，
+// 不校验的话一个改错的请求就能把 A 实例的凭证写到 B 实例的账户上。
+func (s *ArgusConfigService) RotateAccountSession(ctx context.Context, instanceKey string,
+	request *argusDTO.RotateSessionRequest, actor string) (*argusDTO.RotateSessionResultDTO, error) {
+	if request == nil || request.AccountID == 0 {
+		return nil, fmt.Errorf("缺少账户 id")
+	}
+	resolvedKey, err := NormalizeInstanceKey(instanceKey)
+	if err != nil {
+		return nil, err
+	}
+	version, err := s.repository.FindPublishedContext(ctx, resolvedKey)
+	if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && version == nil) {
+		return nil, fmt.Errorf("实例 %s 没有已发布配置，无法更新会话", resolvedKey)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查该实例的已发布版本失败：%w", err)
+	}
+	resolvedKey = strings.TrimSpace(version.InstanceKey)
+
+	accounts, sessions, err := s.repository.LoadAccountsWithSessions(ctx, uint64(version.Id))
+	if err != nil {
+		return nil, fmt.Errorf("读账户与会话失败：%w", err)
+	}
+	var target *repository.ArgusAccount
+	for _, account := range accounts {
+		if uint64(account.Id) == request.AccountID {
+			target = account
+			break
+		}
+	}
+	if target == nil {
+		return nil, fmt.Errorf("账户 %d 不属于实例 %s 的已发布版本", request.AccountID, resolvedKey)
+	}
+
+	// 用账户自己的名字与 uid 组装，匹配必然命中本账户，其余账户会被标 missing
+	// 原样不动（ApplySessionRotate 只写 rotate 的那些）。
+	incoming := map[string]importSession{
+		target.AccountName: {
+			AccountName:     target.AccountName,
+			UID:             target.UID,
+			Cookie:          request.Cookie,
+			Token:           request.Token,
+			OToken:          request.OToken,
+			SentryRelease:   request.SentryRelease,
+			SentryPublicKey: request.SentryPublicKey,
+			Baggage:         request.Baggage,
+		},
+	}
+	plan, err := planSessionRotate(accounts, sessions, incoming)
+	if err != nil {
+		return nil, err
+	}
+	plan.InstanceKey = resolvedKey
+	plan.Version = version.Version
+
+	var item *SessionRotateItem
+	for index := range plan.Items {
+		if plan.Items[index].AccountID == request.AccountID {
+			item = &plan.Items[index]
+			break
+		}
+	}
+	if item == nil {
+		return nil, fmt.Errorf("账户 %d 没有出现在轮换计划里", request.AccountID)
+	}
+
+	result := &argusDTO.RotateSessionResultDTO{
+		AccountID:        item.AccountID,
+		AccountName:      item.AccountName,
+		Action:           item.Action,
+		CookieLength:     item.CookieLen,
+		TokenLength:      item.TokenLen,
+		SessionUpdatedAt: item.NextSessionUpdatedAt.Local().Format("2006-01-02 15:04:05"),
+	}
+	// 与库里完全一致：不写、也不发 reload。重写一遍会白白触发一次热加载，
+	// 而热加载会停掉正在扛仓的交易管理器。
+	if item.Action != RotateActionRotate {
+		return result, nil
+	}
+	if _, err := s.ApplySessionRotate(ctx, &plan, actor); err != nil {
+		return nil, err
+	}
+	// 通知失败不算失败：指纹已经变了，实例最迟一个比对周期（60 秒）会自己热加载。
+	if err := s.NotifyReload(ctx, resolvedKey); err != nil {
+		logrus.Warnf("会话已更新但 reload 通知发送失败，实例将在下一个比对周期自行生效: %v", err)
+		return result, nil
+	}
+	result.Notified = true
+	return result, nil
 }

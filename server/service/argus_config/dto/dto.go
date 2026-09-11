@@ -258,3 +258,34 @@ type InstanceOverviewDTO struct {
 	OfflineInstanceKeys []string `json:"offlineInstanceKeys"`
 	Notice              string   `json:"notice"`
 }
+
+// RotateSessionRequest 管理端提交的一份新会话凭证。
+//
+// **只进不出**：服务端从来不把 cookie/token 回显给前端（sessionDTO 一律走
+// maskSecret，只回长度），所以这个入口是写入式的——表单里永远是空的，
+// 填什么就换成什么，不存在"在现有值上编辑"。
+type RotateSessionRequest struct {
+	// AccountID 是 argus_account 的行 id，不是账户名：名字会改、行 id 不会，
+	// 而且服务端会校验它属于本实例的已发布版本，避免写到别的实例头上。
+	AccountID       uint64 `json:"accountId"`
+	Cookie          string `json:"cookie"`
+	Token           string `json:"token"`
+	OToken          string `json:"otoken"`
+	SentryRelease   string `json:"sentryRelease"`
+	SentryPublicKey string `json:"sentryPublicKey"`
+	Baggage         string `json:"baggage"`
+}
+
+// RotateSessionResultDTO 轮换结果。只有长度与时间，不含任何明文。
+type RotateSessionResultDTO struct {
+	AccountID   uint64 `json:"accountId"`
+	AccountName string `json:"accountName"`
+	// Action: rotate=已更新 / unchanged=与库里一致未写入
+	Action           string `json:"action"`
+	CookieLength     int    `json:"cookieLength"`
+	TokenLength      int    `json:"tokenLength"`
+	SessionUpdatedAt string `json:"sessionUpdatedAt"`
+	// Notified 为 false 表示 Redis 通知没发出去，实例会在下一个比对周期
+	// （最多 60 秒）自行热加载；不是失败。
+	Notified bool `json:"notified"`
+}
