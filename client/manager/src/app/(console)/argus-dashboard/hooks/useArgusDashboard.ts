@@ -24,6 +24,15 @@ interface DashboardData {
 
 const emptyData: DashboardData = { overview: null, options: null, summary: null, equity: null, gateStats: null, signals: [], snapshot: null, timeline: null };
 
+/**
+ * 这份数据属于哪个（实例, 窗口）。
+ *
+ * 单次刷新失败时要沿用上一轮的值（见 refresh 里的 keep），但**只能在口径没变时沿用**：
+ * 换了实例还接着显示上一个实例的曲线，等于把 A 的持仓安在 B 头上，比空着危险得多。
+ */
+type DataScope = string;
+const scopeOf = (scope: string, rangeKey: string): DataScope => `${scope}|${rangeKey}`;
+
 /** 总览页数据编排：所有读取都经已有 API 模块，页面本身不直接发 HTTP。 */
 export function useArgusDashboard() {
   const [scope, setScope] = useArgusInstanceScope();
@@ -32,6 +41,8 @@ export function useArgusDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const generationRef = useRef(0);
+  // 上一轮数据对应的口径。换实例或换窗口时它对不上，沿用逻辑自动失效。
+  const dataScopeRef = useRef<DataScope>("");
 
   const refresh = useCallback(async () => {
     const generation = ++generationRef.current;
@@ -61,7 +72,14 @@ export function useArgusDashboard() {
         (reason: unknown) => ({ value: null, error: errorMessage(reason) }),
       );
       if (generation !== generationRef.current) return;
-      setData({ ...emptyData, overview, options, summary: summaryResult.value });
+      const sameScope = dataScopeRef.current === scopeOf(scope, rangeKey);
+      setData((previous) => ({
+        ...emptyData,
+        overview: overview ?? (sameScope ? previous.overview : null),
+        options,
+        summary: summaryResult.value ?? (sameScope ? previous.summary : null),
+      }));
+      dataScopeRef.current = scopeOf(scope, rangeKey);
       setError([...bootstrapErrors, summaryResult.error].filter(Boolean).join("；"));
       setLoading(false);
       return;
@@ -80,16 +98,24 @@ export function useArgusDashboard() {
     const rejected = [summaryResult, equityResult, gateResult, signalsResult, snapshotResult, timelineResult]
       .filter((result): result is PromiseRejectedResult => result.status === "rejected")
       .map((result) => errorMessage(result.reason));
-    setData({
-      overview,
-      options,
-      summary: valueOf(summaryResult),
-      equity: valueOf(equityResult),
-      gateStats: valueOf(gateResult),
-      signals: valueOf(signalsResult)?.data ?? [],
-      snapshot: valueOf(snapshotResult),
-      timeline: valueOf(timelineResult),
-    });
+    // 本轮某一项失败时沿用上一轮的值，不要清成 null。
+    //
+    // 这页是挂在屏幕上长时间不动的监控页，10 秒一轮；一次网络抖动就把已经拿到的
+    // 数据抹掉，页面会整块塌掉再长回来（权益曲线那块还会因此**卸载重建**）。
+    // 失败本身由上方的告警条如实说明，数据保持上一轮的，比闪成空白有用。
+    const sameScope = dataScopeRef.current === scopeOf(scope, rangeKey);
+    const keep = <T,>(next: T | null, previous: T): T | null => (next ?? (sameScope ? previous : null));
+    setData((previous) => ({
+      overview: keep(overview, previous.overview),
+      options: keep(options, previous.options),
+      summary: keep(valueOf(summaryResult), previous.summary),
+      equity: keep(valueOf(equityResult), previous.equity),
+      gateStats: keep(valueOf(gateResult), previous.gateStats),
+      signals: valueOf(signalsResult)?.data ?? (sameScope ? previous.signals : []),
+      snapshot: keep(valueOf(snapshotResult), previous.snapshot),
+      timeline: keep(valueOf(timelineResult), previous.timeline),
+    }));
+    dataScopeRef.current = scopeOf(scope, rangeKey);
     setError([...bootstrapErrors, ...rejected].join("；"));
     setLoading(false);
   }, [rangeKey, scope]);

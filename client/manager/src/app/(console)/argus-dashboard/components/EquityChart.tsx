@@ -6,6 +6,7 @@ import { LightweightChart } from "@/components/charts/LightweightChart";
 import { chartPalette, wallClockToChartTime } from "@/components/charts/chartTheme";
 import type { EquitySeries } from "../api/argus-dashboard.api";
 import { EQUITY_SERIES_COLORS } from "../constants";
+import { removeChartSeries } from "@/components/charts/chartLifecycle";
 
 interface EquityChartProps {
   series: EquitySeries[];
@@ -58,7 +59,7 @@ function EquitySeriesLayer({ chart, series }: EquityChartProps & { chart: IChart
 
     if (created.length > 0) chart.timeScale().fitContent();
     return () => {
-      created.forEach((line) => chart.removeSeries(line));
+      removeChartSeries(chart, ...created);
     };
   }, [chart, series]);
 

@@ -2,6 +2,7 @@
 
 import { createChart, type ChartOptions, type DeepPartial, type IChartApi } from "lightweight-charts";
 import { useEffect, useRef, useState, type RefObject } from "react";
+import { markChartDisposed } from "./chartLifecycle";
 import { baseChartOptions } from "./chartTheme";
 
 /**
@@ -48,6 +49,9 @@ export function useLightweightChart(
     return () => {
       observer.disconnect();
       setChart(null);
+      // 先打标记再销毁：卸载时本 cleanup 早于子组件的 cleanup，子组件那边靠这个
+      // 标记跳过 removeSeries；否则它会对着已销毁的图表删序列，抛异常整页崩。
+      markChartDisposed(instance);
       instance.remove();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

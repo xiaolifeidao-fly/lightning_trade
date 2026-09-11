@@ -7,6 +7,7 @@ import { LineSeries, type IChartApi, type LineData, type UTCTimestamp } from "li
 import { useEffect, useMemo } from "react";
 import type { BacktestRunDetail } from "../api/argus-backtest.api";
 import { seriesColor } from "../constants";
+import { removeChartSeries } from "@/components/charts/chartLifecycle";
 
 interface EquityCurveProps {
   details: Record<number, BacktestRunDetail>;
@@ -98,7 +99,7 @@ function EquitySeriesLayer({ chart, series }: { chart: IChartApi; series: Equity
       return line;
     });
     chart.timeScale().fitContent();
-    return () => created.forEach((line) => chart.removeSeries(line));
+    return () => removeChartSeries(chart, ...created);
   }, [chart, series]);
 
   return null;

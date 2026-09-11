@@ -13,6 +13,7 @@ import { LightweightChart } from "@/components/charts/LightweightChart";
 import { chartPalette, wallClockToChartTime } from "@/components/charts/chartTheme";
 import type { MarketKline, SignalEvent, SignalSlice } from "../api/argus-market.api";
 import { PLATFORM_LABELS, TRIGGER_KIND_MAP } from "../constants";
+import { removeChartSeries } from "@/components/charts/chartLifecycle";
 
 const { Text } = Typography;
 
@@ -328,9 +329,7 @@ function SliceSeries({ chart, slice, dashed }: { chart: IChartApi; slice: Signal
 
     return () => {
       plugin.detach();
-      chart.removeSeries(dcLast);
-      chart.removeSeries(dcMark);
-      chart.removeSeries(reference);
+      removeChartSeries(chart, dcLast, dcMark, reference);
     };
   }, [chart, slice, dashed]);
 

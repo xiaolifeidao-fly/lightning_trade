@@ -5,6 +5,7 @@ import { chartPalette, wallClockToChartTime } from "@/components/charts/chartThe
 import { Empty } from "antd";
 import { LineSeries, LineStyle, type IChartApi, type LineData, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useMemo } from "react";
+import { removeChartSeries } from "@/components/charts/chartLifecycle";
 
 export interface TrackPoint {
   ts: string;
@@ -114,7 +115,7 @@ function TrackSeries({ chart, data, color, discrete, zeroLine, unit }: TrackSeri
     }
     chart.timeScale().fitContent();
     return () => {
-      chart.removeSeries(series);
+      removeChartSeries(chart, series);
     };
   }, [chart, data, color, discrete, zeroLine, unit]);
 

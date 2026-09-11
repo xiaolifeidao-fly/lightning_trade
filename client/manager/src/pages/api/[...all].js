@@ -23,18 +23,21 @@ export default async function handler(req, res) {
         "^/api": prefix, // 将请求中的 /api 前缀替换为空字符串
       },
       headers: req.headers,
-      onProxyReq: (proxyReq, req, res) => {
-        // Add debug logs
-        // console.log('Proxy Request Headers:', proxyReq.getHeaders());
-      },
-      onProxyRes: (proxyRes, req, res) => {
-        // Add debug logs
-        // console.log('Proxy Response Headers:', proxyRes.headers);
-      },
-      onError: (err, req, res) => {
-        // Handle errors
-        console.error('Proxy error:', err);
-        res.status(500).send('Proxy error');
+      // http-proxy-middleware v3 **删掉了**顶层的 onError / onProxyReq / onProxyRes，
+      // 改成 on: { error, proxyReq, proxyRes }。之前那份写法在 v3 下是一个被忽略的
+      // 无效选项——结果是代理出错时日志里一行都没有，浏览器只拿到
+      // net::ERR_EMPTY_RESPONSE，事后完全没法定位。这里按 v3 的写法重新挂上，
+      // 至少把「哪个 URL、什么错误码」落到 pm2 日志里。
+      on: {
+        error: (err, req, res) => {
+          console.error(
+            `[proxy] ${new Date().toISOString()} ${req?.method} ${req?.url} -> ${err?.code || err?.message}`,
+          );
+          if (res && typeof res.writeHead === 'function' && !res.headersSent) {
+            res.writeHead(502, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: `proxy error: ${err?.code || 'unknown'}` }));
+          }
+        },
       },
     });
     return proxy(req, res);

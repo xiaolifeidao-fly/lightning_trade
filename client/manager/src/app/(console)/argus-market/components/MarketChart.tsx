@@ -20,6 +20,7 @@ import { LightweightChart } from "@/components/charts/LightweightChart";
 import { alignToBar, chartPalette, intervalSeconds, wallClockToChartTime } from "@/components/charts/chartTheme";
 import type { MarketKline, SignalEvent, TimelineBucket } from "../api/argus-market.api";
 import { MAX_MARKERS_PER_BAR, PLATFORM_LABELS, TRIGGER_KIND_MAP, type MarketInterval } from "../constants";
+import { removeChartSeries } from "@/components/charts/chartLifecycle";
 
 /** 一次触发在图上的标记 id；点选时由 hoveredObjectId 原样回传。 */
 const markerId = (eventId: number) => `sig-${eventId}`;
@@ -227,10 +228,7 @@ function MarketSeries({
     return () => {
       markersRef.current = null;
       candleRef.current = null;
-      chart.removeSeries(candle);
-      if (compare) chart.removeSeries(compare);
-      chart.removeSeries(deviation);
-      chart.removeSeries(position);
+      removeChartSeries(chart, candle, compare, deviation, position);
     };
     // 依赖里只有窗口数据，没有 visibleTriggers：勾掉一类触发点只该换标记，
     // 不该重建序列——重建会把用户的缩放与十字光标位置一起刷掉。
