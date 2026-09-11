@@ -33,7 +33,20 @@ export default function ArgusDashboardPage() {
         </div>
         <div className="manager-argus-hero__aside">
           <span className="manager-argus-beacon"><ClusterOutlined style={{ color: "var(--manager-primary)" }} />{dashboard.scope === ALL_INSTANCES ? "全部实例巡检" : `已锁定 ${dashboard.scope}`}</span>
-          <Button size="small" icon={<ReloadOutlined />} loading={dashboard.loading} onClick={() => void dashboard.refresh()}>刷新状态</Button>
+          {/* 后台轮询不再闪骨架了，那就得有个地方说清数据取自什么时候，
+              否则一页静止不动的数字看不出是新的还是卡住了。 */}
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {dashboard.updatedAt ? `${clockOf(dashboard.updatedAt)} 更新 · 每 60 秒自动刷新` : "读取中…"}
+          </Text>
+          <Button
+            size="small"
+            icon={<ReloadOutlined />}
+            loading={dashboard.loading || dashboard.refreshing}
+            // 手动刷新也走静默：按钮自己会转，没必要把已经在看的内容打回骨架。
+            onClick={() => void dashboard.refresh({ silent: true })}
+          >
+            刷新状态
+          </Button>
         </div>
       </section>
 
@@ -68,4 +81,11 @@ export default function ArgusDashboardPage() {
       )}
     </div>
   );
+}
+
+/** 只取时分秒：这页要回答的是"这批数字有多新"，日期在实际窗口那一行已经有了。 */
+function clockOf(timestamp: number): string {
+  const date = new Date(timestamp);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }

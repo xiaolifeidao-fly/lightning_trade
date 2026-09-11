@@ -38,15 +38,32 @@ export function useArgusDashboard() {
   const [scope, setScope] = useArgusInstanceScope();
   const [rangeKey, setRangeKey] = useState<RangeKey>("d1");
   const [data, setData] = useState<DashboardData>(emptyData);
+  // loading 只管**首屏与换口径**：显示骨架、把表格打回加载态。
+  // refreshing 管后台轮询与手动刷新：只让刷新按钮转一下，页面内容不动。
+  //
+  // 这两件事原来共用一个 loading，于是每 10 秒整页闪一次骨架——这页是挂在屏幕上
+  // 长时间不动的巡检页，闪烁比"数据晚一分钟"难受得多，而且接口本身要 1~3 秒，
+  // 一轮里有相当一段时间页面都是加载态。
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [error, setError] = useState("");
   const generationRef = useRef(0);
   // 上一轮数据对应的口径。换实例或换窗口时它对不上，沿用逻辑自动失效。
   const dataScopeRef = useRef<DataScope>("");
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (run?: { silent?: boolean }) => {
     const generation = ++generationRef.current;
-    setLoading(true);
+    // 只有"这一轮要的口径和屏幕上已有的数据是同一个"时，才算后台刷新。
+    // 换了实例或窗口，屏幕上的数据就是别人的了，必须走加载态而不是静默替换。
+    const background = run?.silent === true && dataScopeRef.current === scopeOf(scope, rangeKey);
+    if (background) setRefreshing(true);
+    else setLoading(true);
+    const finish = () => {
+      setLoading(false);
+      setRefreshing(false);
+      setUpdatedAt(Date.now());
+    };
     setError("");
 
     const [overviewResult, optionsResult] = await Promise.allSettled([fetchArgusInstanceOverview(), fetchSignalFilterOptions()]);
@@ -60,7 +77,7 @@ export function useArgusDashboard() {
     if (!options) {
       setData({ ...emptyData, overview });
       setError(bootstrapErrors.join("；") || "无法读取 Argus 数据范围");
-      setLoading(false);
+      finish();
       return;
     }
 
@@ -81,7 +98,7 @@ export function useArgusDashboard() {
       }));
       dataScopeRef.current = scopeOf(scope, rangeKey);
       setError([...bootstrapErrors, summaryResult.error].filter(Boolean).join("；"));
-      setLoading(false);
+      finish();
       return;
     }
 
@@ -117,17 +134,17 @@ export function useArgusDashboard() {
     }));
     dataScopeRef.current = scopeOf(scope, rangeKey);
     setError([...bootstrapErrors, ...rejected].join("；"));
-    setLoading(false);
+    finish();
   }, [rangeKey, scope]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => { void refresh(); }, OVERVIEW_REFRESH_INTERVAL);
+    const timer = window.setInterval(() => { void refresh({ silent: true }); }, OVERVIEW_REFRESH_INTERVAL);
     return () => window.clearInterval(timer);
   }, [refresh]);
 
-  return { scope, setScope, rangeKey, setRangeKey, loading, error, refresh, ...data };
+  return { scope, setScope, rangeKey, setRangeKey, loading, refreshing, updatedAt, error, refresh, ...data };
 }
 
 function valueOf<T>(result: PromiseSettledResult<T>): T | null {

@@ -38,8 +38,17 @@ export const EQUITY_BUCKET_SECONDS = 600;
 /** 最近信号流只取一屏，看全量去信号复盘页。 */
 export const RECENT_SIGNAL_LIMIT = 12;
 
-/** 实例状态与心跳的轮询间隔。心跳 5s 上报 / 15s TTL，10s 够用又不至于把库打满。 */
-export const OVERVIEW_REFRESH_INTERVAL = 10000;
+/**
+ * 实例状态与心跳的轮询间隔。
+ *
+ * 原来是 10 秒，理由写的是「心跳 5s 上报 / 15s TTL」——那个口径早就不在了：
+ * 线上 argus.heartbeat.interval_seconds=30 / ttl_seconds=90。也就是说 10 秒一轮
+ * 会把同一个心跳值重复取三遍，而每一轮是 8 个请求（其中行情时间线是最重的那个）。
+ *
+ * 60 秒的取舍：心跳 30 秒写一次、TTL 90 秒，所以掉线最迟 90+60 秒会显示出来，
+ * 对巡检页足够；信号本身今天也才 ~9 分钟一次。要更快就点「刷新状态」。
+ */
+export const OVERVIEW_REFRESH_INTERVAL = 60_000;
 
 function wallClockToDate(wallClock: string): Date | null {
   const matched = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(wallClock.trim());
