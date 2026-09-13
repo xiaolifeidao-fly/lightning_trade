@@ -46,8 +46,8 @@ for entry in "./server.js" "./.next/BUILD_ID"; do
   tar tzf "$TARBALL" | grep -qx "$entry" || die "包里缺 $entry —— 这不像 Next standalone 产物"
 done
 
-SSH=(sshpass -p "$REMOTE_PASS" ssh -o StrictHostKeyChecking=no -p "$REMOTE_PORT" "root@$REMOTE_HOST")
-SCP=(sshpass -p "$REMOTE_PASS" scp -o StrictHostKeyChecking=no -P "$REMOTE_PORT")
+SSH=(sshpass -p "$REMOTE_PASS" ssh -o StrictHostKeyChecking=no -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -p "$REMOTE_PORT" "root@$REMOTE_HOST")
+SCP=(sshpass -p "$REMOTE_PASS" scp -o StrictHostKeyChecking=no -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -P "$REMOTE_PORT")
 
 BASENAME="$(basename "$TARBALL")"
 echo "▶ 上传 $BASENAME"
