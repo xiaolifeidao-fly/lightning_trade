@@ -1,0 +1,20 @@
+# 管理端前端的发布构建。
+#
+# 必须在 linux/amd64 上构建：macOS arm64 装出来的是 @next/swc-darwin-arm64 与
+# @img/sharp-darwin-arm64，搬到服务器（amd64）后加载直接失败。
+#
+# 这份文件此前一直躺在会话临时目录里，靠每次重新写出来——2026-09-13 它消失了一次，
+# 于是 `cp` 失败、`docker build` 以 rc=1 结束，而外层脚本的退出码仍是 0，
+# 结果拿着**上一次的镜像**导出产物，改动没进构建却毫无察觉。构建配方必须入库。
+FROM --platform=linux/amd64 node:22-bookworm-slim AS build
+WORKDIR /app
+
+RUN corepack enable && corepack prepare pnpm@9.3.0 --activate
+
+# 依赖层单独 COPY：只有 lockfile 变了才重装，日常改业务代码不必重跑 install。
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+COPY . .
+ENV APP_ENV=prod
+RUN pnpm build
