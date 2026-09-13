@@ -1936,16 +1936,17 @@ select {
  * 浅色，于是**任何没加 .manager-argus-alert 的 <Alert> 都是浅底浅字**——
  * 「更新会话凭证」弹窗里那条整块看不清就是这么来的。
  *
- * 原来的办法是每个调用点自己记得加类：12 个文件记住了，剩下的没有，
- * 下一个人写 <Alert> 照样踩。所以这里按语义色给 .ant-alert 兜底，
- * 调用点不加类也不会白底白字；.manager-argus-alert 的黄色强调仍然优先
- * （.manager-argus-alert.ant-alert 是两个类，权重高于单类的 .ant-alert-warning）。
+ * 为什么选择器要写成 .ant-alert.ant-alert-warning 这种两段式：
+ * antd v5 的运行时样式是 `:where(.css-hash).ant-alert-warning`，`:where()` 不计
+ * 权重，所以它只有一个类的权重 (0,1,0)——和单写 .ant-alert-warning **打平**，
+ * 而它作为运行时注入的 <style> 排在本文件的 <link> 之后，平局时它赢。
+ * 实测就是这样：弹窗里 background 仍是 rgb(255,253,230)。
+ * 叠一个类提到 (0,2,0) 才稳赢（已在线上把候选规则插到 <head> 最前面验证过，
+ * 最不利位置也压得住）。这也正是 .manager-argus-alert.ant-alert 当初管用的原因。
+ *
+ * 顺序上本块在 .manager-argus-alert 之前：两者权重同为 (0,2,0)，后写的赢，
+ * 所以现有 12 处 .manager-argus-alert 的观感不变。
  * --------------------------------------------------------------------------- */
-.ant-alert {
-  border: 1px solid var(--manager-border);
-  background: var(--manager-surface-soft, rgba(255, 255, 255, 0.04));
-}
-
 .ant-alert .ant-alert-message {
   color: var(--manager-text);
   font-weight: 600;
@@ -1956,47 +1957,47 @@ select {
   line-height: 1.7;
 }
 
-.ant-alert-info {
+.ant-alert.ant-alert-info {
   border-color: rgba(79, 140, 255, 0.32);
   background: rgba(79, 140, 255, 0.10);
 }
 
-.ant-alert-info .ant-alert-icon,
-.ant-alert-info .ant-alert-message {
+.ant-alert.ant-alert-info .ant-alert-icon,
+.ant-alert.ant-alert-info .ant-alert-message {
   color: #4f8cff;
 }
 
-.ant-alert-success {
+.ant-alert.ant-alert-success {
   border-color: rgba(14, 203, 129, 0.32);
   background: rgba(14, 203, 129, 0.10);
 }
 
-.ant-alert-success .ant-alert-icon,
-.ant-alert-success .ant-alert-message {
+.ant-alert.ant-alert-success .ant-alert-icon,
+.ant-alert.ant-alert-success .ant-alert-message {
   color: var(--manager-success);
 }
 
-.ant-alert-warning {
+.ant-alert.ant-alert-warning {
   border-color: rgba(240, 185, 11, 0.35);
   background: rgba(240, 185, 11, 0.09);
 }
 
-.ant-alert-warning .ant-alert-icon,
-.ant-alert-warning .ant-alert-message {
+.ant-alert.ant-alert-warning .ant-alert-icon,
+.ant-alert.ant-alert-warning .ant-alert-message {
   color: var(--manager-primary);
 }
 
-.ant-alert-error {
+.ant-alert.ant-alert-error {
   border-color: rgba(246, 70, 93, 0.35);
   background: rgba(246, 70, 93, 0.10);
 }
 
-.ant-alert-error .ant-alert-icon,
-.ant-alert-error .ant-alert-message {
+.ant-alert.ant-alert-error .ant-alert-icon,
+.ant-alert.ant-alert-error .ant-alert-message {
   color: var(--manager-danger);
 }
 
-/* 关闭按钮与 action 区在深色底上也要看得见。 */
+/* 关闭按钮在深色底上也要看得见。 */
 .ant-alert .ant-alert-close-icon .anticon-close {
   color: var(--manager-text-faint);
 }
