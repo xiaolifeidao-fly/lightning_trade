@@ -3,6 +3,8 @@ package trade
 import (
 	"fmt"
 
+	"common/middleware/vipper"
+
 	"github.com/sirupsen/logrus"
 )
 
@@ -140,6 +142,14 @@ func logStaticRiskParams(acc AccountConfig, v RiskParamsView) {
 		acc.Name, v.RiskEquity, v.BudgetPct, v.StopPct, v.Ceiling, v.OrderSize, v.GateMin,
 		v.SmallAct, v.SmallGb, v.MedAct, v.MedGb, v.LargeAct, v.LargeGb, v.TierSmall, v.TierLarge,
 		acc.TradeLogic, acc.Variant, acc.StopLossMode)
+	// 趋势条件止损单独一行，与趋势闸的「启用:」行对齐：每次热加载打一次，
+	// 是"它到底武装了没有"的唯一现场证据。持仓轮询里刻意不打（5 秒一轮会刷爆），
+	// 所以这一行缺了就等于这个机制在线上不可观测。
+	if v.TrendStopTriggerPct > 0 && v.TrendStopPct > 0 {
+		logrus.Infof("[趋势条件止损] 账户 %s 启用: 逆向%.0fh动量 ≥%.1f%% 时兜底线 %.0f%% → %.0f%%",
+			acc.Name, vipper.GetFloat64("trade.trend_gate.window_hours"),
+			v.TrendStopTriggerPct, v.StopPct, v.TrendStopPct)
+	}
 }
 
 // validateTrendStop 趋势条件止损的启动校验。
