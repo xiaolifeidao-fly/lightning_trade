@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -110,4 +111,44 @@ func (pm *PriceMonitor) observeTrendLocked(now time.Time, symbol string, last fl
 	}
 	tr.Observe(now, last)
 	return tr.Momentum(now)
+}
+
+// TrendMomentumForInst 按持仓的 instId（"BTC-USDT-SWAP"）读当前窗口动量，
+// 供趋势条件止损使用。**只读**：不建 tracker、不喂价。
+//
+// 为什么不能顺手喂价：趋势窗口由价格监控按 tick 维护（分钟去重在 tracker 内），
+// 持仓轮询是 5 秒一次的另一条链路，往里喂会让闸门与止损看到两条不同的曲线。
+//
+// 键不同名——trendTrackers 按 symbol（"BTCUSDT"）建，持仓回的是 DeepInst，
+// 所以走 symbolConfigs 反查。取不到一律 (0,false)，调用方据此不收紧。
+func (pm *PriceMonitor) TrendMomentumForInst(instId string, now time.Time) (float64, bool) {
+	if pm == nil {
+		return 0, false
+	}
+	instId = strings.TrimSpace(instId)
+	if instId == "" {
+		return 0, false
+	}
+	pm.signalMu.Lock()
+	defer pm.signalMu.Unlock()
+	for symbol, cfg := range pm.symbolConfigs {
+		if !strings.EqualFold(cfg.DeepInst, instId) && !strings.EqualFold(cfg.TradeInst, instId) {
+			continue
+		}
+		tr := pm.trendTrackers[symbol]
+		if tr == nil {
+			return 0, false
+		}
+		return tr.Momentum(now)
+	}
+	return 0, false
+}
+
+// currentTrendMomentum 从全局价格监控读动量。热替换期间 globalMonitor 可能为
+// nil 或刚建好还没回填——两种情况都返回 (0,false)，止损沿用常规兜底线。
+func currentTrendMomentum(instId string, now time.Time) (float64, bool) {
+	monitorMu.RLock()
+	pm := globalMonitor
+	monitorMu.RUnlock()
+	return pm.TrendMomentumForInst(instId, now)
 }

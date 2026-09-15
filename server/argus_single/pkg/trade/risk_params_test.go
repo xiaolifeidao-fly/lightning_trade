@@ -85,3 +85,76 @@ func TestValidateRiskParamsPassAndFail(t *testing.T) {
 	}
 }
 
+
+// ── 趋势条件止损的启动校验 ────────────────────────────────────────────────
+// 那条「catastrophe_stop_pct 必须 ≥250（松兜底护栏）」必须同样套到**收紧后**的
+// 线上，否则配 trend_stop_pct=150 就绕过了护栏——而 150 恰好是诊断里
+// "激进版"的取值，它需要的是先改护栏语义并留下审批痕迹，不是从侧门溜进来。
+
+func validTrendStopView() RiskParamsView {
+	v := validView()
+	v.TrendStopTriggerPct = 3
+	v.TrendStopPct = 250
+	return v
+}
+
+func TestValidateRiskParamsAcceptsConservativeTrendStop(t *testing.T) {
+	if err := ValidateRiskParams(validTrendStopView()); err != nil {
+		t.Fatalf("X=3 / Y=250（稳妥版）应通过，得到 %v", err)
+	}
+}
+
+func TestValidateRiskParamsAcceptsTrendStopDisabled(t *testing.T) {
+	// 0/0 = 未启用，是缺省，必须通过。
+	v := validView()
+	v.TrendStopTriggerPct, v.TrendStopPct = 0, 0
+	if err := ValidateRiskParams(v); err != nil {
+		t.Fatalf("未启用应通过，得到 %v", err)
+	}
+}
+
+func TestValidateRiskParamsRejectsTrendStopBelowGuard(t *testing.T) {
+	v := validTrendStopView()
+	v.TrendStopPct = 150
+	err := ValidateRiskParams(v)
+	if err == nil {
+		t.Fatal("trend_stop_pct=150 低于 250 护栏，必须 fail-fast")
+	}
+	if !contains(err.Error(), "trend_stop_pct") {
+		t.Errorf("错误里应点名 trend_stop_pct，实际: %v", err)
+	}
+}
+
+func TestValidateRiskParamsRejectsTrendStopNotTightening(t *testing.T) {
+	// Y ≥ S 时运行时会拒绝收紧（静默无操作）。启动期就说清楚，别让人以为开了。
+	v := validTrendStopView()
+	v.TrendStopPct = v.StopPct
+	if err := ValidateRiskParams(v); err == nil {
+		t.Fatal("Y == S 等于没收紧，应 fail-fast 而不是静默无操作")
+	}
+	v.TrendStopPct = v.StopPct + 50
+	if err := ValidateRiskParams(v); err == nil {
+		t.Fatal("Y > S 会放宽安全网，必须拒绝")
+	}
+}
+
+func TestValidateRiskParamsRejectsHalfConfiguredTrendStop(t *testing.T) {
+	// 只配一半 = 有人以为开了但没开。这种沉默失败最贵，启动就拦。
+	v := validView()
+	v.TrendStopTriggerPct, v.TrendStopPct = 3, 0
+	if err := ValidateRiskParams(v); err == nil {
+		t.Error("只配 trigger 不配 stop_pct 应拒绝")
+	}
+	v.TrendStopTriggerPct, v.TrendStopPct = 0, 250
+	if err := ValidateRiskParams(v); err == nil {
+		t.Error("只配 stop_pct 不配 trigger 应拒绝")
+	}
+}
+
+func TestValidateRiskParamsRejectsNegativeTrendStopTrigger(t *testing.T) {
+	v := validTrendStopView()
+	v.TrendStopTriggerPct = -1
+	if err := ValidateRiskParams(v); err == nil {
+		t.Fatal("trigger 为负应拒绝（负值会让闸门恒成立）")
+	}
+}

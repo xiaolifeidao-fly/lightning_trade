@@ -30,15 +30,18 @@ func EvaluateTrendGate(posSide string, momPct float64, momOK bool, thresholdPct 
 	if thresholdPct <= 0 || !momOK {
 		return TrendGateDecision{}
 	}
-	if strings.EqualFold(posSide, "short") && momPct >= thresholdPct {
+	// 逆势幅度走 adverseMomentumPct（与趋势条件止损同一份判定，见 trend_stop.go）：
+	// short 怕涨、long 怕跌，两处若各写一遍符号，改一边必然漏另一边。
+	adverse, ok := adverseMomentumPct(posSide, momPct)
+	if !ok || adverse < thresholdPct {
+		return TrendGateDecision{}
+	}
+	if strings.EqualFold(posSide, "short") {
 		return TrendGateDecision{Block: true,
 			Reason: fmt.Sprintf("趋势闸: 动量%+.2f%% ≥ %.1f%%, 禁逆势开/加空", momPct, thresholdPct)}
 	}
-	if strings.EqualFold(posSide, "long") && momPct <= -thresholdPct {
-		return TrendGateDecision{Block: true,
-			Reason: fmt.Sprintf("趋势闸: 动量%+.2f%% ≤ -%.1f%%, 禁逆势开/加多", momPct, thresholdPct)}
-	}
-	return TrendGateDecision{}
+	return TrendGateDecision{Block: true,
+		Reason: fmt.Sprintf("趋势闸: 动量%+.2f%% ≤ -%.1f%%, 禁逆势开/加多", momPct, thresholdPct)}
 }
 
 // buildTrendSkipEvent 构造 trend_skip 事件（拦截即数据：被拦信号的 gap/动量

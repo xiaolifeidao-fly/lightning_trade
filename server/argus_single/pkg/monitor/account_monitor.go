@@ -208,7 +208,20 @@ func resolveTrailParamsForAccount(index int) TrailParams {
 		Medium:             Tier{ActivatePct: f("medium_activate", "position.monitor.trail.medium_activate", 90), GivebackFrac: f("medium_giveback", "position.monitor.trail.medium_giveback", 0.28)},
 		Large:              Tier{ActivatePct: f("large_activate", "position.monitor.trail.large_activate", 40), GivebackFrac: f("large_giveback", "position.monitor.trail.large_giveback", 0.20)},
 		CatastropheStopPct: f("catastrophe_stop_pct", "position.monitor.catastrophe_stop_pct", 300),
+		// 趋势条件止损：缺省 0/0 = 未启用。走与其余 trail 参数同一条解析路径，
+		// 否则热更新的覆盖层只盖住一半参数，线上会出现"改了不生效"。
+		TrendStopTriggerPct: f("trend_stop_trigger_pct", "position.monitor.trend_stop.trigger_pct", 0),
+		TrendStopPct:        f("trend_stop_pct", "position.monitor.trend_stop.stop_pct", 0),
 	}
+}
+
+// withTrendStop 把趋势条件止损叠加到 trail 参数上（纯函数）。
+// **只改兜底线一项**——顺手改了分档，收紧止损会连带改变移动止盈触发点，
+// 事后从结果上分不清是哪个改动造成的。
+func withTrendStop(tp TrailParams, posSide string, momPct float64, momOK bool) (TrailParams, bool) {
+	eff, tightened := trade.ResolveTrendStop(posSide, momPct, momOK, tp.TrendStop())
+	tp.CatastropheStopPct = eff
+	return tp, tightened
 }
 
 // Start 启动账户监控
@@ -1122,6 +1135,22 @@ func (am *AccountMonitor) handleTrailingPnl(tm *trade.TradeManager, acc trade.Ac
 	lastPx, _ := strconv.ParseFloat(strings.TrimSpace(pos.LastPx), 64)
 	tp := resolveTrailParamsForAccount(acc.Index) // 账户级移动止盈参数
 
+	// 趋势条件止损（诊断 doc/module/收益诊断-2026-09-15 §五建议①）：趋势顶着
+	// 持仓时把兜底线从 S 收到 Y，其余时间不动。放在这里而不是 BuildExitConfig
+	// 之后，是为了让下面 cap 不可用的降级分支也吃到同一条线——两处各判一次
+	// 必然漂移，而降级分支恰好是最容易被忽略的那条。
+	// 动量只读不喂（TrendMomentumForInst），取不到就沿用 S。
+	trendMom, trendOK := currentTrendMomentum(pos.InstId, time.Now())
+	trendStopParams := tp.TrendStop() // 先留一份原始入参：下面 withTrendStop 会改写 tp 的兜底线
+	tp, trendTightened := withTrendStop(tp, pos.PosSide, trendMom, trendOK)
+	// 只算说明串，**不在这里打日志**：持仓轮询 5 秒一轮，趋势持续时会刷爆日志
+	// （趋势闸的对应日志只在真正拦截那一刻打，是离散事件）。说明只出现在两个
+	// 离散/限频的地方：真正平仓的理由里，以及已有冷却的亏损告警里。
+	trendStopReason := ""
+	if trendTightened {
+		trendStopReason = trade.TrendStopReason(pos.PosSide, trendMom, trendStopParams)
+	}
+
 	guard := tm.CapGuard()
 	nmax, capOK := 0, false
 	if guard != nil {
@@ -1133,10 +1162,10 @@ func (am *AccountMonitor) handleTrailingPnl(tm *trade.TradeManager, acc trade.Ac
 	if !capOK {
 		logrus.Warnf("[持仓监控] %s cap 未初始化，降级：跳过分档移动止盈", key)
 		if pctF <= -tp.CatastropheStopPct {
-			am.closeTrailing(tm, acc, pos, pnl, pct, key, "兜底止损(降级)")
+			am.closeTrailing(tm, acc, pos, pnl, pct, key, withTrendNote("兜底止损(降级)", trendStopReason))
 			return
 		}
-		am.maybeLossAlert(acc, pos, pnl, pct, key)
+		am.maybeLossAlert(acc, pos, pnl, pct, key, trendStopReason)
 		return
 	}
 
@@ -1156,9 +1185,9 @@ func (am *AccountMonitor) handleTrailingPnl(tm *trade.TradeManager, acc trade.Ac
 	case ActionTrailingClose:
 		am.closeTrailing(tm, acc, pos, pnl, pct, key, "移动止盈")
 	case ActionCatastropheStop:
-		am.closeTrailing(tm, acc, pos, pnl, pct, key, "兜底止损")
+		am.closeTrailing(tm, acc, pos, pnl, pct, key, withTrendNote("兜底止损", trendStopReason))
 	default: // ActionHold
-		am.maybeLossAlert(acc, pos, pnl, pct, key)
+		am.maybeLossAlert(acc, pos, pnl, pct, key, trendStopReason)
 	}
 }
 
@@ -1189,7 +1218,11 @@ func (am *AccountMonitor) closeTrailing(tm *trade.TradeManager, acc trade.Accoun
 }
 
 // maybeLossAlert 普通亏损告警：ROI <= -loss_threshold 且过冷却才发（不平仓）。
-func (am *AccountMonitor) maybeLossAlert(acc trade.AccountConfig, pos utils.PositionInfo, pnl, pct decimal.Decimal, key string) {
+//
+// trendStopReason 非空 = 本轮兜底线被趋势条件止损收紧了。挂在这里而不是持仓
+// 轮询里打日志：这条路径本来就有冷却限频，而且只在持仓真的在亏时才走——
+// 正在亏损的仓最需要知道它离平仓线还有多远（400% 还是 250%）。
+func (am *AccountMonitor) maybeLossAlert(acc trade.AccountConfig, pos utils.PositionInfo, pnl, pct decimal.Decimal, key, trendStopReason string) {
 	if !pct.LessThan(am.lossThreshold().Neg()) {
 		return
 	}
@@ -1197,8 +1230,9 @@ func (am *AccountMonitor) maybeLossAlert(acc trade.AccountConfig, pos utils.Posi
 		return
 	}
 	eventlog.Log(eventlog.Event{Account: acc.Name, Variant: acc.Variant, InstId: pos.InstId, Event: eventlog.EvLossAlert,
-		Side: pos.PosSide, Size: absAtoi(pos.Pos), RoiPct: pct.InexactFloat64(), Pnl: pnl.InexactFloat64()})
-	am.sendPnlAlert(acc, pos, pnl, pct, "")
+		Side: pos.PosSide, Size: absAtoi(pos.Pos), RoiPct: pct.InexactFloat64(), Pnl: pnl.InexactFloat64(),
+		Reason: trendStopReason})
+	am.sendPnlAlert(acc, pos, pnl, pct, trendStopReason)
 }
 
 // gcTrailStates 清理某账户下已不存在（或 pos=0）的 trail 状态。

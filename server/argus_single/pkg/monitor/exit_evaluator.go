@@ -1,6 +1,10 @@
 package monitor
 
-import "math"
+import (
+	"math"
+
+	"argus_single/pkg/trade"
+)
 
 // ExitAction trailing 账户的退出决策。
 type ExitAction int
@@ -90,6 +94,29 @@ type TrailParams struct {
 	Medium             Tier
 	Large              Tier
 	CatastropheStopPct float64
+
+	// 趋势条件止损（见 pkg/trade/trend_stop.go）：逆向窗口动量 ≥ TrendStopTriggerPct
+	// 时，本轮判定的兜底线改用 TrendStopPct。两者任一 ≤0 = 未启用。
+	TrendStopTriggerPct float64
+	TrendStopPct        float64
+}
+
+// withTrendNote 把收紧说明拼进平仓理由；未收紧时原样返回（不留空括号）。
+func withTrendNote(reason, trendStopReason string) string {
+	if trendStopReason == "" {
+		return reason
+	}
+	return reason + "（" + trendStopReason + "）"
+}
+
+// TrendStop 拼出趋势条件止损的入参。基线固定跟着 CatastropheStopPct——
+// 两个值各配一处时，ResolveTrendStop 的「Y ≥ S 就不收紧」护栏才判得对。
+func (p TrailParams) TrendStop() trade.TrendStopParams {
+	return trade.TrendStopParams{
+		BaseStopPct:  p.CatastropheStopPct,
+		TriggerPct:   p.TrendStopTriggerPct,
+		TightStopPct: p.TrendStopPct,
+	}
 }
 
 // BuildExitConfig 由账户的 N_max 与全局参数算出该账户的分档退出配置：
@@ -105,4 +132,3 @@ func BuildExitConfig(nmax int, p TrailParams) ExitConfig {
 		CatastropheStopPct: p.CatastropheStopPct,
 	}
 }
-

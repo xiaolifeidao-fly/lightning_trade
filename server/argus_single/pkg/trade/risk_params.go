@@ -19,6 +19,11 @@ type RiskParamsView struct {
 	MedAct, MedGb        float64
 	LargeAct, LargeGb    float64
 	TierSmall, TierLarge float64
+	// 趋势条件止损（trend_stop.go）：X=触发阈值、Y=收紧后的兜底线。
+	// 0/0 = 未启用（缺省）。这里存的是**原始配置值**，钳制留给运行时——
+	// 与 GateMin 同一约定，否则非法值会被钳掉、校验层永远看不到（见 fix#4）。
+	TrendStopTriggerPct float64
+	TrendStopPct        float64
 }
 
 // ResolveRiskEquity 风险计算基数：argus_account_risk.risk_equity 显式配置优先，
@@ -48,15 +53,17 @@ func resolveRiskParamsView(acc AccountConfig, globalOrderSize int) RiskParamsVie
 		OrderSize:  acc.GetOrderSize(globalOrderSize),
 		// review fix#4：校验必须看原始配置值——resolveReverseGateMinProfit 会把负数
 		// 钳成 0（运行时防御），若在此复用，配置 -1 将绕过 fail-fast
-		GateMin:   f("reverse_gate_min_profit_pct", "position.risk.reverse_gate_min_profit_pct", 20),
-		SmallAct:  f("small_activate", "position.monitor.trail.small_activate", 150),
-		SmallGb:   f("small_giveback", "position.monitor.trail.small_giveback", 0.35),
-		MedAct:    f("medium_activate", "position.monitor.trail.medium_activate", 90),
-		MedGb:     f("medium_giveback", "position.monitor.trail.medium_giveback", 0.28),
-		LargeAct:  f("large_activate", "position.monitor.trail.large_activate", 40),
-		LargeGb:   f("large_giveback", "position.monitor.trail.large_giveback", 0.20),
-		TierSmall: f("tier_small_ratio", "position.monitor.trail.tier_small_ratio", 0.30),
-		TierLarge: f("tier_large_ratio", "position.monitor.trail.tier_large_ratio", 0.65),
+		GateMin:             f("reverse_gate_min_profit_pct", "position.risk.reverse_gate_min_profit_pct", 20),
+		SmallAct:            f("small_activate", "position.monitor.trail.small_activate", 150),
+		SmallGb:             f("small_giveback", "position.monitor.trail.small_giveback", 0.35),
+		MedAct:              f("medium_activate", "position.monitor.trail.medium_activate", 90),
+		MedGb:               f("medium_giveback", "position.monitor.trail.medium_giveback", 0.28),
+		LargeAct:            f("large_activate", "position.monitor.trail.large_activate", 40),
+		LargeGb:             f("large_giveback", "position.monitor.trail.large_giveback", 0.20),
+		TierSmall:           f("tier_small_ratio", "position.monitor.trail.tier_small_ratio", 0.30),
+		TierLarge:           f("tier_large_ratio", "position.monitor.trail.tier_large_ratio", 0.65),
+		TrendStopTriggerPct: f("trend_stop_trigger_pct", "position.monitor.trend_stop.trigger_pct", 0),
+		TrendStopPct:        f("trend_stop_pct", "position.monitor.trend_stop.stop_pct", 0),
 	}
 }
 
@@ -98,6 +105,9 @@ func ValidateRiskParams(v RiskParamsView) error {
 	if !(0 < v.TierSmall && v.TierSmall < v.TierLarge && v.TierLarge < 1) {
 		return fmt.Errorf("tier_small_ratio/tier_large_ratio 必须满足 0<small<large<1, got %.2f/%.2f", v.TierSmall, v.TierLarge)
 	}
+	if err := validateTrendStop(v); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -130,4 +140,39 @@ func logStaticRiskParams(acc AccountConfig, v RiskParamsView) {
 		acc.Name, v.RiskEquity, v.BudgetPct, v.StopPct, v.Ceiling, v.OrderSize, v.GateMin,
 		v.SmallAct, v.SmallGb, v.MedAct, v.MedGb, v.LargeAct, v.LargeGb, v.TierSmall, v.TierLarge,
 		acc.TradeLogic, acc.Variant, acc.StopLossMode)
+}
+
+// validateTrendStop 趋势条件止损的启动校验。
+//
+// 关键一条：上面那条「catastrophe_stop_pct ≥250（松兜底护栏：紧止损杀死均值
+// 回归 edge）」**同样套在收紧后的线上**。否则配 trend_stop_pct=150 就从侧门
+// 绕过了护栏——而 150 正是诊断里"激进版"的取值（一阶净 +153 vs 稳妥版 +98），
+// 它要的是先把护栏语义改成「无条件止损线 ≥250」并留下审批痕迹，
+// 不是绕过来。见 doc/module/收益诊断-2026-09-15 §五建议①。
+//
+// 半配（只配一条）一律拒绝：那意味着有人以为开了但实际没开，
+// 这种沉默失败比配错更贵——配错至少会在结果里露出来。
+func validateTrendStop(v RiskParamsView) error {
+	if v.TrendStopTriggerPct < 0 {
+		return fmt.Errorf("trend_stop_trigger_pct 不得为负（负值会让闸门恒成立）, got %.2f", v.TrendStopTriggerPct)
+	}
+	if v.TrendStopPct < 0 {
+		return fmt.Errorf("trend_stop_pct 不得为负, got %.2f", v.TrendStopPct)
+	}
+	on := v.TrendStopTriggerPct > 0 && v.TrendStopPct > 0
+	if !on {
+		if v.TrendStopTriggerPct > 0 || v.TrendStopPct > 0 {
+			return fmt.Errorf("趋势条件止损只配了一半（trend_stop_trigger_pct=%.2f / trend_stop_pct=%.0f）："+
+				"两者必须同时 >0 才算启用，同时为 0 才算关闭", v.TrendStopTriggerPct, v.TrendStopPct)
+		}
+		return nil
+	}
+	if v.TrendStopPct < 250 {
+		return fmt.Errorf("trend_stop_pct 必须 ≥250（松兜底护栏对收紧后的线同样成立）, got %.0f", v.TrendStopPct)
+	}
+	if v.TrendStopPct >= v.StopPct {
+		return fmt.Errorf("trend_stop_pct 必须 < catastrophe_stop_pct=%.0f（否则不是收紧，运行时会静默无操作）, got %.0f",
+			v.StopPct, v.TrendStopPct)
+	}
+	return nil
 }
