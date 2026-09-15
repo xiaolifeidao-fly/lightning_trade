@@ -48,6 +48,7 @@ const (
 	NoteEvalClose       = "移动止盈按收盘价评估：一根内的极值不参与判定，相对实盘偏乐观"
 	NoteEvalPessimistic = "移动止盈按一根内不利极值评估、兜底按极值成交：相对实盘偏悲观"
 	NoteTrendGateBar    = "趋势闸动量由 1m 收盘序列推出（实盘是 tick 流按分钟去重），判定时刻按根对齐，最多差一根"
+	NoteTrendStopBar    = "趋势条件止损的动量同样由 1m 收盘序列推出，且判定粒度是每根一次；实盘是 5 秒一轮，收紧的生效时刻最多差一根"
 )
 
 // Classify 判定精度等级并生成必须随结果展示的警示清单。
@@ -70,6 +71,9 @@ func Classify(p Params) Fidelity {
 	}
 	if p.TrendGateThresholdPct > 0 && p.TrendGateWindowHours > 0 {
 		f.Notes = append(f.Notes, NoteTrendGateBar)
+	}
+	if p.TrendStopTriggerPct > 0 && p.TrendStopPct > 0 {
+		f.Notes = append(f.Notes, NoteTrendStopBar)
 	}
 
 	// signal_threshold 是唯一一个会改变信号序列本身的旋钮。

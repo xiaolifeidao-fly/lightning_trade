@@ -791,6 +791,8 @@ type SignalBacktestParamsDTO struct {
 	GateMinProfitPct           *float64 `json:"gateMinProfitPct"`           // trade.accountN.reverse_gate_min_profit_pct
 	TrendGateWindowHours       *float64 `json:"trendGateWindowHours"`       // trade.trend_gate.window_hours
 	TrendGateThresholdPct      *float64 `json:"trendGateThresholdPct"`      // trade.trend_gate.threshold_pct
+	TrendStopTriggerPct        *float64 `json:"trendStopTriggerPct"`        // position.monitor.trend_stop.trigger_pct
+	TrendStopPct               *float64 `json:"trendStopPct"`               // position.monitor.trend_stop.stop_pct
 	TierSmallRatio             *float64 `json:"tierSmallRatio"`             // position.monitor.trail.tier_small_ratio
 	TierLargeRatio             *float64 `json:"tierLargeRatio"`             // position.monitor.trail.tier_large_ratio
 	SmallActivatePct           *float64 `json:"smallActivatePct"`           // position.monitor.trail.small_activate

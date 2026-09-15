@@ -36,11 +36,14 @@ type Result struct {
 	Floating float64 // 期末浮动
 	Net      float64 // Realized − Fees + Floating
 
-	MaxDrawdown   float64
-	Reduces       int
-	SkipCap       int
-	SkipGate      int
-	SkipTrend     int
+	MaxDrawdown float64
+	Reduces     int
+	SkipCap     int
+	SkipGate    int
+	SkipTrend   int
+	// TrendStopHits 兜底线被趋势条件止损收紧过多少次判定。扫参时某格与基线
+	// 结果相同，可能是机制没生效、也可能生效了但没改变结局——没有这个计数分不清。
+	TrendStopHits int
 	MaxStack      int
 	Cap           int
 	BarCount      int
@@ -154,6 +157,7 @@ func fill(res *Result, e *Engine) {
 	res.SkipCap = e.skipCap
 	res.SkipGate = e.skipGate
 	res.SkipTrend = e.skipTrend
+	res.TrendStopHits = e.trendStopCount
 	res.MaxStack = e.maxStack
 	res.Cap = e.cap
 	res.BarCount = e.barCount

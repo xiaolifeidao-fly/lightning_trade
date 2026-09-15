@@ -124,11 +124,16 @@ type Engine struct {
 	skipCap   int
 	skipGate  int
 	skipTrend int
-	maxStack  int
-	barCount  int
-	lastPx    float64
-	firstBar  time.Time
-	lastBar   time.Time
+	// trendStopCount 兜底线被收紧过多少次判定（不是平仓次数——每根 bar 的每次
+	// 判定都计一次）。它是"这一格里机制到底有没有咬住"的唯一证据：
+	// 扫参时某格与基线结果相同，可能是机制没生效、也可能是生效了但没改变结局，
+	// 没有这个计数分不清。
+	trendStopCount int
+	maxStack       int
+	barCount       int
+	lastPx         float64
+	firstBar       time.Time
+	lastBar        time.Time
 }
 
 // NewEngine 构造引擎。p 应已 Normalize（Replay 会做）。
@@ -137,7 +142,10 @@ func NewEngine(p Params) *Engine {
 		p:     p,
 		books: map[string]*book{"long": {side: "long"}, "short": {side: "short"}},
 	}
-	if p.TrendGateThresholdPct > 0 && p.TrendGateWindowHours > 0 {
+	// 闸与止损共用同一个动量源（实盘也是共用 trade.trend_gate.window_hours）。
+	// 条件是**任一**启用：只开止损、不开闸是一个要能单独研究的组合，
+	// 写成"闸启用才建 tracker"会让那个组合静默失效。
+	if p.TrendGateWindowHours > 0 && (p.TrendGateThresholdPct > 0 || (p.TrendStopTriggerPct > 0 && p.TrendStopPct > 0)) {
 		e.trend = argusMonitor.NewTrendTracker(time.Duration(p.TrendGateWindowHours * float64(time.Hour)))
 	}
 	if p.CapOverride > 0 {
@@ -300,6 +308,30 @@ func (e *Engine) OnSignal(s Signal, px float64) {
 	}
 }
 
+// effectiveStop 本次判定生效的兜底线（ROI 正数）。
+//
+// 动量取当前 bar 的窗口动量，与趋势闸读的是同一个 tracker、同一个 trendNow——
+// 两处若各读一次，闸与止损会在同一根 bar 上看到不同的动量。
+// tracker 未构造（两者都关或没给窗口）或窗口未满时 ok=false，
+// ResolveTrendStop 的 fail-safe 分支原样返回 S。
+func (e *Engine) effectiveStop(side string) float64 {
+	p := argusTrade.TrendStopParams{
+		BaseStopPct:  e.p.CatastropheStopPct,
+		TriggerPct:   e.p.TrendStopTriggerPct,
+		TightStopPct: e.p.TrendStopPct,
+	}
+	if e.trend == nil {
+		stop, _ := argusTrade.ResolveTrendStop(side, 0, false, p)
+		return stop
+	}
+	mom, ok := e.trend.Momentum(e.trendNow)
+	stop, tightened := argusTrade.ResolveTrendStop(side, mom, ok, p)
+	if tightened {
+		e.trendStopCount++
+	}
+	return stop
+}
+
 // passTrendGate 趋势闸：只拦全新开仓与同向加仓，不拦减仓（与 manager.go 分流一致）。
 func (e *Engine) passTrendGate(side string, s Signal) bool {
 	if e.p.TrendGateThresholdPct <= 0 || e.trend == nil {
@@ -366,8 +398,10 @@ func (e *Engine) evalBook(bk *book, bar Bar) {
 	lev := float64(e.p.Leverage)
 	pess := e.p.EvalMode == EvalPessimistic
 
-	// (1) 兜底止损：一根内穿越即触发
-	stop := e.p.CatastropheStopPct
+	// (1) 兜底止损：一根内穿越即触发。
+	// 生效线走 trade.ResolveTrendStop——与实盘 handleTrailingPnl 同一个纯函数，
+	// 逆向动量 ≥ trigger 时收到 TrendStopPct，其余（含 warmup 动量不可算）沿用 S。
+	stop := e.effectiveStop(bk.side)
 	pen := stop + e.p.CatastropheOvershootRoiPts
 	var trigPx, fillPx float64
 	var crossed bool

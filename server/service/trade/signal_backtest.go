@@ -482,6 +482,12 @@ func applySignalParamKnobs(p signal.Params, dto tradeDTO.SignalBacktestParamsDTO
 	if dto.TrendGateThresholdPct != nil {
 		p.TrendGateThresholdPct = *dto.TrendGateThresholdPct
 	}
+	if dto.TrendStopTriggerPct != nil {
+		p.TrendStopTriggerPct = *dto.TrendStopTriggerPct
+	}
+	if dto.TrendStopPct != nil {
+		p.TrendStopPct = *dto.TrendStopPct
+	}
 	if dto.TierSmallRatio != nil {
 		p.TierSmallRatio = *dto.TierSmallRatio
 	}

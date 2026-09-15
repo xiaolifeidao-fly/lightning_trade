@@ -23,6 +23,8 @@
 package signal
 
 import (
+	"fmt"
+
 	argusTrade "argus_single/pkg/trade"
 )
 
@@ -104,6 +106,11 @@ type Params struct {
 	GateMinProfitPct      float64 `json:"gateMinProfitPct"`      // trade.accountN.reverse_gate_min_profit_pct
 	TrendGateWindowHours  float64 `json:"trendGateWindowHours"`  // trade.trend_gate.window_hours；0=关闭
 	TrendGateThresholdPct float64 `json:"trendGateThresholdPct"` // trade.trend_gate.threshold_pct；0=关闭
+	// 趋势条件止损（实盘 argus_single/pkg/trade/trend_stop.go）：逆向窗口动量
+	// ≥ TrendStopTriggerPct 时兜底线改用 TrendStopPct。两者任一 ≤0 = 关闭。
+	// 窗口复用 TrendGateWindowHours——实盘也是共用 trade.trend_gate.window_hours。
+	TrendStopTriggerPct float64 `json:"trendStopTriggerPct"` // position.monitor.trend_stop.trigger_pct；0=关闭
+	TrendStopPct        float64 `json:"trendStopPct"`        // position.monitor.trend_stop.stop_pct；0=关闭
 
 	// 移动止盈分档（position.monitor.trail.*）
 	TierSmallRatio    float64 `json:"tierSmallRatio"`
@@ -141,6 +148,8 @@ func DefaultParams() Params {
 		GateMinProfitPct:      DefaultGateMinProfitPct,
 		TrendGateWindowHours:  0,
 		TrendGateThresholdPct: 0,
+		TrendStopTriggerPct:   0,
+		TrendStopPct:          0,
 		TierSmallRatio:        DefaultTierSmallRatio,
 		TierLargeRatio:        DefaultTierLargeRatio,
 		SmallActivatePct:      DefaultSmallActivatePct,
@@ -218,6 +227,12 @@ func (p Params) Normalize() Params {
 	if p.TrendGateThresholdPct < 0 {
 		p.TrendGateThresholdPct = 0 // 与 resolveTrendGateThreshold 一致：负值=关闭
 	}
+	if p.TrendStopTriggerPct < 0 {
+		p.TrendStopTriggerPct = 0
+	}
+	if p.TrendStopPct < 0 {
+		p.TrendStopPct = 0
+	}
 	return p
 }
 
@@ -244,6 +259,10 @@ func (p Params) Validate() error {
 		LargeGb:    p.LargeGiveback,
 		TierSmall:  p.TierSmallRatio,
 		TierLarge:  p.TierLargeRatio,
+		// 交给实盘校验器：≥250 松兜底护栏、Y<S、半配拒绝三条一并生效，
+		// 不在本包另立阈值。
+		TrendStopTriggerPct: p.TrendStopTriggerPct,
+		TrendStopPct:        p.TrendStopPct,
 	}
 	if p.CapOverride > 0 {
 		view.Ceiling = p.CapOverride
@@ -252,6 +271,13 @@ func (p Params) Validate() error {
 	if view.OrderSize > view.Ceiling {
 		// 与 ValidateRiskParams 的口径一致，但先给出更具体的提示
 		return errOrderSizeOverCeiling(view.OrderSize, view.Ceiling)
+	}
+	// 回测侧特有的一条：趋势条件止损启用了但没有动量窗口，则 TrendTracker
+	// 根本不会构造、动量永远不可算，机制**静默失效**。这种"以为开了其实没开"
+	// 必须在提交时就拒绝——扫参时它会表现为"该格与基线完全一样"，最难发现。
+	if p.TrendStopTriggerPct > 0 && p.TrendStopPct > 0 && p.TrendGateWindowHours <= 0 {
+		return fmt.Errorf("启用趋势条件止损（trigger=%.1f%% stop=%.0f%%）必须同时给 trendGateWindowHours（动量窗口，与趋势闸共用）, got %.1f",
+			p.TrendStopTriggerPct, p.TrendStopPct, p.TrendGateWindowHours)
 	}
 	return argusTrade.ValidateRiskParams(view)
 }

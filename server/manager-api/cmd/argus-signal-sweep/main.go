@@ -76,6 +76,26 @@ func grid(dim string) []tradeDTO.SignalBacktestGroupDTO {
 				tradeDTO.SignalBacktestParamsDTO{GateMinProfitPct: f64(v)}))
 		}
 		return out
+	case "trendstop":
+		// 趋势条件止损：X（触发阈值）× Y（收紧后的兜底线）。
+		// Y < 250 会被实盘校验器拒（松兜底护栏），所以网格只到 250——
+		// 要扫更紧的先改护栏语义并留审批痕迹，别用扫参绕过去。
+		var out []tradeDTO.SignalBacktestGroupDTO
+		out = append(out, g("trendstop_off", tradeDTO.SignalBacktestParamsDTO{
+			TrendStopTriggerPct: f64(0), TrendStopPct: f64(0),
+			TrendGateWindowHours: f64(24),
+		}))
+		for _, x := range []float64{2, 2.5, 3, 4, 5} {
+			for _, y := range []float64{250, 300, 350} {
+				out = append(out, g(fmt.Sprintf("ts_x%.1f_y%.0f", x, y),
+					tradeDTO.SignalBacktestParamsDTO{
+						TrendStopTriggerPct:  f64(x),
+						TrendStopPct:         f64(y),
+						TrendGateWindowHours: f64(24),
+					}))
+			}
+		}
+		return out
 	case "trail":
 		var out []tradeDTO.SignalBacktestGroupDTO
 		for _, a := range []float64{25, 40, 60, 90} {
@@ -117,7 +137,7 @@ func main() {
 	account := flag.String("account", "", "账户标签（strategy_event.account_label，必填）")
 	start := flag.String("start", "2026-09-08 21:00:00", "窗口起")
 	end := flag.String("end", "2026-09-15 14:40:00", "窗口止")
-	dim := flag.String("dim", "baseline", "baseline|trend|cap|stop|gate|trail")
+	dim := flag.String("dim", "baseline", "baseline|trend|trendstop|cap|stop|gate|trail")
 	platform := flag.String("platform", "deepcoin", "1m 路径回放平台")
 	conc := flag.Int("concurrency", 4, "并发组数")
 	// 显式基线旋钮。默认 0 = 用服务端的基线解析器；但解析器对 risk_equity 与
