@@ -46,6 +46,8 @@ func main() {
 	instanceKey := flag.String("instance", "", "目标实例键（必填）")
 	trendTh := flag.Float64("trend-threshold", -1, "全局趋势闸阈值%（trade.trend_gate.threshold_pct）；-1=不改")
 	trendWin := flag.Float64("trend-window", -1, "全局趋势闸动量窗口小时（trade.trend_gate.window_hours）；-1=不改")
+	tsTrigger := flag.Float64("trend-stop-trigger", -1, "趋势条件止损触发阈值%（position.monitor.trend_stop.trigger_pct）；-1=不改，0=关闭")
+	tsStop := flag.Float64("trend-stop", -1, "趋势条件止损收紧后的兜底线%（position.monitor.trend_stop.stop_pct）；-1=不改，0=关闭")
 	note := flag.String("note", "", "发布说明（写进 release_note，必填当 --apply）")
 	actor := flag.String("actor", "argus-config-tune", "审计标记")
 	apply := flag.Bool("apply", false, "真正存草稿并发布；不给则只打印 diff")
@@ -54,8 +56,13 @@ func main() {
 	if strings.TrimSpace(*instanceKey) == "" {
 		log.Fatal("--instance 必填")
 	}
-	if *trendTh < 0 && *trendWin < 0 {
+	if *trendTh < 0 && *trendWin < 0 && *tsTrigger < 0 && *tsStop < 0 {
 		log.Fatal("至少要指定一个要改的旋钮")
+	}
+	// 趋势条件止损两个键必须同时给：只配一条会被实盘启动校验 fail-fast
+	// （validateTrendStop），在这里就拦住，别等发布完才发现实例起不来。
+	if (*tsTrigger >= 0) != (*tsStop >= 0) {
+		log.Fatal("--trend-stop-trigger 与 --trend-stop 必须同时给：只配一条会让实盘启动校验失败")
 	}
 	if *apply && strings.TrimSpace(*note) == "" {
 		log.Fatal("--apply 时 --note 必填：版本历史里没有说明的发布等于没有审计")
@@ -98,6 +105,14 @@ func main() {
 	if *trendWin >= 0 && req.Config.TrendGateWindowHour != *trendWin {
 		changes = append(changes, change{"trade.trend_gate.window_hours", req.Config.TrendGateWindowHour, *trendWin})
 		req.Config.TrendGateWindowHour = *trendWin
+	}
+	if *tsTrigger >= 0 && req.Config.TrendStopTriggerPct != *tsTrigger {
+		changes = append(changes, change{"position.monitor.trend_stop.trigger_pct", req.Config.TrendStopTriggerPct, *tsTrigger})
+		req.Config.TrendStopTriggerPct = *tsTrigger
+	}
+	if *tsStop >= 0 && req.Config.TrendStopPct != *tsStop {
+		changes = append(changes, change{"position.monitor.trend_stop.stop_pct", req.Config.TrendStopPct, *tsStop})
+		req.Config.TrendStopPct = *tsStop
 	}
 	if len(changes) == 0 {
 		log.Print("目标值与当前值一致，无需改动（不新建版本，避免版本历史里出现空变更）")
@@ -160,6 +175,10 @@ func diffOthers(snap *argusDTO.ConfigSnapshotDTO, req *argusDTO.SaveConfigReques
 			skip["TrendGateThresholdPct"] = true
 		case "trade.trend_gate.window_hours":
 			skip["TrendGateWindowHour"] = true
+		case "position.monitor.trend_stop.trigger_pct":
+			skip["TrendStopTriggerPct"] = true
+		case "position.monitor.trend_stop.stop_pct":
+			skip["TrendStopPct"] = true
 		}
 	}
 	out = append(out, diffStruct("config", snap.Config, req.Config, skip)...)

@@ -233,6 +233,8 @@ func buildImportRequest(properties map[string]string, sessionByKey map[string]im
 			SpreadMaxPriceAgeMs:     integer(properties, "monitor.spread.max_price_age_ms", 0),
 			TrendGateWindowHour:     decimal(properties, "trade.trend_gate.window_hours", 0),
 			TrendGateThresholdPct:   decimal(properties, "trade.trend_gate.threshold_pct", 0),
+			TrendStopTriggerPct:     decimal(properties, "position.monitor.trend_stop.trigger_pct", 0),
+			TrendStopPct:            decimal(properties, "position.monitor.trend_stop.stop_pct", 0),
 			ReverseGateMinProfitPct: decimal(properties, "position.risk.reverse_gate_min_profit_pct", 0),
 		},
 	}
@@ -350,6 +352,8 @@ func importRisk(properties map[string]string, prefix string, index int) argusDTO
 		RiskEquity:              decimal(properties, prefix+"risk_equity", 0),
 		ReverseGateMinProfitPct: decimal(properties, prefix+"reverse_gate_min_profit_pct", 0),
 		TrendGateThresholdPct:   decimal(properties, prefix+"trend_gate_threshold_pct", 0),
+		TrendStopTriggerPct:     decimal(properties, prefix+"trend_stop_trigger_pct", 0),
+		TrendStopPct:            decimal(properties, prefix+"trend_stop_pct", 0),
 	}
 }
 

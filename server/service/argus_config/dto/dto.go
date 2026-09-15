@@ -86,6 +86,8 @@ type ConfigDTO struct {
 	SpreadMaxPriceAgeMs     int     `json:"spreadMaxPriceAgeMs"`
 	TrendGateWindowHour     float64 `json:"trendGateWindowHour"`
 	TrendGateThresholdPct   float64 `json:"trendGateThresholdPct"`
+	TrendStopTriggerPct     float64 `json:"trendStopTriggerPct"`
+	TrendStopPct            float64 `json:"trendStopPct"`
 	ReverseGateMinProfitPct float64 `json:"reverseGateMinProfitPct"`
 }
 
@@ -127,6 +129,8 @@ type AccountRiskDTO struct {
 	RiskEquity              float64 `json:"riskEquity"`
 	ReverseGateMinProfitPct float64 `json:"reverseGateMinProfitPct"`
 	TrendGateThresholdPct   float64 `json:"trendGateThresholdPct"`
+	TrendStopTriggerPct     float64 `json:"trendStopTriggerPct"`
+	TrendStopPct            float64 `json:"trendStopPct"`
 }
 
 type MonitorSymbolDTO struct {

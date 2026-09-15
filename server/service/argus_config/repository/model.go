@@ -59,51 +59,51 @@ func (v *ArgusConfigVersion) MarkUnpublished(status string) {
 
 type ArgusConfig struct {
 	db.BaseEntity
-	ConfigVersionID             uint64          `gorm:"column:config_version_id;type:bigint unsigned;uniqueIndex:idx_argus_config_version_id" description:"配置版本 ID"`
-	ServerPort                  uint16          `gorm:"column:server_port;type:smallint unsigned;default:8855" description:"服务端口"`
-	RequestPath                 string          `gorm:"column:request_path;type:varchar(255);default:/" description:"请求路径"`
-	LogDir                      string          `gorm:"column:log_dir;type:varchar(500)" description:"日志目录"`
-	Enabled                     uint8           `gorm:"column:enabled;type:tinyint unsigned;default:1;check:chk_argus_config_enabled,enabled IN (0,1)" description:"配置是否启用"`
-	TradeEnabled                uint8           `gorm:"column:trade_enabled;type:tinyint unsigned;default:0;check:chk_argus_trade_enabled,trade_enabled IN (0,1)" description:"价差开仓开关"`
-	DefaultOrderSize            int             `gorm:"column:default_order_size;type:int unsigned;default:0" description:"默认下单张数"`
-	MonitorIntervalSecond       int             `gorm:"column:monitor_interval_second;type:int unsigned;default:5" description:"仓位巡检秒数"`
-	ProfitThreshold             float64         `gorm:"column:profit_threshold;type:decimal(20,8);default:0" description:"盈利告警阈值"`
-	LossThreshold               float64         `gorm:"column:loss_threshold;type:decimal(20,8);default:0" description:"亏损告警阈值"`
-	AICloseEnabled              uint8           `gorm:"column:ai_close_enabled;type:tinyint unsigned;default:0;check:chk_argus_ai_close_enabled,ai_close_enabled IN (0,1)" description:"AI 平仓开关"`
-	AICloseProvider             string          `gorm:"column:ai_close_provider;type:varchar(64)" description:"AI 平仓服务商"`
-	AICloseAPIURL               string          `gorm:"column:ai_close_api_url;type:varchar(500)" description:"AI 平仓接口地址"`
-	AICloseAPIKey               string `gorm:"column:ai_close_api_key;type:text" description:"AI 平仓密钥（明文存储，接口返回掩码）"`
-	AICloseModel                string          `gorm:"column:ai_close_model;type:varchar(128)" description:"AI 平仓模型"`
-	AICloseTimeoutSecond        int             `gorm:"column:ai_close_timeout_second;type:int unsigned;default:120" description:"AI 平仓超时"`
-	AICloseMaxTokens            int             `gorm:"column:ai_close_max_tokens;type:int unsigned;default:0" description:"AI 平仓最大 Token"`
-	AICloseTemperature          float64         `gorm:"column:ai_close_temperature;type:decimal(8,4);default:0" description:"AI 平仓温度"`
-	AICloseIntervalMinute       int             `gorm:"column:ai_close_interval_minute;type:int unsigned;default:0" description:"AI 平仓巡检间隔"`
-	AICloseMinInterval          int             `gorm:"column:ai_close_min_interval_minute;type:int unsigned;default:0" description:"AI 平仓巡检下限"`
-	AICloseMaxInterval          int             `gorm:"column:ai_close_max_interval_minute;type:int unsigned;default:0" description:"AI 平仓巡检上限"`
-	AIOpenEnabled               uint8           `gorm:"column:ai_open_enabled;type:tinyint unsigned;default:0;check:chk_argus_ai_open_enabled,ai_open_enabled IN (0,1)" description:"AI 加仓开关"`
-	AIOpenAutoTrade             uint8           `gorm:"column:ai_open_auto_trade;type:tinyint unsigned;default:0;check:chk_argus_ai_open_auto_trade,ai_open_auto_trade IN (0,1)" description:"AI 加仓自动交易"`
-	AIOpenAPIURL                string          `gorm:"column:ai_open_api_url;type:varchar(500)" description:"AI 加仓接口地址，为空时复用平仓"`
-	AIOpenAPIKey                string `gorm:"column:ai_open_api_key;type:text" description:"AI 加仓密钥（明文存储，接口返回掩码）"`
-	AIOpenModel                 string          `gorm:"column:ai_open_model;type:varchar(128)" description:"AI 加仓模型"`
-	AIOpenTimeoutSecond         int             `gorm:"column:ai_open_timeout_second;type:int unsigned;default:0" description:"AI 加仓超时"`
-	AIOpenMaxTokens             int             `gorm:"column:ai_open_max_tokens;type:int unsigned;default:0" description:"AI 加仓最大 Token"`
-	AIOpenTemperature           float64         `gorm:"column:ai_open_temperature;type:decimal(8,4);default:0" description:"AI 加仓温度"`
-	AIOpenIntervalMinute        int             `gorm:"column:ai_open_interval_minute;type:int unsigned;default:0" description:"AI 加仓巡检间隔"`
-	AIOpenMinInterval           int             `gorm:"column:ai_open_min_interval_minute;type:int unsigned;default:0" description:"AI 加仓巡检下限"`
-	AIOpenMaxInterval           int             `gorm:"column:ai_open_max_interval_minute;type:int unsigned;default:0" description:"AI 加仓巡检上限"`
-	AIOpenMinLiqDistancePercent float64         `gorm:"column:ai_open_min_liq_distance_percent;type:decimal(20,8);default:0" description:"AI 加仓爆仓距离百分比下限"`
-	AIOpenMinLiqDistanceUSD     float64         `gorm:"column:ai_open_min_liq_distance_usd;type:decimal(20,8);default:0" description:"AI 加仓爆仓距离金额下限"`
-	AIOpenMaxBalancePercent     float64         `gorm:"column:ai_open_max_balance_percent;type:decimal(20,8);default:0" description:"AI 加仓可用余额比例"`
-	AIOpenMinOrderContracts     int             `gorm:"column:ai_open_min_order_contracts;type:int unsigned;default:0" description:"AI 加仓最小张数"`
-	AIOpenMaxOrderContracts     int             `gorm:"column:ai_open_max_order_contracts;type:int unsigned;default:0" description:"AI 加仓最大张数"`
-	AIOpenMaxTotalContracts     int             `gorm:"column:ai_open_max_total_contracts;type:int unsigned;default:0" description:"AI 加仓总张数上限"`
-	AIOpenCooldownMinute        int             `gorm:"column:ai_open_cooldown_minute;type:int unsigned;default:0" description:"AI 加仓冷却时间"`
-	AIOpenLiqSafetyFactor       float64         `gorm:"column:ai_open_liq_safety_factor;type:decimal(8,4);default:0" description:"AI 加仓爆仓安全系数"`
-	LoginScheduledEnabled       uint8           `gorm:"column:login_scheduled_enabled;type:tinyint unsigned;default:0;check:chk_argus_login_scheduled_enabled,login_scheduled_enabled IN (0,1)" description:"定时登录开关"`
-	LoginScheduledHour          uint8           `gorm:"column:login_scheduled_hour;type:tinyint unsigned;default:0;check:chk_argus_login_scheduled_hour,login_scheduled_hour <= 23" description:"定时登录小时"`
-	LoginScheduledMinute        uint8           `gorm:"column:login_scheduled_minute;type:tinyint unsigned;default:0;check:chk_argus_login_scheduled_minute,login_scheduled_minute <= 59" description:"定时登录分钟"`
-	SessionMaxAgeDay            int             `gorm:"column:session_max_age_day;type:int unsigned;default:0" description:"会话最长天数"`
-	ExtraConfigJSON             string          `gorm:"column:extra_config_json;type:json" description:"未结构化但受支持的扩展配置"`
+	ConfigVersionID             uint64  `gorm:"column:config_version_id;type:bigint unsigned;uniqueIndex:idx_argus_config_version_id" description:"配置版本 ID"`
+	ServerPort                  uint16  `gorm:"column:server_port;type:smallint unsigned;default:8855" description:"服务端口"`
+	RequestPath                 string  `gorm:"column:request_path;type:varchar(255);default:/" description:"请求路径"`
+	LogDir                      string  `gorm:"column:log_dir;type:varchar(500)" description:"日志目录"`
+	Enabled                     uint8   `gorm:"column:enabled;type:tinyint unsigned;default:1;check:chk_argus_config_enabled,enabled IN (0,1)" description:"配置是否启用"`
+	TradeEnabled                uint8   `gorm:"column:trade_enabled;type:tinyint unsigned;default:0;check:chk_argus_trade_enabled,trade_enabled IN (0,1)" description:"价差开仓开关"`
+	DefaultOrderSize            int     `gorm:"column:default_order_size;type:int unsigned;default:0" description:"默认下单张数"`
+	MonitorIntervalSecond       int     `gorm:"column:monitor_interval_second;type:int unsigned;default:5" description:"仓位巡检秒数"`
+	ProfitThreshold             float64 `gorm:"column:profit_threshold;type:decimal(20,8);default:0" description:"盈利告警阈值"`
+	LossThreshold               float64 `gorm:"column:loss_threshold;type:decimal(20,8);default:0" description:"亏损告警阈值"`
+	AICloseEnabled              uint8   `gorm:"column:ai_close_enabled;type:tinyint unsigned;default:0;check:chk_argus_ai_close_enabled,ai_close_enabled IN (0,1)" description:"AI 平仓开关"`
+	AICloseProvider             string  `gorm:"column:ai_close_provider;type:varchar(64)" description:"AI 平仓服务商"`
+	AICloseAPIURL               string  `gorm:"column:ai_close_api_url;type:varchar(500)" description:"AI 平仓接口地址"`
+	AICloseAPIKey               string  `gorm:"column:ai_close_api_key;type:text" description:"AI 平仓密钥（明文存储，接口返回掩码）"`
+	AICloseModel                string  `gorm:"column:ai_close_model;type:varchar(128)" description:"AI 平仓模型"`
+	AICloseTimeoutSecond        int     `gorm:"column:ai_close_timeout_second;type:int unsigned;default:120" description:"AI 平仓超时"`
+	AICloseMaxTokens            int     `gorm:"column:ai_close_max_tokens;type:int unsigned;default:0" description:"AI 平仓最大 Token"`
+	AICloseTemperature          float64 `gorm:"column:ai_close_temperature;type:decimal(8,4);default:0" description:"AI 平仓温度"`
+	AICloseIntervalMinute       int     `gorm:"column:ai_close_interval_minute;type:int unsigned;default:0" description:"AI 平仓巡检间隔"`
+	AICloseMinInterval          int     `gorm:"column:ai_close_min_interval_minute;type:int unsigned;default:0" description:"AI 平仓巡检下限"`
+	AICloseMaxInterval          int     `gorm:"column:ai_close_max_interval_minute;type:int unsigned;default:0" description:"AI 平仓巡检上限"`
+	AIOpenEnabled               uint8   `gorm:"column:ai_open_enabled;type:tinyint unsigned;default:0;check:chk_argus_ai_open_enabled,ai_open_enabled IN (0,1)" description:"AI 加仓开关"`
+	AIOpenAutoTrade             uint8   `gorm:"column:ai_open_auto_trade;type:tinyint unsigned;default:0;check:chk_argus_ai_open_auto_trade,ai_open_auto_trade IN (0,1)" description:"AI 加仓自动交易"`
+	AIOpenAPIURL                string  `gorm:"column:ai_open_api_url;type:varchar(500)" description:"AI 加仓接口地址，为空时复用平仓"`
+	AIOpenAPIKey                string  `gorm:"column:ai_open_api_key;type:text" description:"AI 加仓密钥（明文存储，接口返回掩码）"`
+	AIOpenModel                 string  `gorm:"column:ai_open_model;type:varchar(128)" description:"AI 加仓模型"`
+	AIOpenTimeoutSecond         int     `gorm:"column:ai_open_timeout_second;type:int unsigned;default:0" description:"AI 加仓超时"`
+	AIOpenMaxTokens             int     `gorm:"column:ai_open_max_tokens;type:int unsigned;default:0" description:"AI 加仓最大 Token"`
+	AIOpenTemperature           float64 `gorm:"column:ai_open_temperature;type:decimal(8,4);default:0" description:"AI 加仓温度"`
+	AIOpenIntervalMinute        int     `gorm:"column:ai_open_interval_minute;type:int unsigned;default:0" description:"AI 加仓巡检间隔"`
+	AIOpenMinInterval           int     `gorm:"column:ai_open_min_interval_minute;type:int unsigned;default:0" description:"AI 加仓巡检下限"`
+	AIOpenMaxInterval           int     `gorm:"column:ai_open_max_interval_minute;type:int unsigned;default:0" description:"AI 加仓巡检上限"`
+	AIOpenMinLiqDistancePercent float64 `gorm:"column:ai_open_min_liq_distance_percent;type:decimal(20,8);default:0" description:"AI 加仓爆仓距离百分比下限"`
+	AIOpenMinLiqDistanceUSD     float64 `gorm:"column:ai_open_min_liq_distance_usd;type:decimal(20,8);default:0" description:"AI 加仓爆仓距离金额下限"`
+	AIOpenMaxBalancePercent     float64 `gorm:"column:ai_open_max_balance_percent;type:decimal(20,8);default:0" description:"AI 加仓可用余额比例"`
+	AIOpenMinOrderContracts     int     `gorm:"column:ai_open_min_order_contracts;type:int unsigned;default:0" description:"AI 加仓最小张数"`
+	AIOpenMaxOrderContracts     int     `gorm:"column:ai_open_max_order_contracts;type:int unsigned;default:0" description:"AI 加仓最大张数"`
+	AIOpenMaxTotalContracts     int     `gorm:"column:ai_open_max_total_contracts;type:int unsigned;default:0" description:"AI 加仓总张数上限"`
+	AIOpenCooldownMinute        int     `gorm:"column:ai_open_cooldown_minute;type:int unsigned;default:0" description:"AI 加仓冷却时间"`
+	AIOpenLiqSafetyFactor       float64 `gorm:"column:ai_open_liq_safety_factor;type:decimal(8,4);default:0" description:"AI 加仓爆仓安全系数"`
+	LoginScheduledEnabled       uint8   `gorm:"column:login_scheduled_enabled;type:tinyint unsigned;default:0;check:chk_argus_login_scheduled_enabled,login_scheduled_enabled IN (0,1)" description:"定时登录开关"`
+	LoginScheduledHour          uint8   `gorm:"column:login_scheduled_hour;type:tinyint unsigned;default:0;check:chk_argus_login_scheduled_hour,login_scheduled_hour <= 23" description:"定时登录小时"`
+	LoginScheduledMinute        uint8   `gorm:"column:login_scheduled_minute;type:tinyint unsigned;default:0;check:chk_argus_login_scheduled_minute,login_scheduled_minute <= 59" description:"定时登录分钟"`
+	SessionMaxAgeDay            int     `gorm:"column:session_max_age_day;type:int unsigned;default:0" description:"会话最长天数"`
+	ExtraConfigJSON             string  `gorm:"column:extra_config_json;type:json" description:"未结构化但受支持的扩展配置"`
 	// 以下六项是 r5 收敛进来的全局策略参数，此前只存在于 properties，DB 无列 →
 	// 运行时只能读 vipper，配置面不完整。0 表示未配置，运行时回退 properties 兜底。
 	ContractFace            float64 `gorm:"column:contract_face;type:decimal(20,8);default:0" description:"合约面值 position.risk.contract_face"`
@@ -112,36 +112,38 @@ type ArgusConfig struct {
 	TrendGateWindowHour     float64 `gorm:"column:trend_gate_window_hour;type:decimal(10,4);default:0" description:"趋势闸动量窗口小时 trade.trend_gate.window_hours"`
 	TrendGateThresholdPct   float64 `gorm:"column:trend_gate_threshold_pct;type:decimal(10,4);default:0" description:"趋势闸全局阈值% trade.trend_gate.threshold_pct"`
 	ReverseGateMinProfitPct float64 `gorm:"column:reverse_gate_min_profit_pct;type:decimal(20,8);default:0" description:"反向减仓最小盈利% position.risk.reverse_gate_min_profit_pct"`
+	TrendStopTriggerPct     float64 `gorm:"column:trend_stop_trigger_pct;type:decimal(10,4);default:0" description:"趋势条件止损触发阈值% position.monitor.trend_stop.trigger_pct；0=未配置"`
+	TrendStopPct            float64 `gorm:"column:trend_stop_pct;type:decimal(10,4);default:0" description:"趋势条件止损收紧后的兜底线% position.monitor.trend_stop.stop_pct；0=未配置"`
 }
 
 func (c *ArgusConfig) TableName() string { return "argus_config" }
 
 type ArgusAccount struct {
 	db.BaseEntity
-	ConfigVersionID uint64          `gorm:"column:config_version_id;type:bigint unsigned;uniqueIndex:idx_argus_account_version_name,priority:1" description:"配置版本 ID"`
-	AccountName     string          `gorm:"column:account_name;type:varchar(128);uniqueIndex:idx_argus_account_version_name,priority:2" description:"账户名称"`
-	URL             string          `gorm:"column:url;type:varchar(500)" description:"交易站点地址"`
-	UID             string          `gorm:"column:uid;type:varchar(128);index:idx_argus_account_uid" description:"平台用户 ID"`
+	ConfigVersionID uint64 `gorm:"column:config_version_id;type:bigint unsigned;uniqueIndex:idx_argus_account_version_name,priority:1" description:"配置版本 ID"`
+	AccountName     string `gorm:"column:account_name;type:varchar(128);uniqueIndex:idx_argus_account_version_name,priority:2" description:"账户名称"`
+	URL             string `gorm:"column:url;type:varchar(500)" description:"交易站点地址"`
+	UID             string `gorm:"column:uid;type:varchar(128);index:idx_argus_account_uid" description:"平台用户 ID"`
 	// LoginType 的取值必须与 argus_single 的 trade.BuildUserProvider 完全一致：
 	// 它只认 "" / "config"（静态 cookie+token）与 "password"（pl-instance 无头登录）。
 	// 原来的约束写的是 IN ('password','api_key','cookie')，与代码只在 password 上
 	// 重叠——'config' 被约束禁止、'cookie' 被代码判为"不支持"，结果是配置一旦入库
 	// 静态凭证模式就永远走不通，只能落到 password 去调未部署的 pl-instance。
 	// default 也从 password 改成 config：静态凭证是当前唯一实际可用的模式。
-	LoginType       string          `gorm:"column:login_type;type:varchar(32);default:config;check:chk_argus_account_login_type,login_type IN ('config','password')" description:"登录方式 config=静态cookie/token password=无头登录"`
-	LoginHeadless   uint8           `gorm:"column:login_headless;type:tinyint unsigned;default:1;check:chk_argus_account_login_headless,login_headless IN (0,1)" description:"无头登录"`
-	Username        string `gorm:"column:username;type:text" description:"登录名（明文存储，接口返回掩码）"`
-	Password        string `gorm:"column:password;type:text" description:"密码（明文存储，接口返回掩码）"`
-	GoogleAuthKey   string `gorm:"column:google_auth_key;type:text" description:"Google 验证器密钥（明文存储，接口返回掩码）"`
-	APIKey          string `gorm:"column:api_key;type:text" description:"API Key（明文存储，接口返回掩码）"`
-	SecretKey       string `gorm:"column:secret_key;type:text" description:"API Secret（明文存储，接口返回掩码）"`
-	Passphrase      string `gorm:"column:passphrase;type:text" description:"交易口令（明文存储，接口返回掩码）"`
-	ResourceID      string          `gorm:"column:resource_id;type:varchar(128)" description:"平台资源 ID"`
-	PositionMode    string          `gorm:"column:position_mode;type:varchar(32);default:net;check:chk_argus_account_position_mode,position_mode IN ('net','hedge')" description:"持仓模式"`
-	PositionSide    string          `gorm:"column:position_side;type:varchar(16);default:long;check:chk_argus_account_position_side,position_side IN ('long','short','both')" description:"默认持仓方向"`
-	CloseStrategy   string          `gorm:"column:close_strategy;type:varchar(32);default:sltp" description:"平仓策略"`
-	InitialBalance  float64         `gorm:"column:initial_balance;type:decimal(20,8);default:0" description:"初始余额"`
-	Enabled         uint8           `gorm:"column:enabled;type:tinyint unsigned;default:1;check:chk_argus_account_enabled,enabled IN (0,1)" description:"账户启用状态"`
+	LoginType      string  `gorm:"column:login_type;type:varchar(32);default:config;check:chk_argus_account_login_type,login_type IN ('config','password')" description:"登录方式 config=静态cookie/token password=无头登录"`
+	LoginHeadless  uint8   `gorm:"column:login_headless;type:tinyint unsigned;default:1;check:chk_argus_account_login_headless,login_headless IN (0,1)" description:"无头登录"`
+	Username       string  `gorm:"column:username;type:text" description:"登录名（明文存储，接口返回掩码）"`
+	Password       string  `gorm:"column:password;type:text" description:"密码（明文存储，接口返回掩码）"`
+	GoogleAuthKey  string  `gorm:"column:google_auth_key;type:text" description:"Google 验证器密钥（明文存储，接口返回掩码）"`
+	APIKey         string  `gorm:"column:api_key;type:text" description:"API Key（明文存储，接口返回掩码）"`
+	SecretKey      string  `gorm:"column:secret_key;type:text" description:"API Secret（明文存储，接口返回掩码）"`
+	Passphrase     string  `gorm:"column:passphrase;type:text" description:"交易口令（明文存储，接口返回掩码）"`
+	ResourceID     string  `gorm:"column:resource_id;type:varchar(128)" description:"平台资源 ID"`
+	PositionMode   string  `gorm:"column:position_mode;type:varchar(32);default:net;check:chk_argus_account_position_mode,position_mode IN ('net','hedge')" description:"持仓模式"`
+	PositionSide   string  `gorm:"column:position_side;type:varchar(16);default:long;check:chk_argus_account_position_side,position_side IN ('long','short','both')" description:"默认持仓方向"`
+	CloseStrategy  string  `gorm:"column:close_strategy;type:varchar(32);default:sltp" description:"平仓策略"`
+	InitialBalance float64 `gorm:"column:initial_balance;type:decimal(20,8);default:0" description:"初始余额"`
+	Enabled        uint8   `gorm:"column:enabled;type:tinyint unsigned;default:1;check:chk_argus_account_enabled,enabled IN (0,1)" description:"账户启用状态"`
 }
 
 func (a *ArgusAccount) TableName() string { return "argus_account" }
@@ -164,6 +166,8 @@ type ArgusAccountRisk struct {
 	RiskEquity              float64 `gorm:"column:risk_equity;type:decimal(20,8);default:0" description:"风险计算基数 trade.accountN.risk_equity"`
 	ReverseGateMinProfitPct float64 `gorm:"column:reverse_gate_min_profit_pct;type:decimal(20,8);default:0" description:"账户级反向减仓最小盈利%"`
 	TrendGateThresholdPct   float64 `gorm:"column:trend_gate_threshold_pct;type:decimal(10,4);default:0" description:"账户级趋势闸阈值%"`
+	TrendStopTriggerPct     float64 `gorm:"column:trend_stop_trigger_pct;type:decimal(10,4);default:0" description:"账户级趋势条件止损触发阈值%；0=未配置"`
+	TrendStopPct            float64 `gorm:"column:trend_stop_pct;type:decimal(10,4);default:0" description:"账户级趋势条件止损收紧后的兜底线%；0=未配置"`
 }
 
 func (r *ArgusAccountRisk) TableName() string { return "argus_account_risk" }
@@ -183,8 +187,8 @@ func (s *ArgusMonitorSymbol) TableName() string { return "argus_monitor_symbol" 
 
 type ArgusNotification struct {
 	db.BaseEntity
-	ConfigVersionID  uint64          `gorm:"column:config_version_id;type:bigint unsigned;uniqueIndex:idx_argus_notification_version" description:"配置版本 ID"`
-	TelegramEnabled  uint8           `gorm:"column:telegram_enabled;type:tinyint unsigned;default:0;check:chk_argus_telegram_enabled,telegram_enabled IN (0,1)" description:"Telegram 通知开关"`
+	ConfigVersionID  uint64 `gorm:"column:config_version_id;type:bigint unsigned;uniqueIndex:idx_argus_notification_version" description:"配置版本 ID"`
+	TelegramEnabled  uint8  `gorm:"column:telegram_enabled;type:tinyint unsigned;default:0;check:chk_argus_telegram_enabled,telegram_enabled IN (0,1)" description:"Telegram 通知开关"`
 	TelegramBotToken string `gorm:"column:telegram_bot_token;type:text" description:"Telegram Bot Token（明文存储，接口返回掩码）"`
 	TelegramChatID   string `gorm:"column:telegram_chat_id;type:text" description:"Telegram Chat ID（明文存储，接口返回掩码）"`
 }
@@ -195,19 +199,19 @@ func (n *ArgusNotification) TableName() string { return "argus_notification" }
 // refresh it at runtime without changing static account configuration.
 type ArgusRuntimeSession struct {
 	db.BaseEntity
-	AccountID        uint64          `gorm:"column:account_id;type:bigint unsigned;uniqueIndex:idx_argus_runtime_session_account" description:"Argus 账户 ID"`
-	Cookie           string `gorm:"column:cookie;type:text" description:"Cookie（明文存储，接口返回掩码）"`
-	Token            string `gorm:"column:token;type:text" description:"Token（明文存储，接口返回掩码）"`
-	OToken           string `gorm:"column:otoken;type:text" description:"OToken（明文存储，接口返回掩码）"`
-	SentryRelease    string `gorm:"column:sentry_release;type:text" description:"Sentry Release（明文存储，接口返回掩码）"`
-	SentryPublicKey  string `gorm:"column:sentry_public_key;type:text" description:"Sentry Public Key（明文存储，接口返回掩码）"`
-	Baggage          string `gorm:"column:baggage;type:text" description:"Sentry Baggage（明文存储，接口返回掩码）"`
-	LoginURL         string          `gorm:"column:login_url;type:varchar(1000)" description:"登录回跳地址"`
-	FinalURL         string          `gorm:"column:final_url;type:varchar(1000)" description:"登录完成地址"`
-	Valid            uint8           `gorm:"column:valid;type:tinyint unsigned;default:0;check:chk_argus_session_valid,valid IN (0,1)" description:"会话有效状态"`
-	SessionUpdatedAt time.Time       `gorm:"column:session_updated_at;type:datetime;index:idx_argus_session_updated" description:"Argus 最后刷新会话时间"`
-	ExpiresAt        *time.Time      `gorm:"column:expires_at;type:datetime;index:idx_argus_session_expires" description:"会话到期时间"`
-	LastError        string          `gorm:"column:last_error;type:varchar(1000)" description:"最近刷新失败原因"`
+	AccountID        uint64     `gorm:"column:account_id;type:bigint unsigned;uniqueIndex:idx_argus_runtime_session_account" description:"Argus 账户 ID"`
+	Cookie           string     `gorm:"column:cookie;type:text" description:"Cookie（明文存储，接口返回掩码）"`
+	Token            string     `gorm:"column:token;type:text" description:"Token（明文存储，接口返回掩码）"`
+	OToken           string     `gorm:"column:otoken;type:text" description:"OToken（明文存储，接口返回掩码）"`
+	SentryRelease    string     `gorm:"column:sentry_release;type:text" description:"Sentry Release（明文存储，接口返回掩码）"`
+	SentryPublicKey  string     `gorm:"column:sentry_public_key;type:text" description:"Sentry Public Key（明文存储，接口返回掩码）"`
+	Baggage          string     `gorm:"column:baggage;type:text" description:"Sentry Baggage（明文存储，接口返回掩码）"`
+	LoginURL         string     `gorm:"column:login_url;type:varchar(1000)" description:"登录回跳地址"`
+	FinalURL         string     `gorm:"column:final_url;type:varchar(1000)" description:"登录完成地址"`
+	Valid            uint8      `gorm:"column:valid;type:tinyint unsigned;default:0;check:chk_argus_session_valid,valid IN (0,1)" description:"会话有效状态"`
+	SessionUpdatedAt time.Time  `gorm:"column:session_updated_at;type:datetime;index:idx_argus_session_updated" description:"Argus 最后刷新会话时间"`
+	ExpiresAt        *time.Time `gorm:"column:expires_at;type:datetime;index:idx_argus_session_expires" description:"会话到期时间"`
+	LastError        string     `gorm:"column:last_error;type:varchar(1000)" description:"最近刷新失败原因"`
 }
 
 func (s *ArgusRuntimeSession) TableName() string { return "argus_runtime_session" }

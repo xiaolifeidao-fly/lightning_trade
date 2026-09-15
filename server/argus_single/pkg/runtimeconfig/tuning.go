@@ -25,6 +25,10 @@ const (
 	// 下面两个是 AccFloat 的全局键，走覆盖层而不是 vipper.Set。
 	keyTrendGateThresholdPct   = "trade.trend_gate.threshold_pct"
 	keyReverseGateMinProfitPct = "position.risk.reverse_gate_min_profit_pct"
+	// 趋势条件止损的两个全局键。必须与 pkg/monitor 里 AccFloat 的第三个参数
+	// 一字不差，拼错了会表现为"后台改了不生效"且没有任何报错。
+	keyTrendStopTriggerPct = "position.monitor.trend_stop.trigger_pct"
+	keyTrendStopPct        = "position.monitor.trend_stop.stop_pct"
 )
 
 // RuntimeTuning 是配置快照里的全局标量参数。
@@ -100,6 +104,12 @@ func globalParamOverrides(config repository.ArgusConfig, overrides *trade.ParamO
 	if config.ReverseGateMinProfitPct > 0 {
 		overrides.SetGlobal(keyReverseGateMinProfitPct, config.ReverseGateMinProfitPct)
 	}
+	if config.TrendStopTriggerPct > 0 {
+		overrides.SetGlobal(keyTrendStopTriggerPct, config.TrendStopTriggerPct)
+	}
+	if config.TrendStopPct > 0 {
+		overrides.SetGlobal(keyTrendStopPct, config.TrendStopPct)
+	}
 }
 
 // accountParamOverrides 收集某账户的 DB 参数覆盖。
@@ -137,6 +147,12 @@ func accountParamOverrides(index int, risk *repository.ArgusAccountRisk, account
 	}
 	if risk.TrendGateThresholdPct > 0 {
 		overrides.SetAccount(index, "trend_gate_threshold_pct", risk.TrendGateThresholdPct)
+	}
+	if risk.TrendStopTriggerPct > 0 {
+		overrides.SetAccount(index, "trend_stop_trigger_pct", risk.TrendStopTriggerPct)
+	}
+	if risk.TrendStopPct > 0 {
+		overrides.SetAccount(index, "trend_stop_pct", risk.TrendStopPct)
 	}
 }
 

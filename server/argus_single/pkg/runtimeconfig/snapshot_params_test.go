@@ -202,3 +202,60 @@ func TestApplyRuntimeConfigRejectsIllegalRiskParams(t *testing.T) {
 		t.Fatalf("catastrophe_stop_pct = %v, want the running 400 after rollback", got)
 	}
 }
+
+// ── 趋势条件止损的 DB 覆盖 ────────────────────────────────────────────────
+// 配置以 DB 为唯一来源，所以这两个旋钮必须能从 argus_config（全局）与
+// argus_account_risk（账户级）进覆盖层——否则只能改服务器上的 properties
+// 并重启进程，和"后台改完热加载"的架构对不上。
+// 键名必须与 AccFloat 的调用一字不差，否则改了不生效且没有任何报错。
+
+func TestRuntimeFromSnapshotCarriesTrendStopAccountOverrides(t *testing.T) {
+	snapshot := signalSnapshot(t)
+	snapshot.AccountRisks[0].TrendStopTriggerPct = 3
+	snapshot.AccountRisks[0].TrendStopPct = 250
+
+	runtime, err := runtimeFromSnapshot(snapshot, "checksum")
+	if err != nil {
+		t.Fatalf("runtimeFromSnapshot: %v", err)
+	}
+	account := runtime.Overrides.Accounts[1]
+	if got := account["trend_stop_trigger_pct"]; got != 3 {
+		t.Errorf("trend_stop_trigger_pct = %v, want 3", got)
+	}
+	if got := account["trend_stop_pct"]; got != 250 {
+		t.Errorf("trend_stop_pct = %v, want 250", got)
+	}
+}
+
+func TestRuntimeFromSnapshotCarriesTrendStopGlobalOverrides(t *testing.T) {
+	snapshot := signalSnapshot(t)
+	snapshot.Config.TrendStopTriggerPct = 3
+	snapshot.Config.TrendStopPct = 250
+
+	runtime, err := runtimeFromSnapshot(snapshot, "checksum")
+	if err != nil {
+		t.Fatalf("runtimeFromSnapshot: %v", err)
+	}
+	// 全局键必须与 monitor 侧 AccFloat 的第三个参数完全一致。
+	if got := runtime.Overrides.Global["position.monitor.trend_stop.trigger_pct"]; got != 3 {
+		t.Errorf("全局 trigger_pct = %v, want 3", got)
+	}
+	if got := runtime.Overrides.Global["position.monitor.trend_stop.stop_pct"]; got != 250 {
+		t.Errorf("全局 stop_pct = %v, want 250", got)
+	}
+}
+
+func TestRuntimeFromSnapshotTrendStopZeroMeansUnconfigured(t *testing.T) {
+	// 0 = DB 未配置，不得进覆盖层（进了就会把 properties 的值压成 0，
+	// 与 trend_gate_threshold_pct 同一约定）。
+	runtime, err := runtimeFromSnapshot(signalSnapshot(t), "checksum")
+	if err != nil {
+		t.Fatalf("runtimeFromSnapshot: %v", err)
+	}
+	if _, ok := runtime.Overrides.Accounts[1]["trend_stop_trigger_pct"]; ok {
+		t.Error("DB 为 0 时不该出现在账户覆盖里")
+	}
+	if _, ok := runtime.Overrides.Global["position.monitor.trend_stop.trigger_pct"]; ok {
+		t.Error("DB 为 0 时不该出现在全局覆盖里")
+	}
+}
