@@ -42,11 +42,27 @@ func grid(dim string) []tradeDTO.SignalBacktestGroupDTO {
 	}
 	switch dim {
 	case "trend":
-		// 趋势闸是唯一为「禁止逆势加仓」而生的机制，生产上 threshold=0 关着，
-		// 且 trend_mom_pct 全为 NULL（阈值 0 时 tracker 根本不构造）。
+		// 趋势闸是唯一为「禁止逆势开/加仓」而生的机制，也是唯一**入场侧**的行情
+		// 路由器——判断错只损失机会，不会把可回归的浮亏砍成实亏（趋势条件止损
+		// 就是栽在这一点上：出场侧 + 抖动的指标 = 成交档位随机）。所以要调先调它。
+		//
+		// 网格必须包含这三个参考点，否则问题回答不了：
+		//   off      基线（闸关掉），一切增益都要相对它衡量
+		//   24h/3%   2026-09-15 起的生产值
+		//   24h/5%   2026-09-15 之前的生产值——那次收紧至今**没在 80 天窗口上验过**
+		// 窗口带到 48h 是为了看清平台形状：只有知道两侧都变差，中间那档才算平台
+		// 而不是噪声里的一个尖峰。
+		//
+		// 事前预测（先写下来，免得事后挑一个好看的解释）：**窗口比阈值重要**。
+		// 依据是 08-20（全样本最差日 −76.80）当天闸一次没响——当时阈值 5%，24h
+		// 动量还没爬过线；到 08-21 才响了 150 次。那天的问题是**滞后**，不是档位。
+		// 若如此，短窗口（4h/8h）该比降阈值（5%→3%）更有效。
 		var out []tradeDTO.SignalBacktestGroupDTO
-		for _, w := range []float64{1, 2, 4, 8, 24} {
-			for _, t := range []float64{0.8, 1.5, 3.0} {
+		out = append(out, g("trend_off", tradeDTO.SignalBacktestParamsDTO{
+			TrendGateWindowHours: f64(24), TrendGateThresholdPct: f64(0),
+		}))
+		for _, w := range []float64{1, 2, 4, 8, 24, 48} {
+			for _, t := range []float64{0.8, 1.5, 3.0, 5.0} {
 				out = append(out, g(fmt.Sprintf("trend_%gh_%.1f%%", w, t),
 					tradeDTO.SignalBacktestParamsDTO{
 						TrendGateWindowHours:  f64(w),
