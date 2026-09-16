@@ -35,6 +35,15 @@ func f64(v float64) *float64 { return &v }
 func str(v string) *string   { return &v }
 func i32(v int) *int         { return &v }
 
+// pinGate 把趋势闸钉在 2026-09-16 走前验证后上线的生产值 48h/3%。
+// 不钉的话，各维会拿服务端基线解析器给的闸当参照——那可能是旧值，
+// 测出来就是"本维效应 + 闸差异"的混合，排序不可信。
+func pinGate(p tradeDTO.SignalBacktestParamsDTO) tradeDTO.SignalBacktestParamsDTO {
+	p.TrendGateWindowHours = f64(48)
+	p.TrendGateThresholdPct = f64(3)
+	return p
+}
+
 // grid 返回某个维度要扫的参数组。组参数是【相对基线的增量】——没给的旋钮沿用
 // 该实例当前生产值，所以 diff 里只有被扫的那一行。
 func grid(dim string) []tradeDTO.SignalBacktestGroupDTO {
@@ -73,10 +82,27 @@ func grid(dim string) []tradeDTO.SignalBacktestGroupDTO {
 		}
 		return out
 	case "cap":
+		// 仓位上限：这套策略里唯一的硬敞口约束，而两个账户**全程顶格**
+		// （B 上限跳过 1398 次 vs 成交 164 笔）。生产上 A 是公式约束
+		// （N_formula=22.7 → 22，天花板 26 不咬）、B 是天花板约束（8）。
+		// CapOverride 绕过公式直接固定上限，所以这一维问的是"敞口该多大"，
+		// 与"改 risk_budget 还是改 max_contracts"解耦；结论要落到生产时再翻译。
+		//
+		// **判据必须事前说清，否则这一维会给出一个假结论**：策略是正期望的，
+		// 净盈亏几乎必然随上限单调上升，"上限越大越赚"是算术恒等式、不是发现。
+		// 所以要看的是风险调整后的结果：
+		//   硬约束——最大回撤不得超过 risk_equity 的 40%（A 165.6 / B 66.5）；
+		//            回撤接近本金就是破产，不管净盈亏多好看。
+		//   在满足硬约束的格子里，再看净盈亏与 净盈亏/回撤。
+		//   还要看走前两段的**形状**是否一致，而不是挑单点峰值。
+		//
+		// 事前预测：按 上限/本金 算，B 是 8/166.27=0.048、A 是 22/414=0.053，
+		// B 略低于 A，所以 B 有小幅上调空间；但 08-20 那类尾部会同比放大，
+		// 风险调整后的最优应落在现值附近或更低，而不是网格高端。
 		var out []tradeDTO.SignalBacktestGroupDTO
-		for _, c := range []int{6, 8, 12, 16, 22, 26, 34} {
+		for _, c := range []int{4, 6, 8, 12, 16, 22, 26, 34, 44} {
 			out = append(out, g(fmt.Sprintf("cap_%d", c),
-				tradeDTO.SignalBacktestParamsDTO{CapOverride: i32(c)}))
+				pinGate(tradeDTO.SignalBacktestParamsDTO{CapOverride: i32(c)})))
 		}
 		return out
 	case "stop":
@@ -124,18 +150,13 @@ func grid(dim string) []tradeDTO.SignalBacktestGroupDTO {
 		// 每组都显式钉住趋势闸 48h/3%——那是 2026-09-16 走前验证后上线的生产值。
 		// 不钉的话这一维会拿旧闸当基线，测出来的是"路由 + 旧闸"的混合效应。
 		var out []tradeDTO.SignalBacktestGroupDTO
-		gate := func(p tradeDTO.SignalBacktestParamsDTO) tradeDTO.SignalBacktestParamsDTO {
-			p.TrendGateWindowHours = f64(48)
-			p.TrendGateThresholdPct = f64(3)
-			return p
-		}
-		out = append(out, g("regime_off", gate(tradeDTO.SignalBacktestParamsDTO{
+		out = append(out, g("regime_off", pinGate(tradeDTO.SignalBacktestParamsDTO{
 			RegimeScaleLabels: str(""),
 		})))
 		for _, labels := range []string{"trend", "trend,vol"} {
 			for _, f := range []float64{0.5, 0.25, 0} {
 				out = append(out, g(fmt.Sprintf("rg_%s_x%.2f", strings.ReplaceAll(labels, ",", "+"), f),
-					gate(tradeDTO.SignalBacktestParamsDTO{
+					pinGate(tradeDTO.SignalBacktestParamsDTO{
 						RegimeScaleLabels: str(labels),
 						RegimeScaleFactor: f64(f),
 					})))
@@ -143,13 +164,29 @@ func grid(dim string) []tradeDTO.SignalBacktestGroupDTO {
 		}
 		return out
 	case "trail":
+		// 移动止盈的大档：决定那 86~92% 的小赢能留下多少。生产值是
+		// large_activate=40 / large_giveback=0.20（两账户相同），**就在网格内**，
+		// 所以每一格都能直接和现值比。
+		//
+		// 只扫大档是有意的：tier 边界是上限的 30%/65%，而两账户全程顶格，
+		// 持仓始终落在大档（A 的日志写着"档位[小≤6/大≥15]"）。中/小档扫了也
+		// 碰不到，还会把拟合参数从 2 个涨到 6 个。
+		//
+		// 判据（事前）：净盈亏上升 **且** 兜底次数不增加——与趋势闸同一条。
+		// 移动止盈只管赢单的出场，理论上不该影响兜底次数；如果某格兜底变多，
+		// 说明它把本该止盈的仓拖成了扛单，那是要拒绝的。
+		//
+		// 事前预测：现值 40/0.20 已经接近最优、曲面偏平。理由是这参数此前
+		// 调过，而且策略的 TP 很小（价格约 +0.3%），把 activate 拉到 60/90
+		// 的仓根本走不到，只会退化成"不止盈"。若预测错，应该表现为低 activate
+		// （25）明显更好——那意味着现在止盈**太晚**、白白回吐。
 		var out []tradeDTO.SignalBacktestGroupDTO
 		for _, a := range []float64{25, 40, 60, 90} {
 			for _, gb := range []float64{0.15, 0.20, 0.30} {
 				out = append(out, g(fmt.Sprintf("trail_a%.0f_gb%.2f", a, gb),
-					tradeDTO.SignalBacktestParamsDTO{
+					pinGate(tradeDTO.SignalBacktestParamsDTO{
 						LargeActivatePct: f64(a), LargeGiveback: f64(gb),
-					}))
+					})))
 			}
 		}
 		return out
@@ -272,7 +309,7 @@ func main() {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "组\t净盈亏\t毛盈亏\t手续费\t笔数\t胜率\t盈亏比\t最大回撤\t兜底\t最大张数\t上限跳过\t门控拦\t趋势拦\t精度")
+	fmt.Fprintln(w, "组\t净盈亏\t毛盈亏\t手续费\t笔数\t胜率\t盈亏比\t最大回撤\t回撤%本金\t兜底\t最大张数\t上限跳过\t门控拦\t趋势拦\t精度")
 	for _, fg := range detail.Groups {
 		for _, r := range fg.Rows {
 			m := r.Metric
@@ -280,9 +317,9 @@ func main() {
 				fmt.Fprintf(w, "%s\t(无指标: %s %s)\n", r.GroupLabel, r.Status, r.ErrorMsg)
 				continue
 			}
-			fmt.Fprintf(w, "%s\t%+.2f\t%+.2f\t%.2f\t%d\t%.0f%%\t%.2f\t%.2f\t%d\t%d\t%d\t%d\t%d\t%s\n",
+			fmt.Fprintf(w, "%s\t%+.2f\t%+.2f\t%.2f\t%d\t%.0f%%\t%.2f\t%.2f\t%.1f%%\t%d\t%d\t%d\t%d\t%d\t%s\n",
 				r.GroupLabel, m.NetPnl, m.GrossPnl, m.FeeTotal, m.FillCount, m.WinRate*100,
-				m.ProfitFactor, m.MaxDrawdown, m.SlCount, m.MaxStack, m.CapSkipCount, m.GateSkipCount,
+				m.ProfitFactor, m.MaxDrawdown, m.MaxDrawdownPct, m.SlCount, m.MaxStack, m.CapSkipCount, m.GateSkipCount,
 				m.TrendSkipCount, m.Fidelity)
 		}
 	}
