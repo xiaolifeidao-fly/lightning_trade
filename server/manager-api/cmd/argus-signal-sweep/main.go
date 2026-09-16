@@ -32,6 +32,7 @@ import (
 )
 
 func f64(v float64) *float64 { return &v }
+func str(v string) *string   { return &v }
 func i32(v int) *int         { return &v }
 
 // grid 返回某个维度要扫的参数组。组参数是【相对基线的增量】——没给的旋钮沿用
@@ -112,6 +113,35 @@ func grid(dim string) []tradeDTO.SignalBacktestGroupDTO {
 			}
 		}
 		return out
+	case "regime":
+		// 行情路由减仓（第 2 步）：前一日状态标签命中时，本日入场上限按系数压低。
+		//
+		// 只扫两件事——**减哪些状态**、**减多少**。日标签的阈值故意不扫，固定用
+		// 金标准 1.5%/2.5%（backtest_capsf_study.py 的写死值）：80 天里只有 16 笔
+		// 兜底、5 天主导亏损，多拟合一个阈值就是在噪声上找峰。少拟合一个参数，
+		// 走前验证才有意义。
+		//
+		// 每组都显式钉住趋势闸 48h/3%——那是 2026-09-16 走前验证后上线的生产值。
+		// 不钉的话这一维会拿旧闸当基线，测出来的是"路由 + 旧闸"的混合效应。
+		var out []tradeDTO.SignalBacktestGroupDTO
+		gate := func(p tradeDTO.SignalBacktestParamsDTO) tradeDTO.SignalBacktestParamsDTO {
+			p.TrendGateWindowHours = f64(48)
+			p.TrendGateThresholdPct = f64(3)
+			return p
+		}
+		out = append(out, g("regime_off", gate(tradeDTO.SignalBacktestParamsDTO{
+			RegimeScaleLabels: str(""),
+		})))
+		for _, labels := range []string{"trend", "trend,vol"} {
+			for _, f := range []float64{0.5, 0.25, 0} {
+				out = append(out, g(fmt.Sprintf("rg_%s_x%.2f", strings.ReplaceAll(labels, ",", "+"), f),
+					gate(tradeDTO.SignalBacktestParamsDTO{
+						RegimeScaleLabels: str(labels),
+						RegimeScaleFactor: f64(f),
+					})))
+			}
+		}
+		return out
 	case "trail":
 		var out []tradeDTO.SignalBacktestGroupDTO
 		for _, a := range []float64{25, 40, 60, 90} {
@@ -153,7 +183,7 @@ func main() {
 	account := flag.String("account", "", "账户标签（strategy_event.account_label，必填）")
 	start := flag.String("start", "2026-09-08 21:00:00", "窗口起")
 	end := flag.String("end", "2026-09-15 14:40:00", "窗口止")
-	dim := flag.String("dim", "baseline", "baseline|trend|trendstop|cap|stop|gate|trail")
+	dim := flag.String("dim", "baseline", "baseline|trend|trendstop|regime|cap|stop|gate|trail")
 	platform := flag.String("platform", "deepcoin", "1m 路径回放平台")
 	conc := flag.Int("concurrency", 4, "并发组数")
 	// 显式基线旋钮。默认 0 = 用服务端的基线解析器；但解析器对 risk_equity 与
@@ -242,7 +272,7 @@ func main() {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "组\t净盈亏\t毛盈亏\t手续费\t笔数\t胜率\t盈亏比\t最大回撤\t兜底\t上限跳过\t门控拦\t趋势拦\t精度")
+	fmt.Fprintln(w, "组\t净盈亏\t毛盈亏\t手续费\t笔数\t胜率\t盈亏比\t最大回撤\t兜底\t最大张数\t上限跳过\t门控拦\t趋势拦\t精度")
 	for _, fg := range detail.Groups {
 		for _, r := range fg.Rows {
 			m := r.Metric
@@ -250,9 +280,9 @@ func main() {
 				fmt.Fprintf(w, "%s\t(无指标: %s %s)\n", r.GroupLabel, r.Status, r.ErrorMsg)
 				continue
 			}
-			fmt.Fprintf(w, "%s\t%+.2f\t%+.2f\t%.2f\t%d\t%.0f%%\t%.2f\t%.2f\t%d\t%d\t%d\t%d\t%s\n",
+			fmt.Fprintf(w, "%s\t%+.2f\t%+.2f\t%.2f\t%d\t%.0f%%\t%.2f\t%.2f\t%d\t%d\t%d\t%d\t%d\t%s\n",
 				r.GroupLabel, m.NetPnl, m.GrossPnl, m.FeeTotal, m.FillCount, m.WinRate*100,
-				m.ProfitFactor, m.MaxDrawdown, m.SlCount, m.CapSkipCount, m.GateSkipCount,
+				m.ProfitFactor, m.MaxDrawdown, m.SlCount, m.MaxStack, m.CapSkipCount, m.GateSkipCount,
 				m.TrendSkipCount, m.Fidelity)
 		}
 	}

@@ -488,6 +488,18 @@ func applySignalParamKnobs(p signal.Params, dto tradeDTO.SignalBacktestParamsDTO
 	if dto.TrendStopPct != nil {
 		p.TrendStopPct = *dto.TrendStopPct
 	}
+	if dto.RegimeScaleLabels != nil {
+		p.RegimeScaleLabels = *dto.RegimeScaleLabels
+	}
+	if dto.RegimeScaleFactor != nil {
+		p.RegimeScaleFactor = *dto.RegimeScaleFactor
+	}
+	if dto.RegimeTrendAbsRetPct != nil {
+		p.RegimeTrendAbsRetPct = *dto.RegimeTrendAbsRetPct
+	}
+	if dto.RegimeVolRangePct != nil {
+		p.RegimeVolRangePct = *dto.RegimeVolRangePct
+	}
 	if dto.TierSmallRatio != nil {
 		p.TierSmallRatio = *dto.TierSmallRatio
 	}

@@ -112,6 +112,14 @@ type Params struct {
 	TrendStopTriggerPct float64 `json:"trendStopTriggerPct"` // position.monitor.trend_stop.trigger_pct；0=关闭
 	TrendStopPct        float64 `json:"trendStopPct"`        // position.monitor.trend_stop.stop_pct；0=关闭
 
+	// 行情路由减仓（第 2 步）：前一日状态标签命中 RegimeScaleLabels 时，本日入场
+	// 适用的仓位上限按 RegimeScaleFactor 压低。标签集为空 = 关闭。
+	// 用**前一日**而非当日：当日 OHLC 在决策时不可知（见 regime_scale.go）。
+	RegimeScaleLabels    string  `json:"regimeScaleLabels"`    // "trend" / "trend,vol"；空=关闭
+	RegimeScaleFactor    float64 `json:"regimeScaleFactor"`    // [0,1)，0=当日不开新仓
+	RegimeTrendAbsRetPct float64 `json:"regimeTrendAbsRetPct"` // 单边判据 |日收益|%；0=用金标准 1.5
+	RegimeVolRangePct    float64 `json:"regimeVolRangePct"`    // 震荡判据 日内振幅%；0=用金标准 2.5
+
 	// 移动止盈分档（position.monitor.trail.*）
 	TierSmallRatio    float64 `json:"tierSmallRatio"`
 	TierLargeRatio    float64 `json:"tierLargeRatio"`
@@ -278,6 +286,9 @@ func (p Params) Validate() error {
 	if p.TrendStopTriggerPct > 0 && p.TrendStopPct > 0 && p.TrendGateWindowHours <= 0 {
 		return fmt.Errorf("启用趋势条件止损（trigger=%.1f%% stop=%.0f%%）必须同时给 trendGateWindowHours（动量窗口，与趋势闸共用）, got %.1f",
 			p.TrendStopTriggerPct, p.TrendStopPct, p.TrendGateWindowHours)
+	}
+	if err := validateRegimeScale(p); err != nil {
+		return err
 	}
 	return argusTrade.ValidateRiskParams(view)
 }

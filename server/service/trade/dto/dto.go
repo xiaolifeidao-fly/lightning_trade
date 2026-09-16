@@ -793,15 +793,22 @@ type SignalBacktestParamsDTO struct {
 	TrendGateThresholdPct      *float64 `json:"trendGateThresholdPct"`      // trade.trend_gate.threshold_pct
 	TrendStopTriggerPct        *float64 `json:"trendStopTriggerPct"`        // position.monitor.trend_stop.trigger_pct
 	TrendStopPct               *float64 `json:"trendStopPct"`               // position.monitor.trend_stop.stop_pct
-	TierSmallRatio             *float64 `json:"tierSmallRatio"`             // position.monitor.trail.tier_small_ratio
-	TierLargeRatio             *float64 `json:"tierLargeRatio"`             // position.monitor.trail.tier_large_ratio
-	SmallActivatePct           *float64 `json:"smallActivatePct"`           // position.monitor.trail.small_activate
-	SmallGiveback              *float64 `json:"smallGiveback"`              // position.monitor.trail.small_giveback
-	MediumActivatePct          *float64 `json:"mediumActivatePct"`
-	MediumGiveback             *float64 `json:"mediumGiveback"`
-	LargeActivatePct           *float64 `json:"largeActivatePct"`
-	LargeGiveback              *float64 `json:"largeGiveback"`
-	TakerFee                   *float64 `json:"takerFee"`
+
+	// 行情路由减仓：前一日状态标签命中时，本日入场上限按系数压低。
+	// 标签用**前一日**（决策时可知），不是当日——当日 OHLC 属于未来信息。
+	RegimeScaleLabels    *string  `json:"regimeScaleLabels"`    // "trend" / "trend,vol"；空=关闭
+	RegimeScaleFactor    *float64 `json:"regimeScaleFactor"`    // [0,1)，0=当日不开新仓
+	RegimeTrendAbsRetPct *float64 `json:"regimeTrendAbsRetPct"` // 单边判据 |日收益|%；0=金标准 1.5
+	RegimeVolRangePct    *float64 `json:"regimeVolRangePct"`    // 震荡判据 日内振幅%；0=金标准 2.5
+	TierSmallRatio       *float64 `json:"tierSmallRatio"`       // position.monitor.trail.tier_small_ratio
+	TierLargeRatio       *float64 `json:"tierLargeRatio"`       // position.monitor.trail.tier_large_ratio
+	SmallActivatePct     *float64 `json:"smallActivatePct"`     // position.monitor.trail.small_activate
+	SmallGiveback        *float64 `json:"smallGiveback"`        // position.monitor.trail.small_giveback
+	MediumActivatePct    *float64 `json:"mediumActivatePct"`
+	MediumGiveback       *float64 `json:"mediumGiveback"`
+	LargeActivatePct     *float64 `json:"largeActivatePct"`
+	LargeGiveback        *float64 `json:"largeGiveback"`
+	TakerFee             *float64 `json:"takerFee"`
 	// SignalThresholdBp / BaselineThresholdBp 只要不相等，本组精度自动降为频率级。
 	SignalThresholdBp   *float64 `json:"signalThresholdBp"`
 	BaselineThresholdBp *float64 `json:"baselineThresholdBp"`

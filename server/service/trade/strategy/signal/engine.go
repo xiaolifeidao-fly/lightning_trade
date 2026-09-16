@@ -124,6 +124,13 @@ type Engine struct {
 	skipCap   int
 	skipGate  int
 	skipTrend int
+	// regimeLabels 每个自然日的**决策时可知**状态标签（取前一日，见 regime_scale.go）。
+	// 整个窗口算一次，全路径共用——"8/19 前一日是不是单边"不该随路径变化。
+	regimeLabels map[string]string
+	// skipRegime 只被"路由压低后的上限"拦住的入场次数（原上限本可放行）。
+	// 与 skipCap 分开计：否则区分不出"本来就顶格了"和"是路由拦的"，
+	// 而后者才是这个机制到底有没有咬住的唯一证据。
+	skipRegime int
 	// trendStopCount 兜底线被收紧过多少次判定（不是平仓次数——每根 bar 的每次
 	// 判定都计一次）。它是"这一格里机制到底有没有咬住"的唯一证据：
 	// 扫参时某格与基线结果相同，可能是机制没生效、也可能是生效了但没改变结局，
@@ -183,6 +190,36 @@ func (e *Engine) ensureCap(price float64) {
 
 // Cap 已冻结的仓位上限（未冻结返回 0,false）。
 func (e *Engine) Cap() (int, bool) { return e.cap, e.capOK }
+
+// SeedRegimeLabels 灌入行情路由用的日标签。由 Replay 在拿到全窗口 K 线后调用；
+// 不灌 = 路由关闭（resolveRegimeScale 查不到标签就返回系数 1）。
+func (e *Engine) SeedRegimeLabels(bars []Bar) {
+	if e.p.RegimeScaleLabels == "" {
+		return
+	}
+	e.regimeLabels = PriorDayLabels(bars, e.p.regimeThresholds())
+}
+
+// entryCap 本次入场判定适用的上限：行情路由命中时按系数压低，否则就是 e.cap。
+func (e *Engine) entryCap(at time.Time) int {
+	sc := resolveRegimeScale(e.p, e.regimeLabels, at)
+	if sc >= 1 {
+		return e.cap
+	}
+	return scaledCap(e.cap, sc)
+}
+
+// admitEntry 本次入场（目标张数 want）是否放行，并把拦下的原因计到对应计数上。
+func (e *Engine) admitEntry(want int, at time.Time) bool {
+	if want <= e.entryCap(at) {
+		return true
+	}
+	if want <= e.cap {
+		e.skipRegime++
+	}
+	e.skipCap++
+	return false
+}
 
 // Seed 灌入窗口起点的旧仓。必须在任何信号/K 线之前调用。
 func (e *Engine) Seed(sp SeedPosition) {
@@ -253,8 +290,7 @@ func (e *Engine) OnSignal(s Signal, px float64) {
 		if !e.passTrendGate(side, s) {
 			return
 		}
-		if b.size+orderSize > e.cap {
-			e.skipCap++
+		if !e.admitEntry(b.size+orderSize, s.Ts) {
 			return
 		}
 		b.add(px, orderSize, s.Ts)
@@ -269,8 +305,7 @@ func (e *Engine) OnSignal(s Signal, px float64) {
 		if !e.passTrendGate(side, s) {
 			return
 		}
-		if orderSize > e.cap {
-			e.skipCap++
+		if !e.admitEntry(orderSize, s.Ts) {
 			return
 		}
 		b.add(px, orderSize, s.Ts)
@@ -280,8 +315,7 @@ func (e *Engine) OnSignal(s Signal, px float64) {
 		if !e.passTrendGate(side, s) {
 			return
 		}
-		if nb.size+orderSize > e.cap {
-			e.skipCap++
+		if !e.admitEntry(nb.size+orderSize, s.Ts) {
 			return
 		}
 		nb.add(px, orderSize, s.Ts)
