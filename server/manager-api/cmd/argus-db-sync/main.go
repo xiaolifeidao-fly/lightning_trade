@@ -276,27 +276,44 @@ func buildInsert(table string, cols []string, nRows int) string {
 
 // reportVerify 两边逐表比 COUNT 与 BIT_XOR(CRC32(id))。id 在两边保留，
 // 所以这一对足以发现缺行/多行/错行；内容正确性由"直接整行拷贝"保证。
+//
+// 必须把"目标少行"和"目标多行"分开报：切换之后老库冻结、新库继续写，活跃表本来
+// 就会目标多于源。最初版本两种都报"不一致"，切换后一跑满屏红字，而那恰恰是期望
+// 状态——这种报告会诱导出错误的回滚决定。
 func reportVerify(src, dst *sql.DB, tables []string) {
 	fmt.Printf("\n%-24s %12s %12s %14s %14s  %s\n",
 		"表", "源行数", "目标行数", "源校验和", "目标校验和", "结论")
-	fmt.Println(strings.Repeat("-", 100))
-	bad := 0
+	fmt.Println(strings.Repeat("-", 108))
+	missing, ahead, mismatch := 0, 0, 0
 	for _, t := range tables {
 		q := fmt.Sprintf("SELECT COUNT(*), IFNULL(BIT_XOR(CRC32(id)),0) FROM `%s`", t)
 		sn, sc := pairInt(src, q)
 		dn, dc := pairInt(dst, q)
-		verdict := "一致"
-		if sn != dn || sc != dc {
-			verdict = "*** 不一致 ***"
-			bad++
+		var verdict string
+		switch {
+		case sn == dn && sc == dc:
+			verdict = "一致"
+		case dn < sn:
+			verdict = fmt.Sprintf("*** 目标缺 %d 行 ***", sn-dn)
+			missing++
+		case dn > sn:
+			verdict = fmt.Sprintf("目标多 %d 行（切换后新增，正常）", dn-sn)
+			ahead++
+		default:
+			verdict = "*** 行数相同、校验和不同：错行 ***"
+			mismatch++
 		}
 		fmt.Printf("%-24s %12d %12d %14d %14d  %s\n", t, sn, dn, sc, dc, verdict)
 	}
-	fmt.Println(strings.Repeat("-", 100))
-	if bad == 0 {
+	fmt.Println(strings.Repeat("-", 108))
+	switch {
+	case missing == 0 && mismatch == 0 && ahead == 0:
 		fmt.Printf("全部一致（%d 张表）\n", len(tables))
-	} else {
-		fmt.Printf("%d / %d 张表不一致\n", bad, len(tables))
+	case missing == 0 && mismatch == 0:
+		fmt.Printf("无缺行、无错行；%d 张表目标领先（切换后老库冻结、新库继续写，符合预期）\n", ahead)
+	default:
+		fmt.Printf("需要处理：%d 张缺行、%d 张错行（另有 %d 张目标领先属正常）\n",
+			missing, mismatch, ahead)
 	}
 	fmt.Printf("未纳入比对（派生表）: %s\n\n", strings.Join(derivedTables, ", "))
 }
