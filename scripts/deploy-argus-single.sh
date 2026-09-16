@@ -39,11 +39,44 @@ command -v sshpass >/dev/null || die "需要 sshpass"
 command -v go >/dev/null || die "需要 go"
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'ssh -o "ControlPath=$MUXDIR/%C" -O exit "root@$REMOTE_HOST" >/dev/null 2>&1 || true; rm -rf "$WORK"' EXIT
 SNAP="$ROOT/dist/argus-single-predeploy-$(date +%Y%m%d_%H%M%S)"
 
-SSH=(sshpass -p "$REMOTE_PASS" ssh -o StrictHostKeyChecking=no -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -p "$REMOTE_PORT" "root@$REMOTE_HOST")
-SCP=(sshpass -p "$REMOTE_PASS" scp -o StrictHostKeyChecking=no -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -P "$REMOTE_PORT")
+# 连接复用：这台机器的 sshd 会掐掉密集的新连接（2026-09-16 实测，同一份发布
+# 连续三次分别死在 scp 和随后的校验和 ssh 上，退出码 255）。一次发布要开十几条
+# 连接，正好撞在 MaxStartups 上。改成 ControlMaster 多路复用——只认证一次，
+# 后续 ssh/scp 全走同一条连接，既绕开限流也更快。
+#
+# socket **不能**放 $WORK：macOS 的 mktemp -d 给的是 /var/folders/... 长路径，
+# 加上 %C 的 40 位摘要会超过 unix socket 的 104 字节上限，ssh 报
+# "ControlPath too long" 而多路复用静默失效（实测踩过）。固定放 /tmp 下的短目录。
+MUXDIR=/tmp/.dc-ssh-mux
+mkdir -p "$MUXDIR" && chmod 700 "$MUXDIR"
+MUX=(-o ControlMaster=auto -o "ControlPath=$MUXDIR/%C" -o ControlPersist=180)
+SSH=(sshpass -p "$REMOTE_PASS" ssh "${MUX[@]}" -o StrictHostKeyChecking=no -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -p "$REMOTE_PORT" "root@$REMOTE_HOST")
+SCP=(sshpass -p "$REMOTE_PASS" scp "${MUX[@]}" -o StrictHostKeyChecking=no -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -P "$REMOTE_PORT")
+
+# scp_retry 带重试的上传。这台机器的 sshd 会间歇性掐掉新连接
+# （2026-09-16 实测：同一份发布连续两次死在 "Connection closed by ... port 22"），
+# 而上传是整条发布链里唯一会被这个掐到的一步——它在换二进制之前，失败即中止，
+# 现役二进制安然无恙，所以重试是安全的。只重试连接级失败，三次仍失败就硬失败；
+# 传输完整性另有 sha256 校验兜着，重试不会掩盖损坏。
+scp_retry() {
+  local src="$1" dst="$2" i
+  for i in 1 2 3; do
+    if "${SCP[@]}" "$src" "$dst" >/dev/null 2>"$WORK/scp.err"; then
+      return 0
+    fi
+    if ! grep -qiE "closed by remote host|Connection closed|lost connection|Connection refused|timed out" "$WORK/scp.err"; then
+      cat "$WORK/scp.err" >&2   # 不是连接问题（权限/路径/磁盘），别重试
+      return 1
+    fi
+    echo "  上传 $(basename "$src") 第 $i 次被掐断，等 $((i * 10))s 重试" >&2
+    sleep $((i * 10))
+  done
+  cat "$WORK/scp.err" >&2
+  return 1
+}
 
 echo "▶ 本地自检（编译 + vet + 测试）"
 cd "$SRC_DIR"
@@ -68,7 +101,7 @@ echo "  trail_state / 进程 / 日志尾 各存一份"
 grep -c posId "$SNAP/trail_state.json" 2>/dev/null | sed 's/^/  trail 条目数: /' || true
 
 echo "▶ 上传（不动现役二进制）"
-"${SCP[@]}" "$WORK/argus_single" "root@$REMOTE_HOST:$APP_DIR/argus_single.staged" >/dev/null
+scp_retry "$WORK/argus_single" "root@$REMOTE_HOST:$APP_DIR/argus_single.staged" || die "上传失败"
 local_sum="$(shasum -a 256 "$WORK/argus_single" | cut -d' ' -f1)"
 remote_sum="$("${SSH[@]}" "sha256sum '$APP_DIR/argus_single.staged' | cut -d' ' -f1")"
 [ "$local_sum" = "$remote_sum" ] || die "校验和不一致，传输损坏（现役二进制未被触碰）"
@@ -148,7 +181,7 @@ echo "  —— 本轮启动的关键行 ——"
 tail -400 server.log | grep -E "仓位上限|趋势闸|趋势条件止损|trail恢复|配置" | tail -12
 REMOTE
 
-"${SCP[@]}" "$REMOTE_SCRIPT" "root@$REMOTE_HOST:/tmp/deploy-argus-single.remote.sh" >/dev/null
+scp_retry "$REMOTE_SCRIPT" "root@$REMOTE_HOST:/tmp/deploy-argus-single.remote.sh" || die "远端脚本上传失败"
 echo "▶ 切换并等待就绪"
 "${SSH[@]}" "bash /tmp/deploy-argus-single.remote.sh '$APP_DIR' '$APP_PORT' '$KEEP_BACKUPS' '$READY_TIMEOUT'; rc=\$?; rm -f /tmp/deploy-argus-single.remote.sh; exit \$rc"
 
