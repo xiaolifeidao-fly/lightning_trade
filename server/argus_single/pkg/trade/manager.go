@@ -608,32 +608,15 @@ func (tm *TradeManager) executeSignalTrades_From_WEB(accounts []AccountConfig, i
 
 			logrus.Infof("  ✅ %s %s [盘口信号] 开%s成功: 张数=%d, code=%d",
 				signalSideEmoji(direction), acc.Name, posSide, accSize, resp.Code)
-			// Size 记开仓后预计净仓张数（让"最大堆积"口径正确）；OrderSize 记本次下单张数
-			postNet := accSize
-			if netOK {
-				if net.Size == 0 || strings.EqualFold(posSide, net.Side) {
-					postNet = net.Size + accSize // 全新/加仓
-				} else {
-					postNet = net.Size - accSize // 反向减仓
-					if postNet < 0 {
-						postNet = 0
-					}
-				}
-			}
-			openEv := eventlog.Event{Account: acc.Name, Variant: acc.Variant, InstId: instId, Event: eventlog.EvOpen, Side: posSide, Size: postNet, OrderSize: accSize}
-			if netOK && isReduction(posSide, net.Side, net.Size) && postNet == 0 {
+			// 事件构造提到 buildOpenEvent（open_event.go）：原先内联在这里没有测试缝，
+			// avg_px 只在减仓分支被赋值这个缺口才会在 episode_entry 里躺 3299 条。
+			openEv := buildOpenEvent(acc, instId, posSide, net, netOK, accSize,
+				tm.capParamsFor(acc.Name).FaceValue, q)
+			if netOK && isReduction(posSide, net.Side, net.Size) && openEv.Size == 0 {
 				// P2-A：减仓清零=自家平仓，打标防对账误报 external_close
 				MarkBotClose(acc.Name, instId, net.Side, net.PosId)
 			}
-			if netOK && isReduction(posSide, net.Side, net.Size) {
-				// P2-D：减仓锁利的已实现盈亏估算（lastPx=门控时点价，非成交价）
-				face := tm.capParamsFor(acc.Name).FaceValue
-				openEv.Pnl = estimateReducePnl(net.Side, net.AvgPx, net.LastPx, face, accSize)
-				openEv.RoiPct = netRoiPct(net.Side, net.AvgPx, net.LastPx, SignalLeverage)
-				openEv.AvgPx, openEv.LastPx, openEv.NetSide = net.AvgPx, net.LastPx, net.Side
-				openEv.Reason = "减仓锁利(pnl为估算)"
-			}
-			eventlog.Log(applySignalQuote(openEv, q))
+			eventlog.Log(openEv)
 			resultCh <- result{acc: OpenedAccount{
 				Account: acc,
 				Size:    accSize,

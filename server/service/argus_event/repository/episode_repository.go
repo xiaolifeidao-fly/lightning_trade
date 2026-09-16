@@ -349,6 +349,8 @@ type EpisodeEntryRow struct {
 	GapBp         *float64 `gorm:"column:gap_bp"`
 	AvgPx         *float64 `gorm:"column:avg_px"`
 	LastPx        *float64 `gorm:"column:last_px"`
+	SigLast       *float64 `gorm:"column:sig_last"`
+	SigMark       *float64 `gorm:"column:sig_mark"`
 	ExitKind      string   `gorm:"column:exit_kind"`
 }
 
@@ -357,6 +359,7 @@ const episodeEntryColumns = "id, episode_id, instance_key, account_label, instru
 	"added_size, order_size, closed_size, open_size, " +
 	"attributed_pnl, attributed_pnl_strategy, missing_pnl_events, pnl_known, " +
 	"IFNULL(variant, '') AS variant, config_version, gap_bp, avg_px, last_px, " +
+	"sig_last, sig_mark, " +
 	"IFNULL(exit_kind, '') AS exit_kind"
 
 // EpisodeEntryRepository episode_entry 只读仓储。

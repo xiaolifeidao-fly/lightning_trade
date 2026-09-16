@@ -416,6 +416,8 @@ func (b *book) addEntry(e *eventstore.StrategyEvent, size int) {
 		GapBp:         e.GapBp,
 		AvgPx:         e.AvgPx,
 		LastPx:        e.LastPx,
+		SigLast:       e.SigLast,
+		SigMark:       e.SigMark,
 		RebuiltAt:     b.rebuiltAt,
 	}
 	b.entries = append(b.entries, &entryState{row: row, remaining: float64(size)})

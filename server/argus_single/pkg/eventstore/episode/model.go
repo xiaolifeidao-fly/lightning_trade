@@ -164,6 +164,13 @@ type EpisodeEntry struct {
 	GapBp         *float64 `gorm:"column:gap_bp;type:decimal(12,4)" description:"触发本次建仓的偏离 bp（带符号，>0=UP）"`
 	AvgPx         *float64 `gorm:"column:avg_px;type:decimal(20,8)" description:"决策时刻的持仓均价"`
 	LastPx        *float64 `gorm:"column:last_px;type:decimal(20,8)" description:"决策时刻的最新价"`
+	// SigLast/SigMark 信号时刻的行情报价。**按建仓价分层归因要用的是这两个**，
+	// 不是 avg_px：avg_px 是当时的混合持仓均价，而分层想知道的是"这一笔在什么
+	// 价位进的"。而且 avg_px 有已知上游缺口——manager.go 只在减仓分支写它，
+	// 真正的开仓/加仓事件一条都没有（3299 条里 0 条），而 sig_last 由
+	// applySignalQuote 对所有事件统一写，历史段覆盖 67.9%、实时段 100%。
+	SigLast *float64 `gorm:"column:sig_last;type:decimal(20,8)" description:"决策时刻的信号价（DeepCoin last）"`
+	SigMark *float64 `gorm:"column:sig_mark;type:decimal(20,8)" description:"决策时刻的标记价"`
 
 	// 出场口径冗余一份到决策行上：分层统计的过滤条件（"只看策略自己平掉的"）
 	// 直接落在本表索引上，不必每次回 join episode。

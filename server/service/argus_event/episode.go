@@ -523,6 +523,8 @@ func episodeEntryDTO(row *repository.EpisodeEntryRow) argusDTO.EpisodeEntryDTO {
 		StrengthLevel:         StrengthLevelOf(row.GapBp),
 		AvgPx:                 row.AvgPx,
 		LastPx:                row.LastPx,
+		SigLast:               row.SigLast,
+		SigMark:               row.SigMark,
 	}
 }
 

@@ -190,6 +190,10 @@ type EpisodeEntryDTO struct {
 	StrengthLevel string   `json:"strengthLevel"`
 	AvgPx         *float64 `json:"avgPx"`
 	LastPx        *float64 `json:"lastPx"`
+	// SigLast/SigMark 决策时刻的信号价。按建仓价分层要用这两个而不是 avgPx——
+	// 见 episode/model.go 上的说明（avgPx 有已知上游缺口）。
+	SigLast *float64 `json:"sigLast"`
+	SigMark *float64 `json:"sigMark"`
 }
 
 // EpisodeRoiPointDTO 一个 ROI% 观测点。
@@ -284,14 +288,14 @@ type EpisodeDetailDTO struct {
 
 // ExitKindBucketDTO 一种出场方式的统计。
 type ExitKindBucketDTO struct {
-	ExitKind  string  `json:"exitKind"` // 空串 = 仍持仓
-	Label     string  `json:"label"`
-	Count     int64   `json:"count"`
-	Share     float64 `json:"share"`
-	Pnl       float64 `json:"pnl"`
-	Wins      int64   `json:"wins"`
+	ExitKind  string   `json:"exitKind"` // 空串 = 仍持仓
+	Label     string   `json:"label"`
+	Count     int64    `json:"count"`
+	Share     float64  `json:"share"`
+	Pnl       float64  `json:"pnl"`
+	Wins      int64    `json:"wins"`
 	WinRate   *float64 `json:"winRate"` // 不计入策略胜率的那两类恒为 nil
-	CountedIn bool    `json:"countedInWinRate"`
+	CountedIn bool     `json:"countedInWinRate"`
 }
 
 // EpisodeStatsDTO 出场归因分布 + 胜率口径。

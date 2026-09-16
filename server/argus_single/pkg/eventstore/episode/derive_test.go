@@ -643,3 +643,68 @@ func TestDeriveFirstEventIsReductionMakesNoEntry(t *testing.T) {
 		t.Errorf("SideFlipRejected = %d，期望 0", stats.SideFlipRejected)
 	}
 }
+
+// withSigQuote 标出信号时刻的行情报价。open 事件上 sig_last 的覆盖率远高于
+// avg_px（实时段 100%、历史段 67.9%），因为 applySignalQuote 对所有事件统一写，
+// 而 avg_px 只在 manager.go 的减仓分支被赋值。
+func withSigQuote(last, mark float64) func(*eventstore.StrategyEvent) {
+	return func(row *eventstore.StrategyEvent) {
+		row.SigLast = floatPtr(last)
+		row.SigMark = floatPtr(mark)
+	}
+}
+
+// 建仓决策行必须带上决策时刻的信号价。
+//
+// 背景：episode_entry.avg_px 100% 为 NULL，根因是 manager.go:623 只在减仓分支
+// 写 avg_px，而减仓不产生决策行——那 3299 条真正的开仓/加仓事件一条都没有。
+// 对"按建仓价分层归因"这个用途，sig_last（这一笔进场时的市场价）比 avg_px
+// （当时的混合持仓均价）更贴题，而且它在历史数据里本来就有，整表重建即可追溯。
+func TestEntryCarriesSignalQuote(t *testing.T) {
+	s := &stream{}
+	s.push("2026-08-18 00:10:00", eventlog.EvOpen, open("long", 1, 1), withSigQuote(60000, 60010))
+	s.push("2026-08-18 00:20:00", eventlog.EvOpen, open("long", 2, 1), withSigQuote(60500, 60510))
+	s.push("2026-08-18 01:00:00", eventlog.EvTrailingClose, closing("long", 0), withPnl(40, 1.5))
+
+	eps, _ := Derive(s.rows, rebuiltAt)
+	if len(eps) != 1 {
+		t.Fatalf("期望 1 个 episode，实际 %d", len(eps))
+	}
+	entries := eps[0].Entries
+	if len(entries) != 2 {
+		t.Fatalf("期望 2 行决策，实际 %d", len(entries))
+	}
+	for i, want := range []float64{60000, 60500} {
+		if entries[i].SigLast == nil {
+			t.Fatalf("第 %d 行决策没带 sig_last——按建仓价分层就没法做", i+1)
+		}
+		if got := *entries[i].SigLast; got != want {
+			t.Errorf("第 %d 行 sig_last = %v，期望 %v", i+1, got, want)
+		}
+	}
+	if entries[0].SigMark == nil || *entries[0].SigMark != 60010 {
+		t.Errorf("sig_mark 也要一并带上，实际 %v", entries[0].SigMark)
+	}
+}
+
+// 源事件没有报价时必须留 NULL，不得落 0 冒充真实观测——
+// 与 applySignalQuote 的既有约定一致（"不可算：整体省略"）。
+func TestEntryLeavesSignalQuoteNullWhenSourceHasNone(t *testing.T) {
+	s := &stream{}
+	s.push("2026-08-18 00:10:00", eventlog.EvOpen, open("long", 1, 1)) // 不带报价
+	s.push("2026-08-18 01:00:00", eventlog.EvTrailingClose, closing("long", 0), withPnl(40, 1.5))
+
+	eps, _ := Derive(s.rows, rebuiltAt)
+	if len(eps) != 1 || len(eps[0].Entries) != 1 {
+		t.Fatalf("前置条件不成立: %d episodes", len(eps))
+	}
+	e := eps[0].Entries[0]
+	if e.SigLast != nil {
+		t.Errorf("源事件无报价时 sig_last 必须为 NULL，实际 %v", *e.SigLast)
+	}
+	// avg_px 同样保持 NULL：这条是已知的上游缺口（manager.go 只在减仓分支写），
+	// 不能在派生层用别的价格顶替。
+	if e.AvgPx != nil {
+		t.Errorf("avg_px 不该被派生层伪造，实际 %v", *e.AvgPx)
+	}
+}
