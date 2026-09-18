@@ -107,16 +107,40 @@ func grid(dim string) []tradeDTO.SignalBacktestGroupDTO {
 		return out
 	case "stop":
 		var out []tradeDTO.SignalBacktestGroupDTO
-		for _, s := range []float64{150, 200, 250, 300, 400, 500, 650} {
+		// 钉闸（见 pinGate）。事前预测：曾到过 −100~−300% 的 71 笔全部回本、
+		// −300 以下 31 笔 19 笔死——所以 300 是唯一可能好于 400 的格；<300 几乎
+		// 必然更差（把回本单砍成实亏），这与 7 天窗口"收紧更差"的结论一致。
+		for _, s := range []float64{250, 300, 350, 400, 500, 650} {
 			out = append(out, g(fmt.Sprintf("stop_%.0f", s),
-				tradeDTO.SignalBacktestParamsDTO{CatastropheStopPct: f64(s)}))
+				pinGate(tradeDTO.SignalBacktestParamsDTO{CatastropheStopPct: f64(s)})))
 		}
 		return out
 	case "gate":
+		// 反向减仓门槛。生产 8%：只有净仓 ROI ≥ +8% 时反向信号才允许减 1 张，
+		// 亏损中的反向信号一律拒绝（gate_block）。这一维原来只扫 0~40 的正值。
+		//
+		// 为什么要扫到负值：2026-09-17~18 的兜底（A −53.4 / B −19.3）是"慢磨"型——
+		// 48h 动量 36 小时里没越过 3%，趋势闸看不见；而持仓期间收到 135 次反向
+		// 信号，其中 47 次发生在 ROI > −100% 时，全被 8% 门槛拒绝。80 天 19 笔兜底
+		// 无一例外：首个反向信号在开仓后 0~1.3h、ROI −2%~−38% 时就到了。
+		// 负门槛 = "浮亏不深于 X% 时仍按反向信号减仓"，是与趋势闸正交的第二条
+		// 尾部出口：趋势闸管入场（看行情），负门槛管出场（看信号）。
+		//
+		// **2026-09-19 扫过 −50~−300，结论：全部有害，且随负得越深越差。**
+		// B 测试段 +123.95 → −38.61（−50）→ −99.34（−100）；A 留出段 +89.11 → −80.07（−50）。
+		// 机理：反向信号每几分钟一次，负门槛把策略变成"跟信号来回翻"——笔数 ×4、
+		// 手续费 ×2.5、胜率 92%→29%；而策略的利润恰恰来自**满仓扛过 −100~−300%
+		// 再由移动止盈收割**（80 天里曾到过 −100~−300% 的 71 笔全部回本、零兜底）。
+		// 任何让它在亏损中减仓的机制都在拆这个 edge——这是第三次得出同一结论
+		// （收紧兜底、趋势条件止损、负门槛）。负值已从网格撤掉，实盘校验器仍拒绝负值。
+		//
+		// 事前判据（与趋势闸走前验证同一条）：训练段选格 → 该格在测试段净盈亏
+		// 上升且兜底不增。0 与 8 在四段上互有胜负（A 测试段 0 大胜、留出段 0 大败），
+		// 是路径噪声，不动。
 		var out []tradeDTO.SignalBacktestGroupDTO
 		for _, v := range []float64{0, 4, 8, 15, 25, 40} {
 			out = append(out, g(fmt.Sprintf("gate_%.0f", v),
-				tradeDTO.SignalBacktestParamsDTO{GateMinProfitPct: f64(v)}))
+				pinGate(tradeDTO.SignalBacktestParamsDTO{GateMinProfitPct: f64(v)})))
 		}
 		return out
 	case "trendstop":
