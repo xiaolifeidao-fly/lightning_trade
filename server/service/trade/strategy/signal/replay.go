@@ -14,6 +14,9 @@ type Input struct {
 
 	// DevWindows 无条件偏离采样窗口（dev_sample），只在改 signal_threshold 时用来推 λ(θ)。
 	DevWindows []DevWindow
+
+	// Perturb 回放扰动（见 perturb.go）。零值 = 不扰动。
+	Perturb Perturb
 }
 
 // Result 一次回放的产出。
@@ -27,6 +30,9 @@ type Result struct {
 	SignalReplayed int
 	SignalDropped  int // 丢弃原因：ts ≤ 种子时刻，或没有任何 K 线覆盖
 	SignalFiltered int // 抬高阈值后被 |gapBp| 门限筛掉的（频率级路径）
+	// 扰动计数。有扰动时 Total = Replayed + Dropped + PerturbDropped（+Filtered）。
+	PerturbDropped int // 被 Perturb.SignalDropPct 随机丢掉的信号
+	ExitsDelayed   int // 被 Perturb.ExitLateProb 推迟一根的出场判定
 
 	Episodes []Episode
 	Equity   []EquityPoint
@@ -102,6 +108,10 @@ func Replay(in Input) (*Result, error) {
 
 	eng := NewEngine(p)
 	eng.SeedRegimeLabels(bars)
+	dropRng, exitRng := in.Perturb.rngs()
+	if exitRng != nil {
+		eng.setExitPerturb(exitRng, in.Perturb.ExitLateProb)
+	}
 	seed := in.Seed
 	if seed.OK() {
 		eng.Seed(seed)
@@ -126,9 +136,13 @@ func Replay(in Input) (*Result, error) {
 		eng.ObserveTrend(bar.Ts, bar.Close)
 		for idx < len(pending) && !pending[idx].Ts.After(bar.Ts) {
 			s := pending[idx]
+			idx++
+			if dropRng != nil && dropRng.Float64() < in.Perturb.SignalDropPct {
+				res.PerturbDropped++
+				continue
+			}
 			eng.OnSignal(s, entryPrice(p, s, bar))
 			res.SignalReplayed++
-			idx++
 		}
 		eng.OnBar(bar)
 	}
@@ -161,6 +175,7 @@ func fill(res *Result, e *Engine) {
 	res.SkipTrend = e.skipTrend
 	res.SkipRegime = e.skipRegime
 	res.TrendStopHits = e.trendStopCount
+	res.ExitsDelayed = e.exitsDelayed
 	res.MaxStack = e.maxStack
 	res.Cap = e.cap
 	res.BarCount = e.barCount

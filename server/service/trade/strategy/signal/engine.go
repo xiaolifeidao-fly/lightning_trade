@@ -1,6 +1,7 @@
 package signal
 
 import (
+	"math/rand"
 	"strings"
 	"time"
 
@@ -56,6 +57,9 @@ type book struct {
 	maxSize    int
 	fee        float64
 	reducedPnl float64
+	// pendingExit 被扰动推迟的出场原因（见 Perturb.ExitLateProb）；空 = 无。
+	// 下一根 bar 上、该根信号成交之后，按该根收盘平掉整个仓。削零 reset 时一并清掉。
+	pendingExit string
 }
 
 func (b *book) roi(px float64, leverage int) float64 {
@@ -103,6 +107,7 @@ func (b *book) reset() {
 	b.addCount = 0
 	b.maxSize = 0
 	b.openedAt = time.Time{}
+	b.pendingExit = ""
 }
 
 // Engine 事件驱动的盘口信号回测引擎。非并发安全：一个 run 一个实例。
@@ -141,6 +146,27 @@ type Engine struct {
 	lastPx         float64
 	firstBar       time.Time
 	lastBar        time.Time
+
+	// 扰动（Perturb.ExitLateProb）：exitRng==nil 即关闭，判定路径与从前逐字节一致。
+	exitRng      *rand.Rand
+	exitLateProb float64
+	exitsDelayed int
+}
+
+// setExitPerturb 装上出场延迟扰动。Replay 按 Input.Perturb 调用；测试可直接调。
+func (e *Engine) setExitPerturb(rng *rand.Rand, prob float64) {
+	e.exitRng, e.exitLateProb = rng, prob
+}
+
+// closeOrDefer 出场判定成立时的落点：无扰动直接平；有扰动则按概率推迟到下一根
+// （记在 book.pendingExit），同一笔只推迟一次——再推就不是"晚 60 秒"而是"不平"了。
+func (e *Engine) closeOrDefer(bk *book, px float64, at time.Time, reason string) {
+	if e.exitRng != nil && bk.pendingExit == "" && e.exitRng.Float64() < e.exitLateProb {
+		bk.pendingExit = reason
+		e.exitsDelayed++
+		return
+	}
+	e.closeBook(bk, px, at, reason)
 }
 
 // NewEngine 构造引擎。p 应已 Normalize（Replay 会做）。
@@ -415,6 +441,12 @@ func (e *Engine) OnBar(b Bar) {
 		if !e.capOK {
 			continue // 分档边界未知，无法判定；下一根自愈
 		}
+		if bk.pendingExit != "" {
+			// 上一根被推迟的出场：本根信号已在 Replay 里先成交（加仓/减仓都算进去了），
+			// 现在按本根收盘平掉整个仓。09-17 实盘就是这样把三次开空并进了一笔要平的空单。
+			e.closeBook(bk, b.Close, b.Ts, bk.pendingExit)
+			continue
+		}
 		e.evalBook(bk, b)
 	}
 
@@ -455,7 +487,7 @@ func (e *Engine) evalBook(bk *book, bar Bar) {
 		}
 	}
 	if crossed {
-		e.closeBook(bk, fillPx, bar.Ts, ExitCatastrophe)
+		e.closeOrDefer(bk, fillPx, bar.Ts, ExitCatastrophe)
 		return
 	}
 
@@ -480,7 +512,7 @@ func (e *Engine) evalBook(bk *book, bar Bar) {
 				if bk.side == "short" {
 					px = bk.avg * (1 - exitRoi/(lev*100))
 				}
-				e.closeBook(bk, px, bar.Ts, ExitTrailing)
+				e.closeOrDefer(bk, px, bar.Ts, ExitTrailing)
 				return
 			}
 		}
@@ -489,9 +521,9 @@ func (e *Engine) evalBook(bk *book, bar Bar) {
 		act, st := argusMonitor.EvaluateExit(bk.size, bk.roi(favorable, e.p.Leverage), e.exitCfg, bk.trail)
 		bk.trail = st
 		if act == argusMonitor.ActionTrailingClose {
-			e.closeBook(bk, favorable, bar.Ts, ExitTrailing)
+			e.closeOrDefer(bk, favorable, bar.Ts, ExitTrailing)
 		} else if act == argusMonitor.ActionCatastropheStop {
-			e.closeBook(bk, favorable, bar.Ts, ExitCatastrophe)
+			e.closeOrDefer(bk, favorable, bar.Ts, ExitCatastrophe)
 		}
 		return
 	}
@@ -501,9 +533,9 @@ func (e *Engine) evalBook(bk *book, bar Bar) {
 	bk.trail = st
 	switch act {
 	case argusMonitor.ActionCatastropheStop:
-		e.closeBook(bk, bar.Close, bar.Ts, ExitCatastrophe)
+		e.closeOrDefer(bk, bar.Close, bar.Ts, ExitCatastrophe)
 	case argusMonitor.ActionTrailingClose:
-		e.closeBook(bk, bar.Close, bar.Ts, ExitTrailing)
+		e.closeOrDefer(bk, bar.Close, bar.Ts, ExitTrailing)
 	}
 }
 

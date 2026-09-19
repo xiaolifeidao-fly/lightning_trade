@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -29,6 +30,7 @@ import (
 	"common/middleware/vipper"
 	"service/trade"
 	tradeDTO "service/trade/dto"
+	"service/trade/strategy/signal"
 )
 
 func f64(v float64) *float64 { return &v }
@@ -257,6 +259,13 @@ func main() {
 	capOverride := flag.Int("cap", 0, "覆盖 capOverride（>0 固定上限，绕过 cap 公式）")
 	stopPct := flag.Float64("stop", 0, "覆盖 catastropheStopPct")
 	gatePct := flag.Float64("gate", -1, "覆盖 gateMinProfitPct（-1=用解析器）")
+	// 集合评估（见 signal/perturb.go）：同一格跑 N 条扰动路径，报分布与配对差。
+	// 单路径的 ±50 与 09-17 那种"出场晚 3 分钟、之后 37 小时反向"的分叉同量级，
+	// 不做这一步，任何一维的结论都分不清是信号还是路径噪声。
+	ensembleN := flag.Int("ensemble", 0, "每格扰动路径数（0=不做集合评估）")
+	dropPct := flag.Float64("drop", 0.04, "扰动：每条信号被丢弃的概率")
+	lateProb := flag.Float64("late", 0.5, "扰动：出场判定成立时晚一根 bar 成交的概率")
+	ensembleJSON := flag.String("ensemble-json", "", "集合评估结果另存为 JSON 的路径（可选）")
 	flag.Parse()
 
 	if strings.TrimSpace(*account) == "" {
@@ -352,4 +361,50 @@ func main() {
 		fmt.Printf("⚠️  %s\n", warn)
 	}
 	fmt.Printf("\n批次 id=%d（结果已落 trade_backtest_run/_trade/_metric，可在管理端「信号回测」里复核）\n", batchID)
+
+	if *ensembleN > 0 {
+		rep, err := svc.RunSignalEnsemble(ctx, trade.SignalEnsembleRequest{
+			InstanceKey: *instance, AccountLabel: *account, Symbol: "BTCUSDT", PlatformCode: *platform,
+			Start: *start, End: *end, BaselineParams: base, Groups: groups, N: *ensembleN,
+			Perturb: signal.Perturb{SignalDropPct: *dropPct, ExitLateProb: *lateProb},
+		})
+		if err != nil {
+			log.Fatalf("集合评估失败：%v", err)
+		}
+		printEnsemble(rep)
+		if *ensembleJSON != "" {
+			if b, err := json.MarshalIndent(rep, "", "  "); err == nil {
+				if err := os.WriteFile(*ensembleJSON, b, 0o644); err != nil {
+					log.Printf("写 %s 失败：%v", *ensembleJSON, err)
+				}
+			}
+		}
+	}
+}
+
+// printEnsemble 分布表。读法：先看"同向"——某格要在 ≥ 3/4 的路径上都优于基线才算有信号；
+// 再看 Δp10/最小差是否为负得离谱；最后才看中位数大小。兜底列看"不劣于基线"的路径数。
+func printEnsemble(rep *trade.SignalEnsembleReport) {
+	fmt.Printf("\n集合评估：N=%d 条扰动路径/格，丢信号 %.0f%%，出场晚一根 %.0f%%（信号 %d 条，K 线 %d 根）\n",
+		rep.N, rep.Perturb.SignalDropPct*100, rep.Perturb.ExitLateProb*100, rep.Signals, rep.Bars)
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "组\t单路径\t中位\tp10\t最小\t最大\t兜底中位/最大\tΔ中位vs基线\tΔ最小\t同向\t兜底不劣")
+	row := func(g trade.SignalEnsembleGroup, withDelta bool) {
+		st := g.Stats
+		d := "\t\t\t"
+		if withDelta {
+			d = fmt.Sprintf("%+.2f\t%+.2f\t%d/%d\t%d/%d", g.VsBaseline.NetDeltaMedian, g.VsBaseline.NetDeltaMin,
+				g.VsBaseline.Better, g.VsBaseline.N, g.VsBaseline.CatNotWorse, g.VsBaseline.N)
+		}
+		fmt.Fprintf(w, "%s\t%+.2f\t%+.2f\t%+.2f\t%+.2f\t%+.2f\t%.0f/%d\t%s\n",
+			g.Label, g.SinglePath, st.NetMedian, st.NetP10, st.NetMin, st.NetMax, st.CatMedian, st.CatMax, d)
+	}
+	row(rep.Baseline, false)
+	for _, g := range rep.Groups {
+		row(g, true)
+	}
+	w.Flush()
+	for _, n := range rep.Notes {
+		fmt.Printf("⚠️  %s\n", n)
+	}
 }
