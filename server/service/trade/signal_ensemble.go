@@ -20,6 +20,9 @@ type SignalEnsembleRequest struct {
 	Groups         []tradeDTO.SignalBacktestGroupDTO
 	N              int
 	Perturb        signal.Perturb // Seed 逐条覆盖，只取两个概率
+	// RefLabel 配对参照组：空 = 基线。扫参时基线常是"机制关掉"，而要回答的往往是
+	// "候选格比**生产格**好多少"，那就把生产格的 label 填这里。
+	RefLabel string
 }
 
 // SignalEnsembleGroup 一组的分布 + 与基线的配对差。
@@ -28,7 +31,7 @@ type SignalEnsembleGroup struct {
 	SinglePath float64 // 不扰动的单路径净盈亏（与批次表里那一格同口径）
 	SingleCats int
 	Stats      signal.EnsembleStats
-	VsBaseline signal.PairedDelta
+	VsBaseline signal.PairedDelta // 相对 Report.RefLabel 那一组的配对差（名字沿用，参照可换）
 }
 
 type SignalEnsembleReport struct {
@@ -36,6 +39,7 @@ type SignalEnsembleReport struct {
 	Perturb  signal.Perturb
 	Signals  int
 	Bars     int
+	RefLabel string // 实际用作配对参照的组（"baseline" 或某组 label）
 	Baseline SignalEnsembleGroup
 	Groups   []SignalEnsembleGroup
 	Notes    []string
@@ -82,8 +86,26 @@ func (s *TradeService) RunSignalEnsemble(ctx context.Context, req SignalEnsemble
 		if err != nil {
 			return nil, fmt.Errorf("组 %s: %w", g.Label, err)
 		}
-		grp.VsBaseline = signal.Paired(rep.Baseline.Stats, grp.Stats)
 		rep.Groups = append(rep.Groups, grp)
+	}
+	// 配对参照：先跑完全部组再配，参照可以是任意一组。
+	ref := rep.Baseline
+	rep.RefLabel = "baseline"
+	if req.RefLabel != "" {
+		found := false
+		for _, g := range rep.Groups {
+			if g.Label == req.RefLabel {
+				ref, found = g, true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("配对参照组 %q 不在本维网格里", req.RefLabel)
+		}
+		rep.RefLabel = req.RefLabel
+	}
+	for i := range rep.Groups {
+		rep.Groups[i].VsBaseline = signal.Paired(ref.Stats, rep.Groups[i].Stats)
 	}
 	return rep, nil
 }

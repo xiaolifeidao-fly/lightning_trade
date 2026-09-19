@@ -266,6 +266,7 @@ func main() {
 	dropPct := flag.Float64("drop", 0.04, "扰动：每条信号被丢弃的概率")
 	lateProb := flag.Float64("late", 0.5, "扰动：出场判定成立时晚一根 bar 成交的概率")
 	ensembleJSON := flag.String("ensemble-json", "", "集合评估结果另存为 JSON 的路径（可选）")
+	ensembleRef := flag.String("ensemble-ref", "", "配对参照组 label（空=基线；填生产格如 trend_48h_3.0% / stop_400）")
 	flag.Parse()
 
 	if strings.TrimSpace(*account) == "" {
@@ -366,7 +367,8 @@ func main() {
 		rep, err := svc.RunSignalEnsemble(ctx, trade.SignalEnsembleRequest{
 			InstanceKey: *instance, AccountLabel: *account, Symbol: "BTCUSDT", PlatformCode: *platform,
 			Start: *start, End: *end, BaselineParams: base, Groups: groups, N: *ensembleN,
-			Perturb: signal.Perturb{SignalDropPct: *dropPct, ExitLateProb: *lateProb},
+			Perturb:  signal.Perturb{SignalDropPct: *dropPct, ExitLateProb: *lateProb},
+			RefLabel: *ensembleRef,
 		})
 		if err != nil {
 			log.Fatalf("集合评估失败：%v", err)
@@ -388,11 +390,11 @@ func printEnsemble(rep *trade.SignalEnsembleReport) {
 	fmt.Printf("\n集合评估：N=%d 条扰动路径/格，丢信号 %.0f%%，出场晚一根 %.0f%%（信号 %d 条，K 线 %d 根）\n",
 		rep.N, rep.Perturb.SignalDropPct*100, rep.Perturb.ExitLateProb*100, rep.Signals, rep.Bars)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "组\t单路径\t中位\tp10\t最小\t最大\t兜底中位/最大\tΔ中位vs基线\tΔ最小\t同向\t兜底不劣")
+	fmt.Fprintf(w, "组\t单路径\t中位\tp10\t最小\t最大\t兜底中位/最大\tΔ中位vs %s\tΔ最小\t同向\t兜底不劣\n", rep.RefLabel)
 	row := func(g trade.SignalEnsembleGroup, withDelta bool) {
 		st := g.Stats
 		d := "\t\t\t"
-		if withDelta {
+		if withDelta && g.Label != rep.RefLabel {
 			d = fmt.Sprintf("%+.2f\t%+.2f\t%d/%d\t%d/%d", g.VsBaseline.NetDeltaMedian, g.VsBaseline.NetDeltaMin,
 				g.VsBaseline.Better, g.VsBaseline.N, g.VsBaseline.CatNotWorse, g.VsBaseline.N)
 		}
