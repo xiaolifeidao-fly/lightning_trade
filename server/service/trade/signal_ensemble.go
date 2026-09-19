@@ -30,8 +30,10 @@ type SignalEnsembleGroup struct {
 	Label      string
 	SinglePath float64 // 不扰动的单路径净盈亏（与批次表里那一格同口径）
 	SingleCats int
-	Stats      signal.EnsembleStats
-	VsBaseline signal.PairedDelta // 相对 Report.RefLabel 那一组的配对差（名字沿用，参照可换）
+	// SingleSkips 单路径上各闸的拦截次数（趋势闸/加仓闸/上限），用来确认"这一格机制到底咬住了没有"。
+	SingleSkips string
+	Stats       signal.EnsembleStats
+	VsBaseline  signal.PairedDelta // 相对 Report.RefLabel 那一组的配对差（名字沿用，参照可换）
 }
 
 type SignalEnsembleReport struct {
@@ -127,5 +129,6 @@ func runEnsembleGroup(label string, in signal.Input, p signal.Params, n int, per
 	if err != nil {
 		return SignalEnsembleGroup{}, err
 	}
-	return SignalEnsembleGroup{Label: label, SinglePath: single.Net, SingleCats: cats, Stats: st}, nil
+	skips := fmt.Sprintf("趋%d/加%d/限%d", single.SkipTrend, single.SkipAddRoi, single.SkipCap)
+	return SignalEnsembleGroup{Label: label, SinglePath: single.Net, SingleCats: cats, SingleSkips: skips, Stats: st}, nil
 }

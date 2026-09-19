@@ -136,6 +136,8 @@ type Engine struct {
 	// 与 skipCap 分开计：否则区分不出"本来就顶格了"和"是路由拦的"，
 	// 而后者才是这个机制到底有没有咬住的唯一证据。
 	skipRegime int
+	// skipAddRoi 被加仓闸拦住的同向加仓次数（机制"有没有咬住"的证据，见 trendStopCount 的理由）。
+	skipAddRoi int
 	// trendStopCount 兜底线被收紧过多少次判定（不是平仓次数——每根 bar 的每次
 	// 判定都计一次）。它是"这一格里机制到底有没有咬住"的唯一证据：
 	// 扫参时某格与基线结果相同，可能是机制没生效、也可能是生效了但没改变结局，
@@ -339,6 +341,12 @@ func (e *Engine) OnSignal(s Signal, px float64) {
 	case nb.side == side:
 		// 同向加仓
 		if !e.passTrendGate(side, s) {
+			return
+		}
+		// 加仓闸（AddMinRoiPct）：净仓浮亏已深于阈值就不再摊平。放在趋势闸之后、
+		// 上限之前，三种拦截各自计数，扫参时才分得清"这一格是谁拦的"。
+		if e.p.AddMinRoiPct != 0 && nb.roi(px, e.p.Leverage) < e.p.AddMinRoiPct {
+			e.skipAddRoi++
 			return
 		}
 		if !e.admitEntry(nb.size+orderSize, s.Ts) {

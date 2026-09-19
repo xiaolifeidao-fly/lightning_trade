@@ -189,6 +189,24 @@ func grid(dim string) []tradeDTO.SignalBacktestGroupDTO {
 			}
 		}
 		return out
+	case "addgate":
+		// 加仓闸：净仓浮亏深于 X% 时不再同向加仓。进场侧 + 持仓状态——第七节论证过，
+		// 状态可以路由"进"不能路由"出"，这是那条路上唯一有数据支持却没扫过的旋钮：
+		// A 有 6 笔 episode ≥60% 的堆积是在 ROI<−50% 时加的，3 笔兜底、净 −155；
+		// 42 笔零亏损加仓的 episode 零兜底、净 +185；A 兜底单亏损中加仓占比中位 51%，非兜底 0%。
+		// 反面同样明确：回本单也靠摊低均价（A −50~−100% 桶 24 笔 +128），闸得太浅会把回本单卡在半路。
+		//
+		// 事前判据（集合评估口径）：训练与测试两段、强弱两档，候选格对 addgate_off
+		// 同向 ≥12/16、兜底不劣 ≥12/16、Δ最小不超过一次兜底量级（B ≈ −20，A ≈ −55）。
+		// 事前预测：A 在 −100~−150 有效（堆积要几小时，闸有时间咬），B 影响小（8 张几分钟就满）；
+		// −25/−50 太浅会伤回本单，在训练段就会被否。
+		var out []tradeDTO.SignalBacktestGroupDTO
+		out = append(out, g("addgate_off", pinGate(tradeDTO.SignalBacktestParamsDTO{})))
+		for _, v := range []float64{-25, -50, -100, -150, -200, -300} {
+			out = append(out, g(fmt.Sprintf("addgate_%.0f", v),
+				pinGate(tradeDTO.SignalBacktestParamsDTO{AddMinRoiPct: f64(v)})))
+		}
+		return out
 	case "trail":
 		// 移动止盈的大档：决定那 86~92% 的小赢能留下多少。生产值是
 		// large_activate=40 / large_giveback=0.20（两账户相同），**就在网格内**，
@@ -246,7 +264,7 @@ func main() {
 	account := flag.String("account", "", "账户标签（strategy_event.account_label，必填）")
 	start := flag.String("start", "2026-09-08 21:00:00", "窗口起")
 	end := flag.String("end", "2026-09-15 14:40:00", "窗口止")
-	dim := flag.String("dim", "baseline", "baseline|trend|trendstop|regime|cap|stop|gate|trail")
+	dim := flag.String("dim", "baseline", "baseline|trend|trendstop|regime|cap|stop|gate|trail|addgate")
 	platform := flag.String("platform", "deepcoin", "1m 路径回放平台")
 	conc := flag.Int("concurrency", 4, "并发组数")
 	// 显式基线旋钮。默认 0 = 用服务端的基线解析器；但解析器对 risk_equity 与
@@ -390,7 +408,7 @@ func printEnsemble(rep *trade.SignalEnsembleReport) {
 	fmt.Printf("\n集合评估：N=%d 条扰动路径/格，丢信号 %.0f%%，出场晚一根 %.0f%%（信号 %d 条，K 线 %d 根）\n",
 		rep.N, rep.Perturb.SignalDropPct*100, rep.Perturb.ExitLateProb*100, rep.Signals, rep.Bars)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(w, "组\t单路径\t中位\tp10\t最小\t最大\t兜底中位/最大\tΔ中位vs %s\tΔ最小\t同向\t兜底不劣\n", rep.RefLabel)
+	fmt.Fprintf(w, "组\t单路径\t拦截(单路径)\t中位\tp10\t最小\t最大\t兜底中位/最大\tΔ中位vs %s\tΔ最小\t同向\t兜底不劣\n", rep.RefLabel)
 	row := func(g trade.SignalEnsembleGroup, withDelta bool) {
 		st := g.Stats
 		d := "\t\t\t"
@@ -398,8 +416,8 @@ func printEnsemble(rep *trade.SignalEnsembleReport) {
 			d = fmt.Sprintf("%+.2f\t%+.2f\t%d/%d\t%d/%d", g.VsBaseline.NetDeltaMedian, g.VsBaseline.NetDeltaMin,
 				g.VsBaseline.Better, g.VsBaseline.N, g.VsBaseline.CatNotWorse, g.VsBaseline.N)
 		}
-		fmt.Fprintf(w, "%s\t%+.2f\t%+.2f\t%+.2f\t%+.2f\t%+.2f\t%.0f/%d\t%s\n",
-			g.Label, g.SinglePath, st.NetMedian, st.NetP10, st.NetMin, st.NetMax, st.CatMedian, st.CatMax, d)
+		fmt.Fprintf(w, "%s\t%+.2f\t%s\t%+.2f\t%+.2f\t%+.2f\t%+.2f\t%.0f/%d\t%s\n",
+			g.Label, g.SinglePath, g.SingleSkips, st.NetMedian, st.NetP10, st.NetMin, st.NetMax, st.CatMedian, st.CatMax, d)
 	}
 	row(rep.Baseline, false)
 	for _, g := range rep.Groups {

@@ -479,6 +479,9 @@ func applySignalParamKnobs(p signal.Params, dto tradeDTO.SignalBacktestParamsDTO
 	if dto.TrendGateWindowHours != nil {
 		p.TrendGateWindowHours = *dto.TrendGateWindowHours
 	}
+	if dto.AddMinRoiPct != nil {
+		p.AddMinRoiPct = *dto.AddMinRoiPct
+	}
 	if dto.TrendGateThresholdPct != nil {
 		p.TrendGateThresholdPct = *dto.TrendGateThresholdPct
 	}

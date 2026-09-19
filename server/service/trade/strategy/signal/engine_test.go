@@ -358,3 +358,56 @@ func TestSeedFromSignalsAcceptsSnapshotBeforeAnyOpen(t *testing.T) {
 		t.Fatalf("种子仓 = %+v", seed)
 	}
 }
+
+// 加仓闸：净仓 ROI 低于阈值时同向加仓被拦（计 SkipAddRoi），高于阈值照常加；
+// 全新开仓不受影响；0=关闭时行为与从前一致。
+func TestAddGateBlocksAddsBelowRoiThreshold(t *testing.T) {
+	p := baseParams()
+	p.AddMinRoiPct = -100
+	p.CatastropheStopPct = 400
+	p.SmallActivatePct, p.MediumActivatePct, p.LargeActivatePct = 1e9, 1e9, 1e9
+	// 60000 开 1 张多；59700（ROI −62.5%）加仓应放行；59000（ROI −208%）加仓应被拦。
+	bars := []Bar{
+		{Ts: ts(1), Open: 60000, High: 60000, Low: 60000, Close: 60000},
+		{Ts: ts(2), Open: 59700, High: 59700, Low: 59700, Close: 59700},
+		{Ts: ts(3), Open: 59000, High: 59000, Low: 59000, Close: 59000},
+		{Ts: ts(4), Open: 59000, High: 59000, Low: 59000, Close: 59000},
+	}
+	sigs := []Signal{
+		{Ts: ts(0).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1},
+		{Ts: ts(1).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1}, // 按 ts(2) 成交，ROI 对 60000 是 −62.5%
+		{Ts: ts(2).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1}, // 按 ts(3) 成交，均价 59850 → ROI −177%
+	}
+	res, err := Replay(Input{Params: p, Signals: sigs, Bars: bars})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SkipAddRoi != 1 {
+		t.Errorf("加仓闸拦截 = %d, 期望 1", res.SkipAddRoi)
+	}
+	if res.MaxStack != 2 {
+		t.Errorf("最大堆积 = %d, 期望 2（第三张被拦）", res.MaxStack)
+	}
+	p.AddMinRoiPct = 0
+	off, _ := Replay(Input{Params: p, Signals: sigs, Bars: bars})
+	if off.SkipAddRoi != 0 || off.MaxStack != 3 {
+		t.Errorf("关闭时应不拦：skip=%d stack=%d", off.SkipAddRoi, off.MaxStack)
+	}
+}
+
+func TestValidateAddGateRange(t *testing.T) {
+	p := baseParams()
+	p.CatastropheStopPct = 400
+	p.AddMinRoiPct = 50
+	if err := p.Validate(); err == nil || !strings.Contains(err.Error(), "addMinRoiPct") {
+		t.Errorf("正值应被拒, got %v", err)
+	}
+	p.AddMinRoiPct = -401
+	if err := p.Validate(); err == nil || !strings.Contains(err.Error(), "addMinRoiPct") {
+		t.Errorf("低于兜底线应被拒, got %v", err)
+	}
+	p.AddMinRoiPct = -400
+	if err := p.Validate(); err != nil {
+		t.Errorf("边界值 −兜底线 应放行, got %v", err)
+	}
+}

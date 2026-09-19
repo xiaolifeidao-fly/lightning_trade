@@ -111,6 +111,10 @@ type Params struct {
 	// 窗口复用 TrendGateWindowHours——实盘也是共用 trade.trend_gate.window_hours。
 	TrendStopTriggerPct float64 `json:"trendStopTriggerPct"` // position.monitor.trend_stop.trigger_pct；0=关闭
 	TrendStopPct        float64 `json:"trendStopPct"`        // position.monitor.trend_stop.stop_pct；0=关闭
+	// AddMinRoiPct 加仓闸：净仓 ROI% 低于它时不再同向加仓（全新开仓与减仓不受影响）。0=关闭。
+	// 只接受负值——它是"浮亏到多深就停止摊平"的旋钮，不是"只在赢时加"的金字塔旋钮。
+	// 实盘尚无对应键（研究旋钮，同 regime_scale 先例）；落地前要先补实盘与校验器。
+	AddMinRoiPct float64 `json:"addMinRoiPct"`
 
 	// 行情路由减仓（第 2 步）：前一日状态标签命中 RegimeScaleLabels 时，本日入场
 	// 适用的仓位上限按 RegimeScaleFactor 压低。标签集为空 = 关闭。
@@ -289,6 +293,12 @@ func (p Params) Validate() error {
 	}
 	if err := validateRegimeScale(p); err != nil {
 		return err
+	}
+	if p.AddMinRoiPct > 0 {
+		return fmt.Errorf("addMinRoiPct 只接受负值（浮亏阈值）或 0=关闭, got %.1f", p.AddMinRoiPct)
+	}
+	if p.AddMinRoiPct < -p.CatastropheStopPct {
+		return fmt.Errorf("addMinRoiPct=%.0f 低于兜底线 −%.0f：兜底先触发、加仓闸永不生效（静默失效）", p.AddMinRoiPct, p.CatastropheStopPct)
 	}
 	return argusTrade.ValidateRiskParams(view)
 }
