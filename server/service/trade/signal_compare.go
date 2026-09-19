@@ -79,6 +79,7 @@ func signalParamFields() []signalParamField {
 		numField("trade.trend_gate.window_hours", "trendGateWindowHours", func(p signal.Params) float64 { return p.TrendGateWindowHours }, "%.2f"),
 		numField("trade.trend_gate.threshold_pct", "trendGateThresholdPct", func(p signal.Params) float64 { return p.TrendGateThresholdPct }, "%.2f"),
 		numField("(研究)add_gate.min_roi_pct", "addMinRoiPct", func(p signal.Params) float64 { return p.AddMinRoiPct }, "%.0f"),
+		numField("(研究)equity_stop_pct", "equityStopPct", func(p signal.Params) float64 { return p.EquityStopPct }, "%.1f"),
 		numField("position.monitor.trail.tier_small_ratio", "tierSmallRatio", func(p signal.Params) float64 { return p.TierSmallRatio }, "%.3f"),
 		numField("position.monitor.trail.tier_large_ratio", "tierLargeRatio", func(p signal.Params) float64 { return p.TierLargeRatio }, "%.3f"),
 		numField("position.monitor.trail.small_activate", "smallActivatePct", func(p signal.Params) float64 { return p.SmallActivatePct }, "%.2f"),

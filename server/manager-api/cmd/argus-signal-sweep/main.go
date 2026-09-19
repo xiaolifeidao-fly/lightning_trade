@@ -207,6 +207,34 @@ func grid(dim string) []tradeDTO.SignalBacktestGroupDTO {
 				pinGate(tradeDTO.SignalBacktestParamsDTO{AddMinRoiPct: f64(v)})))
 		}
 		return out
+	case "eqstop":
+		// 本金回撤兜底：未实现亏损 ≥ X% × riskEquity 触发，替换 ROI 兜底。
+		// 13.3% = 现行 risk_budget f，满仓时与 ROI −400% 重合、部分仓位时更松。
+		// 事前预测：B 全程满仓（8 张），eq_13.3 ≈ off；A 的兜底多在 21~26 张，也接近满仓，差别不大。
+		// 更紧（8/10）会像 stop 300/350 一样更差；更松（16/20）像 stop 500/650 一样是 wash。
+		// 这一维本身预期没有增益——它的意义在下面 eqadd：把止损从均价上解耦后，加仓闸有没有独立价值。
+		var out []tradeDTO.SignalBacktestGroupDTO
+		out = append(out, g("eqstop_off", pinGate(tradeDTO.SignalBacktestParamsDTO{})))
+		for _, v := range []float64{8, 10, 13.3, 16, 20, 26.6} {
+			out = append(out, g(fmt.Sprintf("eqstop_%g", v),
+				pinGate(tradeDTO.SignalBacktestParamsDTO{EquityStopPct: f64(v)})))
+		}
+		return out
+	case "eqadd":
+		// 本金回撤兜底 × 加仓闸。加仓闸在 ROI 兜底下必败（停止摊平 = 收紧兜底，兜底次数 3→14~22）。
+		// 换成 USDT 兜底后，加仓不再移动止损线，加仓闸只改变敞口——它此时有没有独立价值，就是这一维的问题。
+		// 事前判据同前。事前预测：eq_13.3 × add_−100 仍不过（A 兜底单 51% 的堆积是在 −50% 以下加的，
+		// 拦掉它们让敞口变小、亏得少，但同样让回本时赚得少；净效应看不出方向）。
+		var out []tradeDTO.SignalBacktestGroupDTO
+		out = append(out, g("eqadd_off", pinGate(tradeDTO.SignalBacktestParamsDTO{})))
+		out = append(out, g("eq13.3_addoff", pinGate(tradeDTO.SignalBacktestParamsDTO{EquityStopPct: f64(13.3)})))
+		for _, eq := range []float64{13.3, 20} {
+			for _, a := range []float64{-100, -200} {
+				out = append(out, g(fmt.Sprintf("eq%g_add%.0f", eq, a),
+					pinGate(tradeDTO.SignalBacktestParamsDTO{EquityStopPct: f64(eq), AddMinRoiPct: f64(a)})))
+			}
+		}
+		return out
 	case "trail":
 		// 移动止盈的大档：决定那 86~92% 的小赢能留下多少。生产值是
 		// large_activate=40 / large_giveback=0.20（两账户相同），**就在网格内**，
@@ -264,7 +292,7 @@ func main() {
 	account := flag.String("account", "", "账户标签（strategy_event.account_label，必填）")
 	start := flag.String("start", "2026-09-08 21:00:00", "窗口起")
 	end := flag.String("end", "2026-09-15 14:40:00", "窗口止")
-	dim := flag.String("dim", "baseline", "baseline|trend|trendstop|regime|cap|stop|gate|trail|addgate")
+	dim := flag.String("dim", "baseline", "baseline|trend|trendstop|regime|cap|stop|gate|trail|addgate|eqstop|eqadd")
 	platform := flag.String("platform", "deepcoin", "1m 路径回放平台")
 	conc := flag.Int("concurrency", 4, "并发组数")
 	// 显式基线旋钮。默认 0 = 用服务端的基线解析器；但解析器对 risk_equity 与

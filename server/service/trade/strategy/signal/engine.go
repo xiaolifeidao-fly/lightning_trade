@@ -193,13 +193,19 @@ func NewEngine(p Params) *Engine {
 func (e *Engine) setCap(n int) {
 	e.cap = n
 	e.capOK = true
+	// 实盘 EvaluateExit 内部也按 ROI 判兜底（第 4 步）。本金回撤模式下兜底只由 evalBook 的
+	// USDT 触发线负责，这里把 ROI 线推到不可达，否则 ROI 口径会先一步平仓、模式形同未启用。
+	roiStop := e.p.CatastropheStopPct
+	if e.p.EquityStopPct > 0 {
+		roiStop = 1e9
+	}
 	e.exitCfg = argusMonitor.BuildExitConfig(n, argusMonitor.TrailParams{
 		TierSmallRatio:     e.p.TierSmallRatio,
 		TierLargeRatio:     e.p.TierLargeRatio,
 		Small:              argusMonitor.Tier{ActivatePct: e.p.SmallActivatePct, GivebackFrac: e.p.SmallGiveback},
 		Medium:             argusMonitor.Tier{ActivatePct: e.p.MediumActivatePct, GivebackFrac: e.p.MediumGiveback},
 		Large:              argusMonitor.Tier{ActivatePct: e.p.LargeActivatePct, GivebackFrac: e.p.LargeGiveback},
-		CatastropheStopPct: e.p.CatastropheStopPct,
+		CatastropheStopPct: roiStop,
 	})
 }
 
@@ -477,18 +483,25 @@ func (e *Engine) evalBook(bk *book, bar Bar) {
 	// 逆向动量 ≥ trigger 时收到 TrendStopPct，其余（含 warmup 动量不可算）沿用 S。
 	stop := e.effectiveStop(bk.side)
 	pen := stop + e.p.CatastropheOvershootRoiPts
+	// 触发线到均价的距离（价格单位）。ROI 模式：avg × stop/(lev×100)；
+	// 本金回撤模式：L / (face × size)——亏损 L USDT 对应的价格偏移，与均价无关、随张数变小。
+	dist := bk.avg * stop / (lev * 100)
+	if e.p.EquityStopPct > 0 {
+		dist = e.p.EquityStopPct / 100 * e.p.RiskEquity / (e.p.FaceValue * float64(bk.size))
+	}
+	over := bk.avg * (pen - stop) / (lev * 100) // 过冲仍按 ROI 点换算，两种模式同口径
 	var trigPx, fillPx float64
 	var crossed bool
 	if bk.side == "long" {
-		trigPx = bk.avg * (1 - stop/(lev*100))
-		fillPx = bk.avg * (1 - pen/(lev*100))
+		trigPx = bk.avg - dist
+		fillPx = trigPx - over
 		crossed = bar.Low <= trigPx
 		if pess && crossed {
 			fillPx = minf(bar.Low, fillPx)
 		}
 	} else {
-		trigPx = bk.avg * (1 + stop/(lev*100))
-		fillPx = bk.avg * (1 + pen/(lev*100))
+		trigPx = bk.avg + dist
+		fillPx = trigPx + over
 		crossed = bar.High >= trigPx
 		if pess && crossed {
 			fillPx = maxf(bar.High, fillPx)

@@ -411,3 +411,82 @@ func TestValidateAddGateRange(t *testing.T) {
 		t.Errorf("边界值 −兜底线 应放行, got %v", err)
 	}
 }
+
+// 本金回撤兜底：按 USDT 亏损触发、与均价/ROI 无关；启用时 ROI 兜底不再生效。
+// 2 张多 @60000，riskEquity 100、10% ⇒ 亏 10U 触发；每张面值 0.001 ⇒ 2 张每跌 1 元亏 0.002U
+// ⇒ 触发线 60000 − 10/0.002 = 55000。57000（ROI −625%，ROI 兜底 400 早该触发）不触发；54900 触发。
+func TestEquityStopFiresOnUsdtLossNotRoi(t *testing.T) {
+	p := baseParams()
+	p.RiskEquity = 100
+	p.EquityStopPct = 10
+	p.CatastropheStopPct = 400
+	p.CatastropheOvershootRoiPts = 0
+	p.SmallActivatePct, p.MediumActivatePct, p.LargeActivatePct = 1e9, 1e9, 1e9
+	bars := []Bar{
+		{Ts: ts(1), Open: 60000, High: 60000, Low: 60000, Close: 60000},
+		{Ts: ts(2), Open: 57000, High: 57000, Low: 57000, Close: 57000},
+		{Ts: ts(3), Open: 54900, High: 54900, Low: 54900, Close: 54900},
+		{Ts: ts(4), Open: 54900, High: 54900, Low: 54900, Close: 54900},
+	}
+	sigs := []Signal{
+		{Ts: ts(0).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1},
+		{Ts: ts(0).Add(2 * time.Second), Side: "long", Event: EvOpen, OrderSize: 1},
+	}
+	res, err := Replay(Input{Params: p, Signals: sigs, Bars: bars})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Episodes) != 1 || res.Episodes[0].Reason != ExitCatastrophe {
+		t.Fatalf("应有一笔兜底: %+v", res.Episodes)
+	}
+	ep := res.Episodes[0]
+	if !ep.ClosedAt.Equal(ts(3)) {
+		t.Errorf("应在 ts(3)（54900 穿 55000）触发而非 ts(2)（ROI 口径会在 57000 触发）, got %v", ep.ClosedAt)
+	}
+	if math.Abs(ep.ClosePx-55000) > 1e-6 {
+		t.Errorf("成交价应为触发线 55000（无过冲）, got %.2f", ep.ClosePx)
+	}
+	if math.Abs(ep.Pnl-(-10)) > 1e-6 {
+		t.Errorf("亏损应恰为 10U, got %.4f", ep.Pnl)
+	}
+}
+
+// 本金回撤兜底 13.3% 在"满仓 = 公式上限"时与 ROI −400% 同点：这是两种口径的校准锚。
+// cap 公式：N = f×E×lev×100/(face×px×S)。取 E=100、f=13.3%、px=60000、S=400 ⇒ N=6.93→6。
+// 6 张时 USDT 线 = 13.3/(0.001×6)=2216.7 元；ROI 线 = 60000×400/12500=1920 元——上限取整后 USDT 口径略松，方向正确。
+func TestEquityStopIsLooserThanRoiBelowFullStack(t *testing.T) {
+	p := baseParams()
+	p.RiskEquity = 100
+	p.CatastropheStopPct = 400
+	p.CatastropheOvershootRoiPts = 0
+	p.SmallActivatePct, p.MediumActivatePct, p.LargeActivatePct = 1e9, 1e9, 1e9
+	bars := []Bar{
+		{Ts: ts(1), Open: 60000, High: 60000, Low: 60000, Close: 60000},
+		{Ts: ts(2), Open: 58000, High: 58000, Low: 58000, Close: 58000}, // −2000：ROI 兜底 −417% 触发；USDT 亏 2U < 13.3U 不触发
+		{Ts: ts(3), Open: 58000, High: 58000, Low: 58000, Close: 58000},
+	}
+	sigs := []Signal{{Ts: ts(0).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1}}
+	roi, _ := Replay(Input{Params: p, Signals: sigs, Bars: bars})
+	p.EquityStopPct = 13.3
+	eq, _ := Replay(Input{Params: p, Signals: sigs, Bars: bars})
+	if len(roi.Episodes) != 1 || roi.Episodes[0].Reason != ExitCatastrophe {
+		t.Fatalf("ROI 口径 1 张跌 2000 应兜底: %+v", roi.Episodes)
+	}
+	if len(eq.Episodes) != 1 || !eq.Episodes[0].Open {
+		t.Fatalf("USDT 口径 1 张只亏 2U，不该兜底，应 eod 未平: %+v", eq.Episodes)
+	}
+}
+
+func TestValidateEquityStopRange(t *testing.T) {
+	p := baseParams()
+	p.RiskEquity = 100
+	p.EquityStopPct = 150
+	if err := p.Validate(); err == nil || !strings.Contains(err.Error(), "equityStopPct") {
+		t.Errorf(">100 应被拒, got %v", err)
+	}
+	p.EquityStopPct = 10
+	p.RiskEquity = 0
+	if err := p.Validate(); err == nil || !strings.Contains(err.Error(), "riskEquity") {
+		t.Errorf("无 riskEquity 应被拒, got %v", err)
+	}
+}

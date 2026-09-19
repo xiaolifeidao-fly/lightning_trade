@@ -791,9 +791,10 @@ type SignalBacktestParamsDTO struct {
 	GateMinProfitPct           *float64 `json:"gateMinProfitPct"`           // trade.accountN.reverse_gate_min_profit_pct
 	TrendGateWindowHours       *float64 `json:"trendGateWindowHours"`       // trade.trend_gate.window_hours
 	TrendGateThresholdPct      *float64 `json:"trendGateThresholdPct"`      // trade.trend_gate.threshold_pct
-	AddMinRoiPct               *float64 `json:"addMinRoiPct"`               // 加仓闸（研究旋钮，实盘尚无键）：净仓 ROI 低于它不再加仓；负值；0=关闭
-	TrendStopTriggerPct        *float64 `json:"trendStopTriggerPct"`        // position.monitor.trend_stop.trigger_pct
-	TrendStopPct               *float64 `json:"trendStopPct"`               // position.monitor.trend_stop.stop_pct
+	AddMinRoiPct               *float64 `json:"addMinRoiPct"`
+	EquityStopPct              *float64 `json:"equityStopPct"`       // 本金回撤兜底（研究旋钮）：未实现亏损 ≥ 该百分比 × riskEquity 触发，替换 ROI 兜底；0=关闭               // 加仓闸（研究旋钮，实盘尚无键）：净仓 ROI 低于它不再加仓；负值；0=关闭
+	TrendStopTriggerPct        *float64 `json:"trendStopTriggerPct"` // position.monitor.trend_stop.trigger_pct
+	TrendStopPct               *float64 `json:"trendStopPct"`        // position.monitor.trend_stop.stop_pct
 
 	// 行情路由减仓：前一日状态标签命中时，本日入场上限按系数压低。
 	// 标签用**前一日**（决策时可知），不是当日——当日 OHLC 属于未来信息。

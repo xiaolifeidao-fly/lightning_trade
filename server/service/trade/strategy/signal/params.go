@@ -115,6 +115,12 @@ type Params struct {
 	// 只接受负值——它是"浮亏到多深就停止摊平"的旋钮，不是"只在赢时加"的金字塔旋钮。
 	// 实盘尚无对应键（研究旋钮，同 regime_scale 先例）；落地前要先补实盘与校验器。
 	AddMinRoiPct float64 `json:"addMinRoiPct"`
+	// EquityStopPct 本金回撤兜底（研究旋钮，实盘无键）：>0 时兜底改按**未实现亏损 ≥ EquityStopPct% × RiskEquity**
+	// 触发，ROI 兜底不再生效（替换，不是叠加）。动机见诊断报告 09-19 中午追补：ROI 兜底按均价定义，
+	// 摊平把均价拉向现价、把 ROI 拉浅，于是"停止摊平"等价于"收紧兜底"——凡是改均价轨迹的机制都被它连坐。
+	// 按 USDT 亏损定义后，加仓只改变敞口不改变止损线，仓位管理机制才有独立于止损的意义。
+	// 13.3（= risk_budget f）在满仓时与 ROI −400% 重合；部分仓位时更松。
+	EquityStopPct float64 `json:"equityStopPct"`
 
 	// 行情路由减仓（第 2 步）：前一日状态标签命中 RegimeScaleLabels 时，本日入场
 	// 适用的仓位上限按 RegimeScaleFactor 压低。标签集为空 = 关闭。
@@ -293,6 +299,12 @@ func (p Params) Validate() error {
 	}
 	if err := validateRegimeScale(p); err != nil {
 		return err
+	}
+	if p.EquityStopPct < 0 || p.EquityStopPct > 100 {
+		return fmt.Errorf("equityStopPct 应在 (0,100]（占 riskEquity 的百分比）或 0=关闭, got %.1f", p.EquityStopPct)
+	}
+	if p.EquityStopPct > 0 && p.RiskEquity <= 0 {
+		return fmt.Errorf("启用本金回撤兜底必须给 riskEquity（亏损上限 = equityStopPct%% × riskEquity）")
 	}
 	if p.AddMinRoiPct > 0 {
 		return fmt.Errorf("addMinRoiPct 只接受负值（浮亏阈值）或 0=关闭, got %.1f", p.AddMinRoiPct)
