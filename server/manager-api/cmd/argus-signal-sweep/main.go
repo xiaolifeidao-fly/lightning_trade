@@ -235,6 +235,18 @@ func grid(dim string) []tradeDTO.SignalBacktestGroupDTO {
 			}
 		}
 		return out
+	case "eqaddcell":
+		// 单格复核：eq20 × add−200 是 09-19 唯一过线的候选（只在 B 上过）。A/B 同信号流而方向相反，
+		// 差别只在仓位规模，所以把 cap 当第三维：外层脚本用 --cap N 逐档改基线上限，
+		// 本维只放三组——off（该 cap 下的 ROI −400% 基线）、eq20 单独、eq20 × add−200，
+		// 配对参照 off，可分出增益是"扛更深"还是"深处不摊平"带来的。
+		// 事前预测：USDT 线固定为 20%×E，cap 越小折成 ROI 越深（B cap 4 ≈ −1350%），
+		// 增益应随 cap 减小而增大、随 cap 增大而消失（cap 22/26 时 20%×E 已接近 ROI −400% 的满仓亏损）。
+		return []tradeDTO.SignalBacktestGroupDTO{
+			g("eqcell_off", pinGate(tradeDTO.SignalBacktestParamsDTO{})),
+			g("eq20_addoff", pinGate(tradeDTO.SignalBacktestParamsDTO{EquityStopPct: f64(20)})),
+			g("eq20_add-200", pinGate(tradeDTO.SignalBacktestParamsDTO{EquityStopPct: f64(20), AddMinRoiPct: f64(-200)})),
+		}
 	case "trail":
 		// 移动止盈的大档：决定那 86~92% 的小赢能留下多少。生产值是
 		// large_activate=40 / large_giveback=0.20（两账户相同），**就在网格内**，
@@ -292,7 +304,7 @@ func main() {
 	account := flag.String("account", "", "账户标签（strategy_event.account_label，必填）")
 	start := flag.String("start", "2026-09-08 21:00:00", "窗口起")
 	end := flag.String("end", "2026-09-15 14:40:00", "窗口止")
-	dim := flag.String("dim", "baseline", "baseline|trend|trendstop|regime|cap|stop|gate|trail|addgate|eqstop|eqadd")
+	dim := flag.String("dim", "baseline", "baseline|trend|trendstop|regime|cap|stop|gate|trail|addgate|eqstop|eqadd|eqaddcell")
 	platform := flag.String("platform", "deepcoin", "1m 路径回放平台")
 	conc := flag.Int("concurrency", 4, "并发组数")
 	// 显式基线旋钮。默认 0 = 用服务端的基线解析器；但解析器对 risk_equity 与
