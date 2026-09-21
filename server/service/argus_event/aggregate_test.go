@@ -1,6 +1,8 @@
 package argus_event
 
 import (
+	"bytes"
+	"encoding/json"
 	"math"
 	"testing"
 	"time"
@@ -280,4 +282,54 @@ func TestRealizedPnlExcludesLossAlert(t *testing.T) {
 	if math.Abs(total-3.36) > 1e-9 {
 		t.Errorf("时间轴各桶已实现盈亏合计 = %.4f，期望 3.36", total)
 	}
+}
+
+// 权益曲线的 compact 模式：只保留图表真正用的 time 与 changePct。
+//
+// 总览页是 equity-curve 唯一的消费者，而 EquityChart.toPoints 只读这两个字段
+// （其余 6 个 balance/equity/upl/minEquity/maxEquity/samples 一个都不碰）。
+// 30 天窗口每账户 4320 个点，整包 1.4MB——timeline 修完之后它就是一轮刷新里最大的一个。
+//
+// 断言落在**序列化结果**上而不是结构体字段：把字段置 nil 只是一半，
+// 没有 omitempty 的话 JSON 里照样是 "balance":null，一个字节都省不下来。
+func TestCompactEquitySeriesDropsUnusedFieldsFromJSON(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	series := []argusDTO.EquitySeriesDTO{{
+		InstanceKey:  "it-x",
+		AccountLabel: "acctA",
+		FirstEquity:  f(100),
+		LastEquity:   f(90),
+		Points: []argusDTO.EquityPointDTO{
+			{Time: "2026-08-18 10:00:00", Balance: f(100), Equity: f(100), Upl: f(1),
+				MinEquity: f(99), MaxEquity: f(101), Samples: 10, ChangePct: f(0)},
+			{Time: "2026-08-18 10:10:00", Balance: f(95), Equity: f(90), Upl: f(-5),
+				MinEquity: f(88), MaxEquity: f(96), Samples: 10, ChangePct: f(-10)},
+		},
+	}}
+
+	full, err := json.Marshal(series)
+	if err != nil {
+		t.Fatalf("marshal full: %v", err)
+	}
+	compactEquitySeries(series)
+	lite, err := json.Marshal(series)
+	if err != nil {
+		t.Fatalf("marshal compact: %v", err)
+	}
+
+	for _, key := range []string{"balance", "equity", "upl", "minEquity", "maxEquity", "samples"} {
+		if bytes.Contains(lite, []byte("\""+key+"\"")) {
+			t.Errorf("compact 之后 JSON 里不该还有 %q: %s", key, lite)
+		}
+	}
+	// 图表要的两个必须还在，且值没被动过
+	for _, want := range []string{"\"time\":\"2026-08-18 10:10:00\"", "\"changePct\":-10"} {
+		if !bytes.Contains(lite, []byte(want)) {
+			t.Errorf("compact 之后丢了 %s: %s", want, lite)
+		}
+	}
+	if len(lite) >= len(full) {
+		t.Errorf("compact 没有变小: full=%d lite=%d", len(full), len(lite))
+	}
+	t.Logf("full=%d 字节 → compact=%d 字节（%.1fx）", len(full), len(lite), float64(len(full))/float64(len(lite)))
 }

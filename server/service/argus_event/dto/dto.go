@@ -98,6 +98,12 @@ type EquityQueryDTO struct {
 	Start         string `form:"start"`
 	End           string `form:"end"`
 	BucketSeconds int    `form:"bucketSeconds"` // 降采样粒度，默认 600
+	// Compact 每个点只回 time 与 changePct，其余六个字段不输出。
+	//
+	// 「数据总览」是本接口唯一的消费者，而它的图表（EquityChart.toPoints）**只读这两个**。
+	// 30 天窗口每账户 4320 个点、整包 1.4MB——timeline 改完之后它就是一轮刷新里最大的一个。
+	// 与 TimelineQueryDTO.CoverageOnly 同一个思路：别传调用方用不到的东西。
+	Compact bool `form:"compact"`
 }
 
 // GateStatsQueryDTO 拦截原因聚合入参。instanceKey 允许为空（全部实例），
@@ -382,13 +388,16 @@ type TimelineDTO struct {
 
 // EquityPointDTO 一个降采样桶内的权益观测。
 type EquityPointDTO struct {
-	Time      string   `json:"time"`
-	Balance   *float64 `json:"balance"`
-	Equity    *float64 `json:"equity"`
-	Upl       *float64 `json:"upl"`
-	MinEquity *float64 `json:"minEquity"`
-	MaxEquity *float64 `json:"maxEquity"`
-	Samples   int      `json:"samples"`
+	Time string `json:"time"`
+	// 下面这六个都带 omitempty，compact 模式才省得下来：只把字段置 nil 而不加
+	// omitempty，JSON 里照样是 "balance":null，一个字节都不会少。
+	// 非 compact 模式下有值就照常输出，只是本来就为 null 的键不再出现。
+	Balance   *float64 `json:"balance,omitempty"`
+	Equity    *float64 `json:"equity,omitempty"`
+	Upl       *float64 `json:"upl,omitempty"`
+	MinEquity *float64 `json:"minEquity,omitempty"`
+	MaxEquity *float64 `json:"maxEquity,omitempty"`
+	Samples   int      `json:"samples,omitempty"`
 	// ChangePct 相对本序列首个已知权益的变动百分比，125x 下两个账户才能同屏可比。
 	ChangePct *float64 `json:"changePct"`
 }

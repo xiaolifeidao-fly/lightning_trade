@@ -13,7 +13,7 @@ import type { EventWindow } from "../../argus-signals/api/argus-signals.api";
  *   · 实例注册与心跳                      → @/components/argus/argus-instance.api
  */
 
-async function get<T>(url: string, params?: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<T> {
+async function get<T>(url: string, params?: Record<string, string | number | boolean | undefined>, signal?: AbortSignal): Promise<T> {
   const response = await instance.get<ApiResponse<T>>(url, { params, signal });
   return unwrapApiResponse(response.data);
 }
@@ -81,11 +81,13 @@ export class EquityPoint {
   /** 本地墙钟串；与 strategy_event 的时间口径一致。 */
   declare time: string;
   declare equity: number | null;
-  declare balance: number | null;
-  declare upl: number | null;
-  declare minEquity: number | null;
-  declare maxEquity: number | null;
-  declare samples: number;
+  // 下面这几个在 compact 模式下服务端**不输出**（总览页的图只用 time 与 changePct）。
+  // 标成可选是为了让"不存在"在类型上就是合法的，而不是运行时才发现 undefined。
+  declare balance?: number | null;
+  declare upl?: number | null;
+  declare minEquity?: number | null;
+  declare maxEquity?: number | null;
+  declare samples?: number;
   /** 相对本序列首个已知权益的变动百分比。125x 下两个账户只有按百分比才同屏可比。 */
   declare changePct: number | null;
 }
@@ -115,6 +117,11 @@ export interface EquityCurveParams {
   start?: string;
   end?: string;
   bucketSeconds?: number;
+  /**
+   * 每个点只回 time 与 changePct，省掉 balance / equity / upl / minEquity /
+   * maxEquity / samples 六个字段——总览页的图（EquityChart.toPoints）只读前两个。
+   */
+  compact?: boolean;
 }
 
 /** instanceKey 必填：账户唯一性是 (实例, 账户)，跨实例合并会把两个账户串成一条线。 */

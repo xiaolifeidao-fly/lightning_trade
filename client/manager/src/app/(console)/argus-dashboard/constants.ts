@@ -32,8 +32,38 @@ export const HEALTH_TONE_COLORS: Record<HealthTone, string> = {
 export const COVERAGE_WARN_PCT = 99;
 export const COVERAGE_ERROR_PCT = 95;
 
-/** 权益曲线的降采样粒度，与原型一致（心跳每分钟一条，10 分钟一个点）。 */
+/** 权益曲线降采样粒度的**下限**，与原型一致（心跳每分钟一条，10 分钟一个点）。 */
 export const EQUITY_BUCKET_SECONDS = 600;
+
+/**
+ * 一条权益序列最多画多少个点。
+ *
+ * 图卡片宽度也就几百像素，再多的点在屏幕上根本落不到独立像素上，只是把载荷做大。
+ * 720 这个数在 1440 宽的屏上仍是每 2 像素一个点，肉眼看不出与 4320 个点的区别。
+ */
+const EQUITY_TARGET_POINTS = 720;
+
+/**
+ * 按窗口长度算降采样粒度。
+ *
+ * 原来固定 600 秒，不管窗口多长：近 30 天就是 4320 个点/账户、整包 1.4MB
+ * （timeline 改完之后它就是一轮刷新里最大的一个）。
+ *
+ * 规则是"只变粗、不变细"——取 max(600, 窗口/720)：
+ *   近 1 天  →  600 秒（不变，144 点）
+ *   近 3 天  →  600 秒（不变，432 点）
+ *   近 7 天  →  840 秒（720 点）
+ *   近 30 天 → 3600 秒（720 点，原来 4320）
+ *   近 90 天 →10800 秒（720 点，原来 12960）
+ * 短窗口保持原粒度，所以近 1/3 天的图和以前逐像素一致。
+ */
+export function equityBucketSeconds(rangeKey: string): number {
+  const option = RANGE_OPTIONS.find((item) => item.key === rangeKey);
+  // latest（hours 为 null）交给服务端定窗口，这里给不出长度，沿用下限。
+  if (!option || option.hours === null) return EQUITY_BUCKET_SECONDS;
+  const rangeSeconds = option.hours * 3600;
+  return Math.max(EQUITY_BUCKET_SECONDS, Math.ceil(rangeSeconds / EQUITY_TARGET_POINTS));
+}
 
 /** 最近信号流只取一屏，看全量去信号复盘页。 */
 export const RECENT_SIGNAL_LIMIT = 12;

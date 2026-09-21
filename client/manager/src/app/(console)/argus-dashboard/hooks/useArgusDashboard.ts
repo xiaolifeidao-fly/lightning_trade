@@ -7,7 +7,7 @@ import { fetchPublishedArgusConfig, type ArgusConfigSnapshot } from "../../argus
 import { fetchMarketTimeline, type MarketTimeline } from "../../argus-market/api/argus-market.api";
 import { fetchGateStats, fetchSignalFilterOptions, fetchSignals, type GateStats, type SignalEvent, type SignalFilterOptions } from "../../argus-signals/api/argus-signals.api";
 import { fetchEquityCurve, fetchInstanceSummary, type EquityCurve, type InstanceSummaryResult } from "../api/argus-dashboard.api";
-import { EQUITY_BUCKET_SECONDS, OVERVIEW_REFRESH_INTERVAL, RECENT_SIGNAL_LIMIT, resolveRange } from "../constants";
+import { equityBucketSeconds, OVERVIEW_REFRESH_INTERVAL, RECENT_SIGNAL_LIMIT, resolveRange } from "../constants";
 
 type RangeKey = "d1" | "d3" | "d7" | "d30" | "d90" | "latest";
 
@@ -116,7 +116,9 @@ export function useArgusDashboard() {
     const instrument = options.instruments[0] || "BTCUSDT";
     const [summaryResult, equityResult, gateResult, signalsResult, snapshotResult, timelineResult] = await Promise.allSettled([
       summaryPromise,
-      fetchEquityCurve({ instanceKey: scope, ...range, bucketSeconds: EQUITY_BUCKET_SECONDS }, signal),
+      // compact + 随窗口自适应的桶粒度：这页的图只用 time 与 changePct，
+      // 而固定 600 秒会让近 30 天吐出 4320 个点/账户、整包 1.4MB。
+      fetchEquityCurve({ instanceKey: scope, ...range, bucketSeconds: equityBucketSeconds(rangeKey), compact: true }, signal),
       fetchGateStats({ instanceKey: scope, instrument, ...range }, signal),
       fetchSignals({ instanceKey: scope, ...range, category: "all", order: "ts_desc", pageIndex: 1, pageSize: RECENT_SIGNAL_LIMIT }, signal),
       fetchPublishedArgusConfig(scope, signal),

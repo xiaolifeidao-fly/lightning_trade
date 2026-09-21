@@ -370,7 +370,31 @@ func (s *ArgusEventService) GetEquityCurve(q argusDTO.EquityQueryDTO) (*argusDTO
 		meta[row.AccountLabel] = row
 	}
 	result.Series = buildEquitySeries(instanceKey, rows, meta)
+	// 必须放在 buildEquitySeries 之后：changePct 是拿 Equity 算出来的，
+	// 先裁掉 Equity 就没得算了。
+	if q.Compact {
+		compactEquitySeries(result.Series)
+	}
 	return &result, nil
+}
+
+// compactEquitySeries 只留图表真正用的 time 与 changePct，其余字段清空。
+//
+// 配合 EquityPointDTO 上那六个 omitempty 才有意义——清空是为了让 omitempty 生效，
+// 单独做任何一半都省不下字节。序列级的 firstEquity/lastEquity 保留：它们每个序列
+// 只有一份，省不下什么，却是人工核对"基准取的是哪个值"的唯一线索。
+func compactEquitySeries(series []argusDTO.EquitySeriesDTO) {
+	for i := range series {
+		points := series[i].Points
+		for j := range points {
+			points[j].Balance = nil
+			points[j].Equity = nil
+			points[j].Upl = nil
+			points[j].MinEquity = nil
+			points[j].MaxEquity = nil
+			points[j].Samples = 0
+		}
+	}
 }
 
 // buildEquitySeries 把降采样桶按账户拼成序列，并算出相对首个已知权益的变动。
