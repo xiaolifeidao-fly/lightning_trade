@@ -10,6 +10,7 @@ import (
 	"common/middleware/db"
 	argusConfigRepository "service/argus_config/repository"
 	argusDTO "service/argus_event/dto"
+	tradeRepository "service/trade/repository"
 
 	"argus_single/pkg/eventstore"
 
@@ -83,7 +84,43 @@ func integrationService(t *testing.T) (*ArgusEventService, *gorm.DB) {
 		t.Fatalf("注册测试实例失败: %v", err)
 	}
 	seedIntegrationData(t, writeDB)
+	seedIntegrationKlines(t, svc)
 	return svc, writeDB
+}
+
+// seedIntegrationKlines 给 10:15–10:20 这个窗口铺 K 线。
+//
+// 两个平台**故意给不同根数**：deepcoin 缺 10:17、10:19 两根（4/6），binance 齐全（6/6）。
+// 覆盖率只有在这种情况下才有判别力——两边都 0 或都满，coverageOnly 与全量路径
+// 自然相等，用例就变成空过，测不出 COUNT 与 List 的 WHERE 是否真的一致。
+//
+// 走 svc.klineRepository（也就是**读连接**）而不是 writeDB：本文件的读连接刻意不带
+// loc，退回 go-sql-driver 默认 UTC，而 trade_kline 的 open_time 是真 time.Time 列
+// （事件表那套"时间全程按串走"的豁免对它不适用）。用写连接插就会差 8 小时、一根也查不到。
+// 生产的 manager-api DSN 带 loc=Local，不存在这个错位。
+func seedIntegrationKlines(t *testing.T, svc *ArgusEventService) {
+	t.Helper()
+	base := time.Date(2026, 8, 18, 10, 15, 0, 0, time.Local)
+	rows := make([]*tradeRepository.TradeKline, 0, 10)
+	add := func(platform string, minute int) {
+		openAt := base.Add(time.Duration(minute) * time.Minute)
+		row := &tradeRepository.TradeKline{
+			PlatformCode: platform, Symbol: itInstrument, Interval: "1m",
+			OpenTime: openAt, CloseTime: openAt.Add(time.Minute - time.Second),
+			OpenPrice: 100, HighPrice: 101, LowPrice: 99, ClosePrice: 100.5, Volume: 1,
+		}
+		row.Init()
+		rows = append(rows, row)
+	}
+	for _, m := range []int{0, 1, 3, 5} { // 缺 10:17 与 10:19
+		add("deepcoin", m)
+	}
+	for m := 0; m <= 5; m++ {
+		add("binance", m)
+	}
+	if _, err := svc.klineRepository.UpsertKlines(rows); err != nil {
+		t.Fatalf("写 K 线失败: %v", err)
+	}
 }
 
 // readDSN 只补 parseTime=true（其余模块把 DATETIME 读成 time.Time 必须要它），
@@ -327,6 +364,52 @@ func TestIntegrationSliceAndTimelineAndEquity(t *testing.T) {
 	}
 	if timeline.EventTotal != 5 {
 		t.Errorf("时间轴只应覆盖实例A 的 5 条事件, got %d", timeline.EventTotal)
+	}
+
+	// coverageOnly：只要覆盖率，不要 K 线与桶。
+	//
+	// 「数据总览」只读 coverage/compareCoverage 两个字段，却让这个接口把整窗 K 线
+	// 全传回去——30 天 1m 双平台 ≈ 4.3 万个点、单次 4.7MB，2026-09-21 把线上机器的
+	// 内核 TCP 内存吃光过一次。所以这里要钉死两件事：**载荷真的空了**，
+	// 而且**覆盖率与全量路径逐字相同**（COUNT 与 List 的 WHERE 必须一致）。
+	full, err := svc.GetTimeline(argusDTO.TimelineQueryDTO{
+		InstanceKey: itInstanceA, Instrument: itInstrument, Interval: "1m",
+		Start: "2026-08-18 10:15:00", End: "2026-08-18 10:20:00",
+		PlatformCode: "deepcoin", ComparePlatformCode: "binance",
+	})
+	if err != nil {
+		t.Fatalf("GetTimeline(full): %v", err)
+	}
+	lite, err := svc.GetTimeline(argusDTO.TimelineQueryDTO{
+		InstanceKey: itInstanceA, Instrument: itInstrument, Interval: "1m",
+		Start: "2026-08-18 10:15:00", End: "2026-08-18 10:20:00",
+		PlatformCode: "deepcoin", ComparePlatformCode: "binance", CoverageOnly: true,
+	})
+	if err != nil {
+		t.Fatalf("GetTimeline(coverageOnly): %v", err)
+	}
+	if len(lite.Klines) != 0 || len(lite.CompareKlines) != 0 || len(lite.Buckets) != 0 {
+		t.Errorf("coverageOnly 必须不带载荷: klines=%d compare=%d buckets=%d",
+			len(lite.Klines), len(lite.CompareKlines), len(lite.Buckets))
+	}
+	if lite.Coverage != full.Coverage {
+		t.Errorf("coverageOnly 的覆盖率与全量不一致: %+v vs %+v", lite.Coverage, full.Coverage)
+	}
+	if lite.CompareCoverage != full.CompareCoverage {
+		t.Errorf("coverageOnly 的对比覆盖率与全量不一致: %+v vs %+v", lite.CompareCoverage, full.CompareCoverage)
+	}
+	// 防止"两边都是 0"的空过：fixture 给 deepcoin 4 根、binance 6 根，
+	// 两条覆盖率必须都非零**且彼此不同**——平台传反了也要能被抓出来。
+	if lite.Coverage.Actual != 4 || lite.CompareCoverage.Actual != 6 {
+		t.Fatalf("覆盖率没有被真实行数驱动（用例失去意义）: main=%+v compare=%+v",
+			lite.Coverage, lite.CompareCoverage)
+	}
+	if lite.Coverage.Missing == 0 {
+		t.Errorf("deepcoin 少插了 2 根，missing 不该是 0: %+v", lite.Coverage)
+	}
+	// 窗口口径也必须一致，否则前端看到的"缺几根"会随开关变化
+	if lite.Window != full.Window || lite.Interval != full.Interval {
+		t.Errorf("coverageOnly 不该改变窗口/周期: %+v %+v", lite.Window, full.Window)
 	}
 
 	// 缺 instanceKey 的净仓/权益类接口必须直接拒绝，而不是跨实例合并

@@ -13,8 +13,8 @@ import type { EventWindow } from "../../argus-signals/api/argus-signals.api";
  *   · 实例注册与心跳                      → @/components/argus/argus-instance.api
  */
 
-async function get<T>(url: string, params?: Record<string, string | number | undefined>): Promise<T> {
-  const response = await instance.get<ApiResponse<T>>(url, { params });
+async function get<T>(url: string, params?: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<T> {
+  const response = await instance.get<ApiResponse<T>>(url, { params, signal });
   return unwrapApiResponse(response.data);
 }
 
@@ -71,8 +71,8 @@ export interface InstanceSummaryParams {
   end?: string;
 }
 
-export function fetchInstanceSummary(params: InstanceSummaryParams): Promise<InstanceSummaryResult> {
-  return get<InstanceSummaryResult>("/argus-event/instance-summary", { ...params });
+export function fetchInstanceSummary(params: InstanceSummaryParams, signal?: AbortSignal): Promise<InstanceSummaryResult> {
+  return get<InstanceSummaryResult>("/argus-event/instance-summary", { ...params }, signal);
 }
 
 // ─── 权益曲线 ────────────────────────────────────────────────────────────────
@@ -118,6 +118,6 @@ export interface EquityCurveParams {
 }
 
 /** instanceKey 必填：账户唯一性是 (实例, 账户)，跨实例合并会把两个账户串成一条线。 */
-export function fetchEquityCurve(params: EquityCurveParams): Promise<EquityCurve> {
-  return get<EquityCurve>("/argus-event/equity-curve", { ...params });
+export function fetchEquityCurve(params: EquityCurveParams, signal?: AbortSignal): Promise<EquityCurve> {
+  return get<EquityCurve>("/argus-event/equity-curve", { ...params }, signal);
 }

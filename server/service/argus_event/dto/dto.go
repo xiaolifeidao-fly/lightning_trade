@@ -77,6 +77,18 @@ type TimelineQueryDTO struct {
 	// **UTC** 格式化，本接口按**本地墙钟**（与事件 ts 同口径），两者叠在同一条时间轴上
 	// 会整体错开时区偏移。时间格式化口径必须只有一处，否则对比线永远是错位的。
 	ComparePlatformCode string `form:"comparePlatformCode"`
+
+	// CoverageOnly 只算覆盖率，不返回 K 线与事件桶（Klines / CompareKlines / Buckets
+	// 一律为空，EventTotal 为 0）。
+	//
+	// 「数据总览」只读 coverage / compareCoverage 两个字段来显示两行
+	// 「XX 覆盖率 N% · 缺 M 根」，却会把整窗 K 线一起拖回去：30 天 × 1m × 双平台
+	// ≈ 4.3 万个点、**单次响应 4.7MB**。2026-09-21 这条把线上机器的内核 TCP 内存
+	// （上限 150MB）吃光过一次，表现是整台机器所有服务的网络一起瘫痪。
+	//
+	// 覆盖率本来就只需要根数，走 COUNT 就够——两条 SQL 的 WHERE 完全相同，
+	// 所以开不开这个开关，覆盖率逐字一致（service_integration_test 里钉住了）。
+	CoverageOnly bool `form:"coverageOnly"`
 }
 
 // EquityQueryDTO 权益曲线入参。

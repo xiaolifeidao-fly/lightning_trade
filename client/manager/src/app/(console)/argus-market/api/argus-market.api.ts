@@ -208,10 +208,10 @@ export class BackfillRangeResult {
 
 // ─── 请求 ────────────────────────────────────────────────────────────────────
 
-type QueryParams = Record<string, string | number | undefined>;
+type QueryParams = Record<string, string | number | boolean | undefined>;
 
-async function get<T>(url: string, params?: QueryParams): Promise<T> {
-  const response = await instance.get<ApiResponse<T>>(url, { params });
+async function get<T>(url: string, params?: QueryParams, signal?: AbortSignal): Promise<T> {
+  const response = await instance.get<ApiResponse<T>>(url, { params, signal });
   return unwrapApiResponse(response.data);
 }
 
@@ -230,11 +230,19 @@ export interface TimelineParams {
   start: string;
   end: string;
   accountLabel?: string;
+  /**
+   * 只要覆盖率，不要 K 线与事件桶（klines / compareKlines / buckets 会是空数组）。
+   *
+   * 「数据总览」只用 coverage / compareCoverage 显示两行「覆盖率 N% · 缺 M 根」，
+   * 却会把整窗 K 线一起拖回来：30 天 × 1m × 双平台 ≈ 4.3 万个点、单次 4.7MB。
+   * 2026-09-21 就是它把线上机器的内核 TCP 内存吃光的。只画覆盖率就带上这个开关。
+   */
+  coverageOnly?: boolean;
 }
 
 /** instanceKey 必填：净持仓与开仓率是实例内的量，跨实例相加会串数据。 */
-export function fetchMarketTimeline(params: TimelineParams): Promise<MarketTimeline> {
-  return get<MarketTimeline>("/argus-event/timeline", { ...params });
+export function fetchMarketTimeline(params: TimelineParams, signal?: AbortSignal): Promise<MarketTimeline> {
+  return get<MarketTimeline>("/argus-event/timeline", { ...params }, signal);
 }
 
 export interface TriggerPageParams {

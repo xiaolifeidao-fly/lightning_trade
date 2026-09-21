@@ -49,11 +49,22 @@ export function useArgusDashboard() {
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [error, setError] = useState("");
   const generationRef = useRef(0);
+  // 上一轮还没回来的请求要**真的掐掉**，不能只丢弃结果。
+  //
+  // 原来只有下面的 generation 守卫：它能保证旧结果不覆盖新数据，但请求本身还在跑，
+  // 上游照样把响应往 socket 里灌。总览一轮打 8 个接口，其中 timeline 单次曾经 4.7MB，
+  // 传不完下一轮又压上来——2026-09-21 线上就是这样堆出 445 条没人读的连接，
+  // 把内核 TCP 内存（上限 150MB）吃光，整台机器的网络一起瘫痪。
+  const abortRef = useRef<AbortController | null>(null);
   // 上一轮数据对应的口径。换实例或换窗口时它对不上，沿用逻辑自动失效。
   const dataScopeRef = useRef<DataScope>("");
 
   const refresh = useCallback(async (run?: { silent?: boolean }) => {
     const generation = ++generationRef.current;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const signal = controller.signal;
     // 只有"这一轮要的口径和屏幕上已有的数据是同一个"时，才算后台刷新。
     // 换了实例或窗口，屏幕上的数据就是别人的了，必须走加载态而不是静默替换。
     const background = run?.silent === true && dataScopeRef.current === scopeOf(scope, rangeKey);
@@ -66,7 +77,7 @@ export function useArgusDashboard() {
     };
     setError("");
 
-    const [overviewResult, optionsResult] = await Promise.allSettled([fetchArgusInstanceOverview(), fetchSignalFilterOptions()]);
+    const [overviewResult, optionsResult] = await Promise.allSettled([fetchArgusInstanceOverview(true, signal), fetchSignalFilterOptions(undefined, signal)]);
     if (generation !== generationRef.current) return;
     const overview = overviewResult.status === "fulfilled" ? overviewResult.value : null;
     const options = optionsResult.status === "fulfilled" ? optionsResult.value : null;
@@ -76,13 +87,13 @@ export function useArgusDashboard() {
 
     if (!options) {
       setData({ ...emptyData, overview });
-      setError(bootstrapErrors.join("；") || "无法读取 Argus 数据范围");
+      setError(bootstrapErrors.filter(Boolean).join("；") || "无法读取 Argus 数据范围");
       finish();
       return;
     }
 
     const range = resolveRange(rangeKey, options.dataRange.end);
-    const summaryPromise = fetchInstanceSummary({ instrument: options.instruments[0], ...range });
+    const summaryPromise = fetchInstanceSummary({ instrument: options.instruments[0], ...range }, signal);
     if (scope === ALL_INSTANCES) {
       const summaryResult = await summaryPromise.then(
         (value) => ({ value, error: "" }),
@@ -105,11 +116,14 @@ export function useArgusDashboard() {
     const instrument = options.instruments[0] || "BTCUSDT";
     const [summaryResult, equityResult, gateResult, signalsResult, snapshotResult, timelineResult] = await Promise.allSettled([
       summaryPromise,
-      fetchEquityCurve({ instanceKey: scope, ...range, bucketSeconds: EQUITY_BUCKET_SECONDS }),
-      fetchGateStats({ instanceKey: scope, instrument, ...range }),
-      fetchSignals({ instanceKey: scope, ...range, category: "all", order: "ts_desc", pageIndex: 1, pageSize: RECENT_SIGNAL_LIMIT }),
-      fetchPublishedArgusConfig(scope),
-      fetchMarketTimeline({ instanceKey: scope, instrument, interval: "1m", platformCode: "deepcoin", comparePlatformCode: "binance", start: range.start || options.dataRange.start, end: range.end || options.dataRange.end }),
+      fetchEquityCurve({ instanceKey: scope, ...range, bucketSeconds: EQUITY_BUCKET_SECONDS }, signal),
+      fetchGateStats({ instanceKey: scope, instrument, ...range }, signal),
+      fetchSignals({ instanceKey: scope, ...range, category: "all", order: "ts_desc", pageIndex: 1, pageSize: RECENT_SIGNAL_LIMIT }, signal),
+      fetchPublishedArgusConfig(scope, signal),
+      // coverageOnly：这页只用 timeline 的 coverage / compareCoverage 画两行
+      // 「覆盖率 N% · 缺 M 根」，klines / buckets 一个都不用。不带这个开关的话，
+      // 30 天 × 1m × 双平台 ≈ 4.3 万个点会整包传回来，单次 4.7MB。
+      fetchMarketTimeline({ instanceKey: scope, instrument, interval: "1m", platformCode: "deepcoin", comparePlatformCode: "binance", start: range.start || options.dataRange.start, end: range.end || options.dataRange.end, coverageOnly: true }, signal),
     ]);
     if (generation !== generationRef.current) return;
     const rejected = [summaryResult, equityResult, gateResult, signalsResult, snapshotResult, timelineResult]
@@ -133,11 +147,14 @@ export function useArgusDashboard() {
       timeline: keep(valueOf(timelineResult), previous.timeline),
     }));
     dataScopeRef.current = scopeOf(scope, rangeKey);
-    setError([...bootstrapErrors, ...rejected].join("；"));
+    setError([...bootstrapErrors, ...rejected].filter(Boolean).join("；"));
     finish();
   }, [rangeKey, scope]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  // 离开这页时把在途请求带走，否则它们会继续把响应灌进没人读的 socket。
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   useEffect(() => {
     const timer = window.setInterval(() => { void refresh({ silent: true }); }, OVERVIEW_REFRESH_INTERVAL);
@@ -152,5 +169,14 @@ function valueOf<T>(result: PromiseSettledResult<T>): T | null {
 }
 
 function errorMessage(error: unknown): string {
+  // 被我们自己掐掉的请求不是故障，不该出现在告警条上（返回空串，由 filter(Boolean) 滤掉）。
+  if (isAbortError(error)) return "";
   return error instanceof Error ? error.message : "读取数据失败";
+}
+
+/** axios 取消抛 CanceledError/ERR_CANCELED，原生 fetch 抛 AbortError，两种都认。 */
+function isAbortError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const { name, code } = error as { name?: string; code?: string };
+  return name === "CanceledError" || name === "AbortError" || code === "ERR_CANCELED";
 }

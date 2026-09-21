@@ -487,13 +487,13 @@ export class SliceCompare {
 
 type QueryParams = Record<string, string | number | undefined>;
 
-async function get<T>(url: string, params?: QueryParams): Promise<T> {
-  const response = await instance.get<ApiResponse<T>>(url, { params });
+async function get<T>(url: string, params?: QueryParams, signal?: AbortSignal): Promise<T> {
+  const response = await instance.get<ApiResponse<T>>(url, { params, signal });
   return unwrapApiResponse(response.data);
 }
 
-export function fetchSignalFilterOptions(instanceKeys?: string): Promise<SignalFilterOptions> {
-  return get<SignalFilterOptions>("/argus-event/filter-options", { instanceKeys });
+export function fetchSignalFilterOptions(instanceKeys?: string, signal?: AbortSignal): Promise<SignalFilterOptions> {
+  return get<SignalFilterOptions>("/argus-event/filter-options", { instanceKeys }, signal);
 }
 
 export interface SignalListParams {
@@ -517,8 +517,8 @@ export interface SignalListParams {
   order?: string;
 }
 
-export function fetchSignals(params: SignalListParams): Promise<PageResult<SignalEvent>> {
-  return get<PageResult<SignalEvent>>("/argus-event/signals", { ...params });
+export function fetchSignals(params: SignalListParams, signal?: AbortSignal): Promise<PageResult<SignalEvent>> {
+  return get<PageResult<SignalEvent>>("/argus-event/signals", { ...params }, signal);
 }
 
 export function fetchSignalDetail(eventId: number): Promise<SignalDetail> {
@@ -533,8 +533,8 @@ export interface GateStatsParams {
   end?: string;
 }
 
-export function fetchGateStats(params: GateStatsParams): Promise<GateStats> {
-  return get<GateStats>("/argus-event/gate-stats", { ...params });
+export function fetchGateStats(params: GateStatsParams, signal?: AbortSignal): Promise<GateStats> {
+  return get<GateStats>("/argus-event/gate-stats", { ...params }, signal);
 }
 
 export interface EpisodeListParams {

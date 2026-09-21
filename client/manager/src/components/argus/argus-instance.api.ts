@@ -49,10 +49,11 @@ export class ArgusInstanceOverview {
   declare notice: string;
 }
 
-export function fetchArgusInstanceOverview(onlyEnabled = true): Promise<ArgusInstanceOverview> {
+export function fetchArgusInstanceOverview(onlyEnabled = true, signal?: AbortSignal): Promise<ArgusInstanceOverview> {
   return instance
     .get<ApiResponse<ArgusInstanceOverview>>("/argus-config/instance-overview", {
       params: { onlyEnabled: onlyEnabled ? "true" : "false" },
+      signal,
     })
     .then((response) => unwrapApiResponse(response.data));
 }

@@ -134,6 +134,29 @@ func (s *ArgusEventService) GetTimeline(q argusDTO.TimelineQueryDTO) (*argusDTO.
 		return nil, err
 	}
 
+	// 只要覆盖率时，两笔重活都不做：K 线走 COUNT 而不是整窗拉回来，事件表也不扫
+	// （EventTotal / Buckets 都是给 K 线图用的，调用方既然说了只要覆盖率就用不上）。
+	// 省掉的不只是 4.7MB 传输，还有一次最多 maxAggregateRows 行的事件扫描。
+	if q.CoverageOnly {
+		if instrument != "" {
+			actual, err := s.klineRepository.CountBySymbolIntervalRange(platform, instrument, interval, startAt, endAt)
+			if err != nil {
+				return nil, err
+			}
+			result.Coverage = klineCoverage(int(actual), startAt, endAt, dur)
+			if comparePlatform != "" {
+				compareActual, err := s.klineRepository.CountBySymbolIntervalRange(comparePlatform, instrument, interval, startAt, endAt)
+				if err != nil {
+					return nil, err
+				}
+				result.CompareCoverage = klineCoverage(int(compareActual), startAt, endAt, dur)
+			}
+		} else {
+			result.Coverage = klineCoverage(0, startAt, endAt, dur)
+		}
+		return &result, nil
+	}
+
 	rows, err := s.strategyEventRepository.ListEvents(filter, 0, maxAggregateRows, true)
 	if err != nil {
 		return nil, err

@@ -194,8 +194,8 @@ export type ArgusConfigDraft = Omit<ArgusConfigSnapshot, "version" | "instanceKe
   releaseNote: string;
 };
 
-async function get<T>(url: string, params?: Record<string, string | number>): Promise<T> {
-  const response = await instance.get<ApiResponse<T>>(url, { params });
+async function get<T>(url: string, params?: Record<string, string | number>, signal?: AbortSignal): Promise<T> {
+  const response = await instance.get<ApiResponse<T>>(url, { params, signal });
   return unwrapApiResponse(response.data);
 }
 
@@ -212,8 +212,8 @@ export function fetchArgusInstances(): Promise<ArgusInstance[]> {
   return get<ArgusInstance[]>("/argus-config/instances", { onlyEnabled: "true" });
 }
 
-export function fetchPublishedArgusConfig(instanceKey: string): Promise<ArgusConfigSnapshot | null> {
-  return get<ArgusConfigSnapshot | null>("/argus-config/published", { instanceKey });
+export function fetchPublishedArgusConfig(instanceKey: string, signal?: AbortSignal): Promise<ArgusConfigSnapshot | null> {
+  return get<ArgusConfigSnapshot | null>("/argus-config/published", { instanceKey }, signal);
 }
 
 export function fetchArgusConfigVersions(instanceKey: string, limit = 30): Promise<ArgusConfigVersion[]> {
