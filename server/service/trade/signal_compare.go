@@ -82,6 +82,8 @@ func signalParamFields() []signalParamField {
 		numField("(研究)equity_stop_pct", "equityStopPct", func(p signal.Params) float64 { return p.EquityStopPct }, "%.1f"),
 		numField("(研究)open_gate.max_vol_bpm", "openMaxVolBpm", func(p signal.Params) float64 { return p.OpenMaxVolBpm }, "%.2f"),
 		numField("(研究)open_gate.max_signals_60m", "openMaxSignals60", func(p signal.Params) float64 { return float64(p.OpenMaxSignals60) }, "%.0f"),
+		numField("(研究)breaker.daily_loss_halt_pct", "dailyLossHaltPct", func(p signal.Params) float64 { return p.DailyLossHaltPct }, "%.1f"),
+		numField("(研究)breaker.catastrophe_cooldown_min", "catastropheCooldownMin", func(p signal.Params) float64 { return float64(p.CatastropheCooldownMin) }, "%.0f"),
 		numField("position.monitor.trail.tier_small_ratio", "tierSmallRatio", func(p signal.Params) float64 { return p.TierSmallRatio }, "%.3f"),
 		numField("position.monitor.trail.tier_large_ratio", "tierLargeRatio", func(p signal.Params) float64 { return p.TierLargeRatio }, "%.3f"),
 		numField("position.monitor.trail.small_activate", "smallActivatePct", func(p signal.Params) float64 { return p.SmallActivatePct }, "%.2f"),

@@ -158,6 +158,15 @@ type Engine struct {
 	skipVolGate int
 	skipDens    int
 
+	// 账户级熔断状态。
+	dayKey        string  // 当前自然日（bar 时区）
+	dayStartMTM   float64 // 当日 00:00 时的 MTM（取上一根 bar 的 MTM）
+	lastMTM       float64
+	haltUntil     time.Time // 日亏熔断：不开新仓直到此刻
+	cooldownUntil time.Time // 兜底冷静期：不开新仓直到此刻
+	skipHalt      int
+	skipCooldown  int
+
 	// 扰动（Perturb.ExitLateProb）：exitRng==nil 即关闭，判定路径与从前逐字节一致。
 	exitRng      *rand.Rand
 	exitLateProb float64
@@ -414,6 +423,9 @@ func (e *Engine) OnSignal(s Signal, px float64) {
 		if !e.passOpenGate(s.Ts) {
 			return
 		}
+		if !e.passBreaker(s.Ts) {
+			return
+		}
 		if !e.admitEntry(orderSize, s.Ts) {
 			return
 		}
@@ -546,7 +558,9 @@ func (e *Engine) OnBar(b Bar) {
 	if stack > e.maxStack {
 		e.maxStack = stack
 	}
-	e.equity = append(e.equity, EquityPoint{At: b.Ts, MTM: e.realized - e.fees + e.floating(b.Close)})
+	mtm := e.realized - e.fees + e.floating(b.Close)
+	e.equity = append(e.equity, EquityPoint{At: b.Ts, MTM: mtm})
+	e.observeDailyLoss(b.Ts, mtm)
 }
 
 func (e *Engine) evalBook(bk *book, bar Bar) {
@@ -654,6 +668,47 @@ func (e *Engine) closeBook(bk *book, px float64, at time.Time, reason string) {
 	e.fee(px, bk.size, bk)
 	e.recordEpisode(bk, px, at, reason, size, pnl, false)
 	bk.reset()
+	if reason == ExitCatastrophe && e.p.CatastropheCooldownMin > 0 {
+		e.cooldownUntil = at.Add(time.Duration(e.p.CatastropheCooldownMin) * time.Minute)
+	}
+}
+
+// observeDailyLoss 逐根更新"当日回撤"，达阈值则熔断到次日 00:00（bar 自身时区的自然日）。
+// 日起点 MTM 取跨日前最后一根的 MTM，与"从 00:00 起算"一致；首日以首根为起点。
+func (e *Engine) observeDailyLoss(at time.Time, mtm float64) {
+	if e.p.DailyLossHaltPct <= 0 {
+		return
+	}
+	key := at.Format("2006-01-02")
+	if key != e.dayKey {
+		if e.dayKey == "" {
+			e.dayStartMTM = mtm
+		} else {
+			e.dayStartMTM = e.lastMTM
+		}
+		e.dayKey = key
+	}
+	e.lastMTM = mtm
+	if e.dayStartMTM-mtm >= e.p.DailyLossHaltPct/100*e.p.RiskEquity {
+		y, m, d := at.Date()
+		next := time.Date(y, m, d, 0, 0, 0, 0, at.Location()).Add(24 * time.Hour)
+		if next.After(e.haltUntil) {
+			e.haltUntil = next
+		}
+	}
+}
+
+// passBreaker 账户级熔断：只拦全新开仓。
+func (e *Engine) passBreaker(at time.Time) bool {
+	if e.p.DailyLossHaltPct > 0 && at.Before(e.haltUntil) {
+		e.skipHalt++
+		return false
+	}
+	if e.p.CatastropheCooldownMin > 0 && at.Before(e.cooldownUntil) {
+		e.skipCooldown++
+		return false
+	}
+	return true
 }
 
 // recordEpisode 落一条持仓生命周期记录。contracts/pnl 显式传入而不是从 bk 读，

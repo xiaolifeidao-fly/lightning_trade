@@ -491,6 +491,12 @@ func applySignalParamKnobs(p signal.Params, dto tradeDTO.SignalBacktestParamsDTO
 	if dto.OpenMaxSignals60 != nil {
 		p.OpenMaxSignals60 = *dto.OpenMaxSignals60
 	}
+	if dto.DailyLossHaltPct != nil {
+		p.DailyLossHaltPct = *dto.DailyLossHaltPct
+	}
+	if dto.CatastropheCooldownMin != nil {
+		p.CatastropheCooldownMin = *dto.CatastropheCooldownMin
+	}
 	if dto.TrendGateThresholdPct != nil {
 		p.TrendGateThresholdPct = *dto.TrendGateThresholdPct
 	}

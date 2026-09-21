@@ -129,6 +129,6 @@ func runEnsembleGroup(label string, in signal.Input, p signal.Params, n int, per
 	if err != nil {
 		return SignalEnsembleGroup{}, err
 	}
-	skips := fmt.Sprintf("趋%d/加%d/限%d/波%d/密%d", single.SkipTrend, single.SkipAddRoi, single.SkipCap, single.SkipVolGate, single.SkipDens)
+	skips := fmt.Sprintf("趋%d/加%d/限%d/波%d/密%d/熔%d/冷%d", single.SkipTrend, single.SkipAddRoi, single.SkipCap, single.SkipVolGate, single.SkipDens, single.SkipHalt, single.SkipCooldown)
 	return SignalEnsembleGroup{Label: label, SinglePath: single.Net, SingleCats: cats, SingleSkips: skips, Stats: st}, nil
 }

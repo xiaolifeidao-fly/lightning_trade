@@ -127,6 +127,14 @@ type Params struct {
 	// 前 60m 波动 ≥6.11 bp/min 开的 106 笔 12 兜底 −155。这是与趋势闸同类的进场侧行情闸，不碰均价。
 	OpenMaxVolBpm    float64 `json:"openMaxVolBpm"`
 	OpenMaxSignals60 int     `json:"openMaxSignals60"`
+	// 账户级熔断（研究旋钮，实盘无键）。两者都**只拦全新开仓**：已有仓位照常加/减/止盈/兜底——
+	// "浮亏中不再加"等价于收紧兜底，已被否（09-19 加仓闸）。
+	//   DailyLossHaltPct：当日 MTM 权益自 00:00 起回撤 ≥ 该百分比 × RiskEquity → 到次日 00:00 不开新仓。
+	//   CatastropheCooldownMin：兜底平仓后 N 分钟内不开新仓（09-11 22:03 兜底 12 秒后反手再亏 −20 那类）。
+	// 0=关闭。动机：80 天里唯一兑现的亏损边界是单笔 13.3%×E，日/周层面没有任何约束
+	// （08-20 A 一天两次兜底 −30%；B 最差连续三日 −26.4%）。
+	DailyLossHaltPct       float64 `json:"dailyLossHaltPct"`
+	CatastropheCooldownMin int     `json:"catastropheCooldownMin"`
 
 	// 行情路由减仓（第 2 步）：前一日状态标签命中 RegimeScaleLabels 时，本日入场
 	// 适用的仓位上限按 RegimeScaleFactor 压低。标签集为空 = 关闭。
@@ -305,6 +313,12 @@ func (p Params) Validate() error {
 	}
 	if err := validateRegimeScale(p); err != nil {
 		return err
+	}
+	if p.DailyLossHaltPct < 0 || p.DailyLossHaltPct > 100 || p.CatastropheCooldownMin < 0 {
+		return fmt.Errorf("dailyLossHaltPct 应在 [0,100]、catastropheCooldownMin ≥0, got %.1f / %d", p.DailyLossHaltPct, p.CatastropheCooldownMin)
+	}
+	if p.DailyLossHaltPct > 0 && p.RiskEquity <= 0 {
+		return fmt.Errorf("启用日亏熔断必须给 riskEquity（阈值 = dailyLossHaltPct%% × riskEquity）")
 	}
 	if p.OpenMaxVolBpm < 0 || p.OpenMaxSignals60 < 0 {
 		return fmt.Errorf("openMaxVolBpm / openMaxSignals60 不得为负, got %.2f / %d", p.OpenMaxVolBpm, p.OpenMaxSignals60)

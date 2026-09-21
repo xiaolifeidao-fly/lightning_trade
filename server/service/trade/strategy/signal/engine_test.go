@@ -565,3 +565,69 @@ func TestOpenDensityGateCountsPriorSignals(t *testing.T) {
 		t.Fatalf("裁掉旧信号后只剩 1 条先前信号，应放行")
 	}
 }
+
+// 兜底冷静期：兜底后 N 分钟内全新开仓被拦（计 SkipCooldown），过期后放行。
+func TestCatastropheCooldownBlocksFreshOpen(t *testing.T) {
+	p := baseParams()
+	p.CatastropheStopPct = 400
+	p.CatastropheCooldownMin = 10
+	bars := []Bar{{Ts: ts(1), Open: 60000, High: 60000, Low: 60000, Close: 60000}}
+	for i := 2; i < 30; i++ {
+		bars = append(bars, Bar{Ts: ts(i), Open: 57000, High: 57000, Low: 57000, Close: 57000}) // 穿越兜底
+	}
+	sigs := []Signal{
+		{Ts: ts(0).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1},   // 开多，ts(2) 兜底
+		{Ts: ts(5).Add(time.Second), Side: "short", Event: EvOpen, OrderSize: 1},  // 兜底后 3 分钟 → 拦
+		{Ts: ts(20).Add(time.Second), Side: "short", Event: EvOpen, OrderSize: 1}, // 兜底后 18 分钟 → 放行
+	}
+	res, err := Replay(Input{Params: p, Signals: sigs, Bars: bars})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SkipCooldown != 1 {
+		t.Errorf("冷静期内应拦 1 次, got %d", res.SkipCooldown)
+	}
+	if len(res.Episodes) != 2 || res.Episodes[0].Reason != ExitCatastrophe || !res.Episodes[1].Open {
+		t.Errorf("应为 1 笔兜底 + 1 笔冷静期后的新开仓(eod): %+v", res.Episodes)
+	}
+}
+
+// 日亏熔断：当日 MTM 回撤 ≥ X%×E 后到次日 00:00 不开新仓；跨日恢复；加仓不受影响。
+func TestDailyLossHaltBlocksFreshOpenUntilNextDay(t *testing.T) {
+	p := baseParams()
+	p.RiskEquity = 100
+	p.DailyLossHaltPct = 9 // 亏 9U 熔断（兜底在触发线 58080 成交：5 张各亏 1.92U = 9.6U）
+	p.CatastropheStopPct = 400
+	p.CatastropheOvershootRoiPts = 0
+	p.SmallActivatePct, p.MediumActivatePct, p.LargeActivatePct = 1e9, 1e9, 1e9
+	// 5 张多 @60000，跌到 57900：ROI −437% 触发兜底、按触发线 58080 成交，合计亏 9.6U ≥ 9U → 同一根熔断。
+	day0 := time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC)
+	mk := func(min int, px float64) Bar {
+		t0 := day0.Add(time.Duration(min) * time.Minute)
+		return Bar{Ts: t0, Open: px, High: px, Low: px, Close: px}
+	}
+	bars := []Bar{mk(1, 60000), mk(2, 60000), mk(3, 57900), mk(4, 57900), mk(5, 57900)}
+	for m := 6; m <= 1439; m += 60 {
+		bars = append(bars, mk(m, 57900)) // 当日其余时间
+	}
+	bars = append(bars, mk(1440, 57900), mk(1441, 57900)) // 次日 00:00、00:01
+	sigs := []Signal{}
+	for k := 0; k < 5; k++ {
+		sigs = append(sigs, Signal{Ts: day0.Add(time.Duration(k+1) * time.Second), Side: "long", Event: EvOpen, OrderSize: 1})
+	}
+	sigs = append(sigs,
+		Signal{Ts: day0.Add(10*time.Minute + time.Second), Side: "short", Event: EvOpen, OrderSize: 1},   // 当日：熔断中 → 拦
+		Signal{Ts: day0.Add(12*time.Hour + time.Second), Side: "short", Event: EvOpen, OrderSize: 1},     // 当日：仍拦
+		Signal{Ts: day0.Add(1440*time.Minute + time.Second), Side: "short", Event: EvOpen, OrderSize: 1}, // 次日 00:00:01 → 放行
+	)
+	res, err := Replay(Input{Params: p, Signals: sigs, Bars: bars})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SkipHalt != 2 {
+		t.Errorf("当日两次开仓应被熔断拦下, got %d（episodes=%+v）", res.SkipHalt, res.Episodes)
+	}
+	if len(res.Episodes) != 2 || !res.Episodes[1].Open || res.Episodes[1].Side != "short" {
+		t.Errorf("次日应放行开空(eod): %+v", res.Episodes)
+	}
+}

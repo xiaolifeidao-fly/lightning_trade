@@ -268,6 +268,22 @@ func grid(dim string) []tradeDTO.SignalBacktestGroupDTO {
 				pinGate(tradeDTO.SignalBacktestParamsDTO{OpenMaxSignals60: i32(k)})))
 		}
 		return out
+	case "breaker":
+		// 账户级熔断：日亏熔断（当日回撤 ≥X%×E → 到次日不开新仓）与兜底冷静期（兜底后 N 分钟不开新仓），
+		// 只拦全新开仓。这是最后一个没测过的进场侧机制，也是唯一能让"一天两次兜底"成为不可能的东西。
+		// 事前预测：训练段几乎不咬（亏损日少），Δ≈0；测试段 halt15 拦掉 08-20 A 的第二次兜底（−67.7），
+		// cd120 拦掉 09-11 兜底 12 秒后反手的 −20，但也拦掉 09-18 兜底后反手的 +14/+8——净效应对 A 小幅正、B 接近 wash，
+		// 同向大概率落在 8~12/16 之间、过不了线。它的价值更多在"把日亏上限写死"，这一点不靠回测证明。
+		return []tradeDTO.SignalBacktestGroupDTO{
+			g("breaker_off", pinGate(tradeDTO.SignalBacktestParamsDTO{})),
+			g("halt10", pinGate(tradeDTO.SignalBacktestParamsDTO{DailyLossHaltPct: f64(10)})),
+			g("halt15", pinGate(tradeDTO.SignalBacktestParamsDTO{DailyLossHaltPct: f64(15)})),
+			g("halt20", pinGate(tradeDTO.SignalBacktestParamsDTO{DailyLossHaltPct: f64(20)})),
+			g("cd60", pinGate(tradeDTO.SignalBacktestParamsDTO{CatastropheCooldownMin: i32(60)})),
+			g("cd120", pinGate(tradeDTO.SignalBacktestParamsDTO{CatastropheCooldownMin: i32(120)})),
+			g("cd360", pinGate(tradeDTO.SignalBacktestParamsDTO{CatastropheCooldownMin: i32(360)})),
+			g("halt15_cd120", pinGate(tradeDTO.SignalBacktestParamsDTO{DailyLossHaltPct: f64(15), CatastropheCooldownMin: i32(120)})),
+		}
 	case "trail":
 		// 移动止盈的大档：决定那 86~92% 的小赢能留下多少。生产值是
 		// large_activate=40 / large_giveback=0.20（两账户相同），**就在网格内**，
@@ -325,7 +341,7 @@ func main() {
 	account := flag.String("account", "", "账户标签（strategy_event.account_label，必填）")
 	start := flag.String("start", "2026-09-08 21:00:00", "窗口起")
 	end := flag.String("end", "2026-09-15 14:40:00", "窗口止")
-	dim := flag.String("dim", "baseline", "baseline|trend|trendstop|regime|cap|stop|gate|trail|addgate|eqstop|eqadd|eqaddcell|volgate|densgate")
+	dim := flag.String("dim", "baseline", "baseline|trend|trendstop|regime|cap|stop|gate|trail|addgate|eqstop|eqadd|eqaddcell|volgate|densgate|breaker")
 	platform := flag.String("platform", "deepcoin", "1m 路径回放平台")
 	conc := flag.Int("concurrency", 4, "并发组数")
 	// 显式基线旋钮。默认 0 = 用服务端的基线解析器；但解析器对 risk_equity 与
