@@ -538,8 +538,8 @@ func TestOpenDensityGateCountsPriorSignals(t *testing.T) {
 	bars := flatBars(80, 60000)
 	// 4 条空信号（均因 cap=15 放行开仓/加仓…改为让它们本身是有效开仓会改变净仓；用相反方向被反向闸拦下的来堆密度）
 	sigs := []Signal{
-		{Ts: ts(1).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1},   // 全新开仓：前 60m 0 条 → 放行
-		{Ts: ts(2).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1},   // 加仓：不受闸约束
+		{Ts: ts(1).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1},       // 全新开仓：前 60m 0 条 → 放行
+		{Ts: ts(2).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1},       // 加仓：不受闸约束
 		{Ts: ts(3).Add(time.Second), Side: "short", Event: EvGateBlock, OrderSize: 1}, // 反向被反向闸拦，但计入密度
 		{Ts: ts(4).Add(time.Second), Side: "short", Event: EvGateBlock, OrderSize: 1},
 	}
