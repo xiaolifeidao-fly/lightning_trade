@@ -6,6 +6,7 @@ import { headers } from "next/headers";
 import formidable from 'formidable';
 import FormData from 'form-data';
 import fs from 'fs';
+import { upstreamAgent, UPSTREAM_TIMEOUT_MS } from '@/utils/upstreamAgent';
 
 require('dotenv').config();
 
@@ -38,6 +39,11 @@ function getProxy() {
       pathRewrite: {
         "^/api": prefix, // 将请求中的 /api 前缀替换为空字符串
       },
+      // 上游连接封顶与超时，见 utils/upstreamAgent 里的事故记录。
+      // 没有这三行时，被放弃的上游 socket 会永远停在 ESTAB 把内核 TCP 内存吃光。
+      agent: upstreamAgent,
+      proxyTimeout: UPSTREAM_TIMEOUT_MS,
+      timeout: UPSTREAM_TIMEOUT_MS,
       // 不再传 headers: req.headers —— http-proxy 本来就会把原请求头原样转发给
       // 上游，这个选项是"额外追加的头"，传进去只是把同样的值再设一遍；而它是
       // 唯一逐请求变化的选项，去掉它代理才能复用。
@@ -82,17 +88,20 @@ export default async function handler(req, res) {
 async function request(url, req){
   const method = req.method;
   const headers = req.headers;
+  // axios 默认用 Node 的 globalAgent（Node 22 上 keepAlive 是开的），既没有连接数上限
+  // 也没有超时。POST/PUT/DELETE 走的就是这条路，所以和代理那条用同一个 agent 封顶。
+  const opts = { headers, httpAgent: upstreamAgent, timeout: UPSTREAM_TIMEOUT_MS };
   if(method === 'POST'){
     // 普通 POST
     console.log("request url is ", url);
-    const response = await axios.post(url, req.body, { headers });
+    const response = await axios.post(url, req.body, opts);
     return response;
   }
   if(method === 'PUT'){
-    return await axios.put(url, req.body, {  headers});
+    return await axios.put(url, req.body, opts);
   }
   if(method === 'DELETE'){
-    return await axios.delete(url, { params: req.body, headers});
+    return await axios.delete(url, { params: req.body, ...opts });
   }
   return null;
 }
