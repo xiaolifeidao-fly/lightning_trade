@@ -1,6 +1,7 @@
 package signal
 
 import (
+	"math"
 	"math/rand"
 	"strings"
 	"time"
@@ -149,6 +150,14 @@ type Engine struct {
 	firstBar       time.Time
 	lastBar        time.Time
 
+	// 开仓波动闸的数据源：滚动 60 分钟的 1m |收益|（bp）与信号时刻。
+	// 波动样本由 ObserveTrend 逐根喂入（与趋势闸共用同一条 bar 流），信号时刻在 OnSignal 里记。
+	volSamples  []volSample
+	volLastPx   float64
+	sigTimes    []time.Time
+	skipVolGate int
+	skipDens    int
+
 	// 扰动（Perturb.ExitLateProb）：exitRng==nil 即关闭，判定路径与从前逐字节一致。
 	exitRng      *rand.Rand
 	exitLateProb float64
@@ -279,6 +288,68 @@ func (e *Engine) ObserveTrend(at time.Time, px float64) {
 		e.trend.Observe(at, px)
 		e.trendNow = at
 	}
+	e.observeVol(at, px)
+}
+
+type volSample struct {
+	at  time.Time
+	abs float64 // |1m 收益| bp
+}
+
+const openVolWindow = 60 * time.Minute
+
+// observeVol 维护滚动 60 分钟的 |1m 收益|。只在开仓波动闸启用时工作，关闭时零开销、零行为差异。
+func (e *Engine) observeVol(at time.Time, px float64) {
+	if e.p.OpenMaxVolBpm <= 0 || px <= 0 {
+		return
+	}
+	if e.volLastPx > 0 {
+		e.volSamples = append(e.volSamples, volSample{at: at, abs: math.Abs(px/e.volLastPx-1) * 1e4})
+	}
+	e.volLastPx = px
+	cut := at.Add(-openVolWindow)
+	i := 0
+	for i < len(e.volSamples) && !e.volSamples[i].at.After(cut) {
+		i++
+	}
+	e.volSamples = e.volSamples[i:]
+}
+
+// passOpenGate 开仓波动闸：只拦**全新开仓**。两条口径独立判定、各自计数。
+// 波动样本不足 30 根时放行（warmup，与趋势闸口径一致：不可算则不拦）。
+func (e *Engine) passOpenGate(at time.Time) bool {
+	if e.p.OpenMaxVolBpm > 0 && len(e.volSamples) >= 30 {
+		sum := 0.0
+		for _, v := range e.volSamples {
+			sum += v.abs
+		}
+		if sum/float64(len(e.volSamples)) >= e.p.OpenMaxVolBpm {
+			e.skipVolGate++
+			return false
+		}
+	}
+	if e.p.OpenMaxSignals60 > 0 {
+		// sigTimes 已含本条（OnSignal 先记再判），前 60 分钟条数 = 总数 − 1，与诊断脚本的 n60 口径一致。
+		if len(e.sigTimes)-1 >= e.p.OpenMaxSignals60 {
+			e.skipDens++
+			return false
+		}
+	}
+	return true
+}
+
+// noteSignal 记信号时刻（含被任何闸拦下的），并裁掉 60 分钟前的。
+func (e *Engine) noteSignal(at time.Time) {
+	if e.p.OpenMaxSignals60 <= 0 {
+		return
+	}
+	e.sigTimes = append(e.sigTimes, at)
+	cut := at.Add(-openVolWindow)
+	i := 0
+	for i < len(e.sigTimes) && e.sigTimes[i].Before(cut) {
+		i++
+	}
+	e.sigTimes = e.sigTimes[i:]
 }
 
 func (e *Engine) fee(px float64, n int, b *book) {
@@ -318,6 +389,7 @@ func (e *Engine) OnSignal(s Signal, px float64) {
 	if b == nil {
 		return
 	}
+	e.noteSignal(s.Ts)
 
 	if e.p.Mode == ModeDual {
 		// 双向形态：每侧各自累积、无反向门控（研究对照口径）。
@@ -337,6 +409,9 @@ func (e *Engine) OnSignal(s Signal, px float64) {
 	case nb == nil:
 		// 全新开仓
 		if !e.passTrendGate(side, s) {
+			return
+		}
+		if !e.passOpenGate(s.Ts) {
 			return
 		}
 		if !e.admitEntry(orderSize, s.Ts) {

@@ -49,6 +49,8 @@ type Result struct {
 	SkipTrend   int
 	SkipRegime  int // 只被行情路由压低后的上限拦住的入场次数
 	SkipAddRoi  int // 被加仓闸（AddMinRoiPct）拦住的同向加仓次数
+	SkipVolGate int // 被开仓波动闸（OpenMaxVolBpm）拦住的全新开仓次数
+	SkipDens    int // 被开仓密度闸（OpenMaxSignals60）拦住的全新开仓次数
 	// TrendStopHits 兜底线被趋势条件止损收紧过多少次判定。扫参时某格与基线
 	// 结果相同，可能是机制没生效、也可能生效了但没改变结局——没有这个计数分不清。
 	TrendStopHits int
@@ -176,6 +178,8 @@ func fill(res *Result, e *Engine) {
 	res.SkipTrend = e.skipTrend
 	res.SkipRegime = e.skipRegime
 	res.SkipAddRoi = e.skipAddRoi
+	res.SkipVolGate = e.skipVolGate
+	res.SkipDens = e.skipDens
 	res.TrendStopHits = e.trendStopCount
 	res.ExitsDelayed = e.exitsDelayed
 	res.MaxStack = e.maxStack

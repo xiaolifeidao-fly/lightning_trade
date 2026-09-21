@@ -490,3 +490,78 @@ func TestValidateEquityStopRange(t *testing.T) {
 		t.Errorf("无 riskEquity 应被拒, got %v", err)
 	}
 }
+
+// 开仓波动闸：高波动时拦全新开仓、不拦加仓；样本不足 30 根放行；关闭时不拦。
+func TestOpenVolGateBlocksFreshOpenOnly(t *testing.T) {
+	p := baseParams()
+	p.OpenMaxVolBpm = 5
+	// 前 40 根每根来回 0.1%（10 bp/min），远超阈值 5
+	bars := []Bar{}
+	px := 60000.0
+	for i := 0; i < 44; i++ {
+		if i%2 == 0 {
+			px = 60000
+		} else {
+			px = 60060
+		}
+		bars = append(bars, Bar{Ts: ts(i), Open: px, High: px, Low: px, Close: px})
+	}
+	sigs := []Signal{
+		{Ts: ts(10).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1}, // 样本只有 10 根 → warmup 放行
+		{Ts: ts(41).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1}, // 加仓：不受闸约束
+	}
+	res, err := Replay(Input{Params: p, Signals: sigs, Bars: bars})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SkipVolGate != 0 || res.MaxStack != 2 {
+		t.Fatalf("warmup 放行 + 加仓不拦：skip=%d stack=%d", res.SkipVolGate, res.MaxStack)
+	}
+	// 全新开仓落在样本充足的高波动段 → 拦
+	p2 := p
+	sigs2 := []Signal{{Ts: ts(41).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1}}
+	res2, _ := Replay(Input{Params: p2, Signals: sigs2, Bars: bars})
+	if res2.SkipVolGate != 1 || res2.MaxStack != 0 {
+		t.Fatalf("高波动全新开仓应被拦：skip=%d stack=%d", res2.SkipVolGate, res2.MaxStack)
+	}
+	p2.OpenMaxVolBpm = 0
+	res3, _ := Replay(Input{Params: p2, Signals: sigs2, Bars: bars})
+	if res3.SkipVolGate != 0 || res3.MaxStack != 1 {
+		t.Fatalf("关闭时不拦：skip=%d stack=%d", res3.SkipVolGate, res3.MaxStack)
+	}
+}
+
+// 开仓密度闸：前 60 分钟信号 ≥ k 拦全新开仓（含被其它闸拦下的信号），加仓不拦。
+func TestOpenDensityGateCountsPriorSignals(t *testing.T) {
+	p := baseParams()
+	p.OpenMaxSignals60 = 3
+	bars := flatBars(80, 60000)
+	// 4 条空信号（均因 cap=15 放行开仓/加仓…改为让它们本身是有效开仓会改变净仓；用相反方向被反向闸拦下的来堆密度）
+	sigs := []Signal{
+		{Ts: ts(1).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1},   // 全新开仓：前 60m 0 条 → 放行
+		{Ts: ts(2).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1},   // 加仓：不受闸约束
+		{Ts: ts(3).Add(time.Second), Side: "short", Event: EvGateBlock, OrderSize: 1}, // 反向被反向闸拦，但计入密度
+		{Ts: ts(4).Add(time.Second), Side: "short", Event: EvGateBlock, OrderSize: 1},
+	}
+	res, err := Replay(Input{Params: p, Signals: sigs, Bars: bars})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SkipDens != 0 || res.MaxStack != 2 {
+		t.Fatalf("加仓不受密度闸约束：skipDens=%d stack=%d", res.SkipDens, res.MaxStack)
+	}
+	// 空仓判定直接打在引擎上：前 60 分钟 4 条 ≥ 3 → 拦；61 分钟前的被裁掉后 2 条 <3 → 放行。
+	e := NewEngine(p.Normalize())
+	for k := 0; k < 4; k++ {
+		e.noteSignal(ts(k))
+	}
+	e.noteSignal(ts(5))
+	if e.passOpenGate(ts(5)) || e.skipDens != 1 {
+		t.Fatalf("前 60 分钟 4 条应拦：skipDens=%d", e.skipDens)
+	}
+	e.noteSignal(ts(70)) // 距 ts(0..5) 均 >60 分钟，全部裁掉，只剩本条
+	e.noteSignal(ts(71))
+	if !e.passOpenGate(ts(71)) {
+		t.Fatalf("裁掉旧信号后只剩 1 条先前信号，应放行")
+	}
+}

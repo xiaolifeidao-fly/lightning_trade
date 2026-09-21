@@ -121,6 +121,12 @@ type Params struct {
 	// 按 USDT 亏损定义后，加仓只改变敞口不改变止损线，仓位管理机制才有独立于止损的意义。
 	// 13.3（= risk_budget f）在满仓时与 ROI −400% 重合；部分仓位时更松。
 	EquityStopPct float64 `json:"equityStopPct"`
+	// 开仓波动闸（研究旋钮，实盘无键）：**空仓后新开仓**时，若前 60 分钟 1m |收益| 均值 ≥ OpenMaxVolBpm（bp/min）
+	// 或前 60 分钟收到的信号条数 ≥ OpenMaxSignals60，则不开，等行情回落；加仓与减仓不受影响。0=关闭。
+	// 动机见诊断报告 09-21 追补②③：实盘 328 笔 episode 里，安静时刻（n60≤3）开的 112 笔零兜底 +283，
+	// 前 60m 波动 ≥6.11 bp/min 开的 106 笔 12 兜底 −155。这是与趋势闸同类的进场侧行情闸，不碰均价。
+	OpenMaxVolBpm    float64 `json:"openMaxVolBpm"`
+	OpenMaxSignals60 int     `json:"openMaxSignals60"`
 
 	// 行情路由减仓（第 2 步）：前一日状态标签命中 RegimeScaleLabels 时，本日入场
 	// 适用的仓位上限按 RegimeScaleFactor 压低。标签集为空 = 关闭。
@@ -299,6 +305,9 @@ func (p Params) Validate() error {
 	}
 	if err := validateRegimeScale(p); err != nil {
 		return err
+	}
+	if p.OpenMaxVolBpm < 0 || p.OpenMaxSignals60 < 0 {
+		return fmt.Errorf("openMaxVolBpm / openMaxSignals60 不得为负, got %.2f / %d", p.OpenMaxVolBpm, p.OpenMaxSignals60)
 	}
 	if p.EquityStopPct < 0 || p.EquityStopPct > 100 {
 		return fmt.Errorf("equityStopPct 应在 (0,100]（占 riskEquity 的百分比）或 0=关闭, got %.1f", p.EquityStopPct)

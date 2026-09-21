@@ -247,6 +247,27 @@ func grid(dim string) []tradeDTO.SignalBacktestGroupDTO {
 			g("eq20_addoff", pinGate(tradeDTO.SignalBacktestParamsDTO{EquityStopPct: f64(20)})),
 			g("eq20_add-200", pinGate(tradeDTO.SignalBacktestParamsDTO{EquityStopPct: f64(20), AddMinRoiPct: f64(-200)})),
 		}
+	case "volgate":
+		// 开仓波动闸：空仓后新开仓时，前 60 分钟 1m |收益| 均值 ≥ X bp/min 则不开。
+		// 阈值取诊断②的五分位边界。事前预测：6.1（桶 3 下沿）两账户兜底减少且净利上升；
+		// 4.5 以下参与度砍半、训练段先输；11 几乎不咬。风险：兜底后 90 秒反手的那类单会被拦。
+		var out []tradeDTO.SignalBacktestGroupDTO
+		out = append(out, g("volgate_off", pinGate(tradeDTO.SignalBacktestParamsDTO{})))
+		for _, v := range []float64{4.5, 6.1, 8.4, 11} {
+			out = append(out, g(fmt.Sprintf("volgate_%g", v),
+				pinGate(tradeDTO.SignalBacktestParamsDTO{OpenMaxVolBpm: f64(v)})))
+		}
+		return out
+	case "densgate":
+		// 开仓密度闸：空仓后新开仓时，前 60 分钟信号条数 ≥ k 则不开。与 volgate 同一现象的另一种量法，
+		// 不依赖 K 线，实盘落地更简单。事前预测：k=7~14 与 volgate 6.1 结论相同；k=3 太紧。
+		var out []tradeDTO.SignalBacktestGroupDTO
+		out = append(out, g("densgate_off", pinGate(tradeDTO.SignalBacktestParamsDTO{})))
+		for _, k := range []int{3, 7, 14, 30} {
+			out = append(out, g(fmt.Sprintf("densgate_%d", k),
+				pinGate(tradeDTO.SignalBacktestParamsDTO{OpenMaxSignals60: i32(k)})))
+		}
+		return out
 	case "trail":
 		// 移动止盈的大档：决定那 86~92% 的小赢能留下多少。生产值是
 		// large_activate=40 / large_giveback=0.20（两账户相同），**就在网格内**，
@@ -304,7 +325,7 @@ func main() {
 	account := flag.String("account", "", "账户标签（strategy_event.account_label，必填）")
 	start := flag.String("start", "2026-09-08 21:00:00", "窗口起")
 	end := flag.String("end", "2026-09-15 14:40:00", "窗口止")
-	dim := flag.String("dim", "baseline", "baseline|trend|trendstop|regime|cap|stop|gate|trail|addgate|eqstop|eqadd|eqaddcell")
+	dim := flag.String("dim", "baseline", "baseline|trend|trendstop|regime|cap|stop|gate|trail|addgate|eqstop|eqadd|eqaddcell|volgate|densgate")
 	platform := flag.String("platform", "deepcoin", "1m 路径回放平台")
 	conc := flag.Int("concurrency", 4, "并发组数")
 	// 显式基线旋钮。默认 0 = 用服务端的基线解析器；但解析器对 risk_equity 与
