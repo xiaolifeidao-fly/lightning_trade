@@ -34,8 +34,8 @@ type TradeManager struct {
 	riskEquityByAccount           map[string]float64 // 风险基数（cap 公式唯一输入, P5 三拆）
 	stopOnce                      sync.Once
 	trendGateThresholdByAccount   map[string]float64 // 趋势闸阈值%（0=关闭；8/21 事故补丁）
+	addMinRoiByAccount            map[string]float64 // 加仓闸：净仓 ROI% 低于它不再同向加仓（0=关闭；add_gate.go）
 }
-
 
 func (tm *TradeManager) Config() *TradingSystemConfig {
 	tm.mu.RLock()
@@ -54,7 +54,9 @@ func NewTradeManager(config *TradingSystemConfig) *TradeManager {
 	gateMinByAccount := make(map[string]float64)
 	riskEquityByAccount := make(map[string]float64)
 	trendGateByAccount := make(map[string]float64)
+	addMinByAccount := make(map[string]float64)
 	for _, acc := range config.Accounts {
+		addMinByAccount[acc.Name] = resolveAddMinRoiPct(acc)
 		capByAccount[acc.Name] = resolveCapParams(acc)
 		gateMinByAccount[acc.Name] = resolveReverseGateMinProfit(acc)
 		riskEquityByAccount[acc.Name] = ResolveRiskEquity(acc)
@@ -87,6 +89,7 @@ func NewTradeManager(config *TradingSystemConfig) *TradeManager {
 		reverseGateMinProfitByAccount: gateMinByAccount,
 		riskEquityByAccount:           riskEquityByAccount,
 		trendGateThresholdByAccount:   trendGateByAccount,
+		addMinRoiByAccount:            addMinByAccount,
 	}
 
 	// 为每个账户创建客户端
@@ -585,6 +588,16 @@ func (tm *TradeManager) executeSignalTrades_From_WEB(accounts []AccountConfig, i
 							resultCh <- result{skipped: true, skipMsg: fmt.Sprintf("🌊趋势闸 %s %s", acc.Name, dec.Reason)}
 							return
 						}
+					}
+					// 加仓闸（add_gate.go）：净仓浮亏深于阈值不再摊平。放在趋势闸之后、上限之前。
+					// 事件复用 cap_skip（reason 以"加仓闸"开头），不新增事件种类——管理端的
+					// 事件目录/episode 统计有七处按名分支，新种类要一起改，这里不值得。
+					if dec := EvaluateAddGate(net.Side, posSide, net.Size, net.AvgPx, net.LastPx, SignalLeverage, tm.addMinRoiByAccount[acc.Name]); dec.Block {
+						logrus.Warnf("  🧱 %s [加仓闸] %s", acc.Name, dec.Reason)
+						eventlog.Log(applySignalQuote(eventlog.Event{Account: acc.Name, Variant: acc.Variant, InstId: instId, Event: eventlog.EvCapSkip,
+							Side: posSide, NetSide: net.Side, Size: net.Size, AvgPx: net.AvgPx, LastPx: net.LastPx, RoiPct: dec.RoiPct, OrderSize: accSize, Reason: dec.Reason}, q))
+						resultCh <- result{skipped: true, skipMsg: fmt.Sprintf("🧱加仓闸 %s %s", acc.Name, dec.Reason)}
+						return
 					}
 					if acc.IsTrailingTP() && tm.capGuard != nil {
 						if tm.capGuard.WouldExceedCap(acc.Name, tm.riskEquityByAccount[acc.Name], net.Size, accSize, price) {

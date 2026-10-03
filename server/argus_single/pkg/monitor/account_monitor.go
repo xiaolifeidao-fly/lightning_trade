@@ -1150,6 +1150,12 @@ func (am *AccountMonitor) handleTrailingPnl(tm *trade.TradeManager, acc trade.Ac
 	if trendTightened {
 		trendStopReason = trade.TrendStopReason(pos.PosSide, trendMom, trendStopParams)
 	}
+	// 本金回撤兜底（equity_stop.go）：启用后按未实现亏损 USDT 触发，ROI 兜底（含趋势收紧）停用。
+	eqLine, eqOn := resolveEquityStopLine(acc)
+	if eqOn {
+		tp = applyEquityStop(tp)
+		trendStopReason = ""
+	}
 
 	guard := tm.CapGuard()
 	nmax, capOK := 0, false
@@ -1161,6 +1167,10 @@ func (am *AccountMonitor) handleTrailingPnl(tm *trade.TradeManager, acc trade.Ac
 	// 降级：cap 不可用 -> 跳过分档移动止盈；兜底止损与亏损告警照常（都不依赖 N_max）
 	if !capOK {
 		logrus.Warnf("[持仓监控] %s cap 未初始化，降级：跳过分档移动止盈", key)
+		if eqOn && equityStopHit(pnl, eqLine) {
+			am.closeTrailing(tm, acc, pos, pnl, pct, key, equityStopReason(eqLine)+"(降级)")
+			return
+		}
 		if pctF <= -tp.CatastropheStopPct {
 			am.closeTrailing(tm, acc, pos, pnl, pct, key, withTrendNote("兜底止损(降级)", trendStopReason))
 			return
@@ -1170,6 +1180,11 @@ func (am *AccountMonitor) handleTrailingPnl(tm *trade.TradeManager, acc trade.Ac
 	}
 
 	cfg := BuildExitConfig(nmax, tp)
+
+	if eqOn && equityStopHit(pnl, eqLine) {
+		am.closeTrailing(tm, acc, pos, pnl, pct, key, equityStopReason(eqLine))
+		return
+	}
 
 	am.trailMu.Lock()
 	prev := am.trailStates[key]

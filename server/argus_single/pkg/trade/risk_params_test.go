@@ -158,3 +158,30 @@ func TestValidateRiskParamsRejectsNegativeTrendStopTrigger(t *testing.T) {
 		t.Fatal("trigger 为负应拒绝（负值会让闸门恒成立）")
 	}
 }
+
+func TestValidateEquityStopAndAddGate(t *testing.T) {
+	v := validView()
+	v.EquityStopPct = 120
+	if err := ValidateRiskParams(v); err == nil || !strings.Contains(err.Error(), "equity_stop_pct") {
+		t.Errorf("equity_stop_pct>100 应被拒, got %v", err)
+	}
+	v = validView()
+	v.AddMinRoiPct = 50
+	if err := ValidateRiskParams(v); err == nil || !strings.Contains(err.Error(), "add_min_roi_pct") {
+		t.Errorf("正 add_min_roi_pct 应被拒, got %v", err)
+	}
+	v = validView()
+	v.AddMinRoiPct = -450 // 低于 ROI 兜底线且未启用权益线 → 静默失效
+	if err := ValidateRiskParams(v); err == nil || !strings.Contains(err.Error(), "静默失效") {
+		t.Errorf("低于兜底线且无权益线应被拒, got %v", err)
+	}
+	v.EquityStopPct = 20 // 权益线启用后 ROI 兜底停用，-450 合法
+	if err := ValidateRiskParams(v); err != nil {
+		t.Errorf("权益线启用时应合法, got %v", err)
+	}
+	v = validView()
+	v.EquityStopPct, v.AddMinRoiPct = 20, -200
+	if err := ValidateRiskParams(v); err != nil {
+		t.Errorf("生产候选格应合法, got %v", err)
+	}
+}

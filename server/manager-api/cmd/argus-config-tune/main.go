@@ -19,14 +19,23 @@
 //	cd server/manager-api
 //	go run ./cmd/argus-config-tune --instance argus-single-roc --trend-threshold 3
 //	go run ./cmd/argus-config-tune --instance argus-single-roc --trend-threshold 3 --apply
+//
+// 账户级（10-03 起）：改某个账户风险行的 risk_equity / max_contracts，或往
+// trailing_stop_tiers_json 里合并键值（它是 AccFloat 参数名的通用覆盖载体，见
+// argus_single/pkg/runtimeconfig/tuning.go accountParamOverrides）：
+//
+//	go run ./cmd/argus-config-tune --instance argus-single-roc --account-id 11 //	  --risk-equity 125 --tier-kv equity_stop_pct=20 --tier-kv add_min_roi_pct=-200 --apply --note '...'
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 
 	"common/middleware/db"
@@ -42,6 +51,12 @@ type change struct {
 	from, to float64
 }
 
+// kvList 可重复的 --tier-kv key=value。
+type kvList []string
+
+func (l *kvList) String() string     { return strings.Join(*l, ",") }
+func (l *kvList) Set(v string) error { *l = append(*l, v); return nil }
+
 func main() {
 	instanceKey := flag.String("instance", "", "目标实例键（必填）")
 	trendTh := flag.Float64("trend-threshold", -1, "全局趋势闸阈值%（trade.trend_gate.threshold_pct）；-1=不改")
@@ -51,12 +66,24 @@ func main() {
 	note := flag.String("note", "", "发布说明（写进 release_note，必填当 --apply）")
 	actor := flag.String("actor", "argus-config-tune", "审计标记")
 	apply := flag.Bool("apply", false, "真正存草稿并发布；不给则只打印 diff")
+	accountID := flag.Uint64("account-id", 0, "账户级改动：argus_account.id（配合 --risk-equity / --max-contracts / --tier-kv）")
+	riskEquity := flag.Float64("risk-equity", -1, "账户级：risk_equity（cap 公式唯一输入）；-1=不改")
+	maxContracts := flag.Int("max-contracts", -1, "账户级：max_contracts（cap 天花板）；-1=不改")
+	var tierKVs kvList
+	flag.Var(&tierKVs, "tier-kv", "账户级：合并进 trailing_stop_tiers_json 的 key=value（可重复；如 equity_stop_pct=20）")
 	flag.Parse()
+	accountChange := *accountID > 0 && (*riskEquity >= 0 || *maxContracts >= 0 || len(tierKVs) > 0)
+	if *accountID > 0 && !accountChange {
+		log.Fatal("--account-id 需配合 --risk-equity / --max-contracts / --tier-kv 之一")
+	}
+	if *accountID == 0 && (*riskEquity >= 0 || *maxContracts >= 0 || len(tierKVs) > 0) {
+		log.Fatal("账户级旋钮必须给 --account-id")
+	}
 
 	if strings.TrimSpace(*instanceKey) == "" {
 		log.Fatal("--instance 必填")
 	}
-	if *trendTh < 0 && *trendWin < 0 && *tsTrigger < 0 && *tsStop < 0 {
+	if *trendTh < 0 && *trendWin < 0 && *tsTrigger < 0 && *tsStop < 0 && !accountChange {
 		log.Fatal("至少要指定一个要改的旋钮")
 	}
 	// 趋势条件止损两个键必须同时给：只配一条会被实盘启动校验 fail-fast
@@ -114,6 +141,60 @@ func main() {
 		changes = append(changes, change{"position.monitor.trend_stop.stop_pct", req.Config.TrendStopPct, *tsStop})
 		req.Config.TrendStopPct = *tsStop
 	}
+	riskIdx := -1
+	if accountChange {
+		for i := range req.AccountRisks {
+			if req.AccountRisks[i].AccountID == *accountID {
+				riskIdx = i
+			}
+		}
+		if riskIdx < 0 {
+			log.Fatalf("已发布快照里没有 account_id=%d 的风险行", *accountID)
+		}
+		row := &req.AccountRisks[riskIdx]
+		tag := fmt.Sprintf("risk[account %d]", *accountID)
+		if *riskEquity >= 0 && row.RiskEquity != *riskEquity {
+			changes = append(changes, change{tag + ".risk_equity", row.RiskEquity, *riskEquity})
+			row.RiskEquity = *riskEquity
+		}
+		if *maxContracts >= 0 && row.MaxContracts != *maxContracts {
+			changes = append(changes, change{tag + ".max_contracts", float64(row.MaxContracts), float64(*maxContracts)})
+			row.MaxContracts = *maxContracts
+		}
+		if len(tierKVs) > 0 {
+			tiers := map[string]float64{}
+			if t := strings.TrimSpace(row.TrailingStopTiersJSON); t != "" && t != "null" {
+				if err := json.Unmarshal([]byte(t), &tiers); err != nil {
+					log.Fatalf("解析 trailing_stop_tiers_json 失败：%v", err)
+				}
+			}
+			for _, kv := range tierKVs {
+				k, v, ok := strings.Cut(kv, "=")
+				k = strings.TrimSpace(k)
+				if !ok || k == "" {
+					log.Fatalf("--tier-kv 格式应为 key=value，got %q", kv)
+				}
+				f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+				if err != nil {
+					log.Fatalf("--tier-kv %s 的值不是数字：%v", k, err)
+				}
+				if old, had := tiers[k]; !had || old != f {
+					changes = append(changes, change{tag + ".tiers." + k, old, f})
+					tiers[k] = f
+				}
+			}
+			keys := make([]string, 0, len(tiers))
+			for k := range tiers {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			parts := make([]string, 0, len(keys))
+			for _, k := range keys {
+				parts = append(parts, fmt.Sprintf("%q: %s", k, strconv.FormatFloat(tiers[k], 'f', -1, 64)))
+			}
+			row.TrailingStopTiersJSON = "{" + strings.Join(parts, ", ") + "}"
+		}
+	}
 	if len(changes) == 0 {
 		log.Print("目标值与当前值一致，无需改动（不新建版本，避免版本历史里出现空变更）")
 		return
@@ -124,7 +205,7 @@ func main() {
 	}
 
 	// 逐字段核对：除上面列出的，其余必须与已发布快照完全一致。
-	if diff := diffOthers(snap, req, changes); len(diff) > 0 {
+	if diff := diffOthers(snap, req, changes, riskIdx); len(diff) > 0 {
 		log.Fatalf("草稿里出现了未预期的字段差异，已中止：%s", strings.Join(diff, "; "))
 	}
 	fmt.Printf("\n其余字段逐项核对通过：config %d 项、账户 %d、风险 %d、币种 %d、会话 %d 全部与已发布一致\n",
@@ -166,7 +247,7 @@ func firstN(s string, n int) string {
 // diffOthers 核对「除 changed 之外的字段都没变」。
 // Config 用反射逐字段比，子表比长度与逐元素相等——SaveConfigRequest 是全量提交，
 // 这一步是"只改一个参数"这句话的唯一凭据。
-func diffOthers(snap *argusDTO.ConfigSnapshotDTO, req *argusDTO.SaveConfigRequest, changed []change) []string {
+func diffOthers(snap *argusDTO.ConfigSnapshotDTO, req *argusDTO.SaveConfigRequest, changed []change, riskIdx int) []string {
 	var out []string
 	skip := map[string]bool{}
 	for _, c := range changed {
@@ -195,7 +276,18 @@ func diffOthers(snap *argusDTO.ConfigSnapshotDTO, req *argusDTO.SaveConfigReques
 		out = append(out, fmt.Sprintf("会话行数 %d→%d", len(snap.Sessions), len(req.Sessions)))
 	}
 	for i := range snap.AccountRisks {
-		if i < len(req.AccountRisks) && snap.AccountRisks[i] != req.AccountRisks[i] {
+		if i >= len(req.AccountRisks) {
+			break
+		}
+		got := req.AccountRisks[i]
+		if i == riskIdx {
+			// 目标风险行只允许 risk_equity / max_contracts / trailing_stop_tiers_json 三处不同：
+			// 把这三处还原后必须与已发布行完全一致。
+			got.RiskEquity = snap.AccountRisks[i].RiskEquity
+			got.MaxContracts = snap.AccountRisks[i].MaxContracts
+			got.TrailingStopTiersJSON = snap.AccountRisks[i].TrailingStopTiersJSON
+		}
+		if snap.AccountRisks[i] != got {
 			out = append(out, fmt.Sprintf("风险行[%d] 有差异", i))
 		}
 	}

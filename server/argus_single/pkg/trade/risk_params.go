@@ -26,6 +26,9 @@ type RiskParamsView struct {
 	// 与 GateMin 同一约定，否则非法值会被钳掉、校验层永远看不到（见 fix#4）。
 	TrendStopTriggerPct float64
 	TrendStopPct        float64
+	// 本金回撤兜底与加仓闸（add_gate.go）：0/0 = 未启用（缺省）。原始配置值，钳制留给运行时。
+	EquityStopPct float64
+	AddMinRoiPct  float64
 }
 
 // ResolveRiskEquity 风险计算基数：argus_account_risk.risk_equity 显式配置优先，
@@ -66,6 +69,8 @@ func resolveRiskParamsView(acc AccountConfig, globalOrderSize int) RiskParamsVie
 		TierLarge:           f("tier_large_ratio", "position.monitor.trail.tier_large_ratio", 0.65),
 		TrendStopTriggerPct: f("trend_stop_trigger_pct", "position.monitor.trend_stop.trigger_pct", 0),
 		TrendStopPct:        f("trend_stop_pct", "position.monitor.trend_stop.stop_pct", 0),
+		EquityStopPct:       f("equity_stop_pct", "position.monitor.equity_stop_pct", 0),
+		AddMinRoiPct:        f("add_min_roi_pct", "position.risk.add_min_roi_pct", 0),
 	}
 }
 
@@ -110,6 +115,15 @@ func ValidateRiskParams(v RiskParamsView) error {
 	if err := validateTrendStop(v); err != nil {
 		return err
 	}
+	if v.EquityStopPct < 0 || v.EquityStopPct > 100 {
+		return fmt.Errorf("equity_stop_pct 必须在 (0,100]（占 risk_equity 的百分比）或 0=关闭, got %.2f", v.EquityStopPct)
+	}
+	if v.AddMinRoiPct > 0 {
+		return fmt.Errorf("add_min_roi_pct 只接受负值（浮亏阈值）或 0=关闭, got %.1f", v.AddMinRoiPct)
+	}
+	if v.AddMinRoiPct < 0 && v.EquityStopPct == 0 && v.AddMinRoiPct < -v.StopPct {
+		return fmt.Errorf("add_min_roi_pct=%.0f 低于兜底线 −%.0f：兜底先触发、加仓闸永不生效（静默失效）", v.AddMinRoiPct, v.StopPct)
+	}
 	return nil
 }
 
@@ -145,6 +159,10 @@ func logStaticRiskParams(acc AccountConfig, v RiskParamsView) {
 	// 趋势条件止损单独一行，与趋势闸的「启用:」行对齐：每次热加载打一次，
 	// 是"它到底武装了没有"的唯一现场证据。持仓轮询里刻意不打（5 秒一轮会刷爆），
 	// 所以这一行缺了就等于这个机制在线上不可观测。
+	if v.EquityStopPct > 0 || v.AddMinRoiPct < 0 {
+		logrus.Infof("[本金回撤兜底/加仓闸] 账户 %s equity_stop_pct=%.1f%%（线=%.1fU，ROI 兜底停用）add_min_roi_pct=%.0f",
+			acc.Name, v.EquityStopPct, v.EquityStopPct/100*v.RiskEquity, v.AddMinRoiPct)
+	}
 	if v.TrendStopTriggerPct > 0 && v.TrendStopPct > 0 {
 		logrus.Infof("[趋势条件止损] 账户 %s 启用: 逆向%.0fh动量 ≥%.1f%% 时兜底线 %.0f%% → %.0f%%",
 			acc.Name, vipper.GetFloat64("trade.trend_gate.window_hours"),
