@@ -54,18 +54,22 @@ func Init() error {
 	// 策略事件双写 MySQL（JSONL 仍是真源，保留至 eventstore.JSONLDualWriteUntil）。
 	// 必须在任何交易/监控启动前注册 sink，否则早期事件只会落进 JSONL。
 	// 建连接或建表失败都不算启动失败：进程退化成只写 JSONL，交易照常。
-	if _, err := eventstore.Setup(context.Background(), eventstore.Options{
+	// 成功时（首次或后台重试成功）用**当时**的运行配置灌版本号与账户映射——重试可能发生在
+	// 热加载之后，用启动时那份会把回灌的版本号写错。
+	onStoreReady := func(*eventstore.Store) {
+		cur := runtimeManager.Current()
+		eventstore.SetConfigVersion(cur.Version)
+		eventstore.SetAccounts(accountIdentities(cur.Trade))
+	}
+	if _, err := eventstore.SetupWithRetry(context.Background(), eventstore.Options{
 		DSN:         vipper.GetString("sqlconn"),
 		InstanceKey: runtimeManager.InstanceID(),
-	}); err != nil {
+	}, onStoreReady); err != nil {
 		if eventstore.IsDisabled(err) {
 			log.Printf("Event store disabled (sqlconn empty), events are written to JSONL only")
 		} else {
-			logrus.Errorf("策略事件双写初始化失败，本次只写 JSONL（不影响交易）: %v", err)
+			logrus.Errorf("策略事件双写初始化失败，先只写 JSONL（不影响交易），后台按 1~10 分钟退避重试: %v", err)
 		}
-	} else {
-		eventstore.SetConfigVersion(runtime.Version)
-		eventstore.SetAccounts(accountIdentities(runtime.Trade))
 	}
 
 	// 初始化路由

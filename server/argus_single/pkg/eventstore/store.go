@@ -168,13 +168,52 @@ func newStore(gdb *gorm.DB, opts Options) *Store {
 	return s
 }
 
+// migrationLockWaitSeconds 迁移会话等元数据锁的上限（秒）。
+//
+// 10-03 事故：启动时 AutoMigrate 发了一条 ALTER TABLE，排在一条长查询后面等锁；
+// 客户端 15 秒读超时放弃了，**服务端的 ALTER 仍在排队**，而排队中的排他锁请求会把
+// 这张表之后所有新查询堵死——manager-api 连接堆到 127 条、内存 839 MB，持续 65 分钟。
+// 有了这个上限，等不到锁的 DDL 在服务端被取消，不会留下一个堵路的幽灵。
+const migrationLockWaitSeconds = 10
+
 // EnsureTable 建表/补列。三张事实表是 append-only 的，AutoMigrate 只会加列
 // 加索引，不会动已有数据。
+//
+// 三条硬化（10-03）：
+//  1. 整个迁移钉在一条连接上，先 SET SESSION lock_wait_timeout，再 AutoMigrate；
+//  2. DDL 用 Info 级日志打出来——此前它每次启动都发同一条 MODIFY COLUMN（event_hash 的
+//     binary(16) 没写 size:16，gorm 比长度永远不等）却没人知道；
+//  3. 迁移失败但三张表都在，按现有表继续双写，不让一把锁把入库整个打掉。
 func (s *Store) EnsureTable() error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("eventstore: store is not initialized")
 	}
-	return s.db.AutoMigrate(Models()...)
+	ddl := s.db.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Info)})
+	err := ddl.Connection(func(tx *gorm.DB) error {
+		if err := tx.Exec(fmt.Sprintf("SET SESSION lock_wait_timeout = %d", migrationLockWaitSeconds)).Error; err != nil {
+			return fmt.Errorf("eventstore: set lock_wait_timeout: %w", err)
+		}
+		return tx.AutoMigrate(Models()...)
+	})
+	if err == nil {
+		return nil
+	}
+	if s.tablesExist() {
+		logrus.Warnf("[eventstore] 建表/补列失败，但三张事实表都已存在，按现有表继续双写（请尽快排查）: %v", err)
+		return nil
+	}
+	return fmt.Errorf("eventstore: ensure tables: %w", err)
+}
+
+// tablesExist 三张事实表是否都已存在（只查 information_schema，不碰表本身的元数据锁）。
+func (s *Store) tablesExist() bool {
+	m := s.db.Migrator()
+	for _, model := range Models() {
+		if !m.HasTable(model) {
+			return false
+		}
+	}
+	return true
 }
 
 // Start 启动写入 goroutine（幂等）。

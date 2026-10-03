@@ -35,8 +35,12 @@ const (
 // r3 把 dev_sample 粒度提到 10 秒后它单表就占了 8640 条/天（约全量的 85%），
 // 分表这个决定只会更划算。
 type StrategyEvent struct {
-	Id            uint64    `gorm:"column:id;primaryKey;autoIncrement" description:"主键"`
-	EventHash     []byte    `gorm:"column:event_hash;type:binary(16);not null;uniqueIndex:uk_strategy_event_hash" description:"Go 侧算的幂等哈希，见 hash.go"`
+	Id uint64 `gorm:"column:id;primaryKey;autoIncrement" description:"主键"`
+	// 幂等哈希列用 unique 而不是 uniqueIndex:uk_…：MySQL 对带唯一索引的列报 column_key=UNI，
+	// gorm 1.23 的 MigrateColumn 拿它和 field.Unique 比，uniqueIndex 不置 field.Unique，
+	// 于是**每次启动都发一条 MODIFY COLUMN**（10-03 事故里排队等锁的就是它）。库里既有的
+	// uk_* 索引不受影响；新建表时由 unique 生成列级唯一键，去重语义相同。size:16 同理（比长度）。
+	EventHash     []byte    `gorm:"column:event_hash;type:binary(16);size:16;not null;unique" description:"Go 侧算的幂等哈希，见 hash.go"`
 	Ts            time.Time `gorm:"column:ts;type:datetime;not null;index:idx_strategy_event_ts;index:idx_strategy_event_inst_ts,priority:2;index:idx_strategy_event_uid_ts,priority:3;index:idx_strategy_event_inst_event_ts,priority:3;index:idx_strategy_event_gate,priority:2" description:"事件时刻，本地时区口径，与 JSONL 逐字一致"`
 	InstanceKey   string    `gorm:"column:instance_key;type:varchar(64);not null;index:idx_strategy_event_inst_ts,priority:1;index:idx_strategy_event_uid_ts,priority:1;index:idx_strategy_event_inst_event_ts,priority:1" description:"实例键，对应 argus_instance.instance_key"`
 	ConfigVersion uint64    `gorm:"column:config_version;type:bigint unsigned;not null;default:0" description:"事件发生时该实例生效的配置版本号"`
@@ -73,7 +77,7 @@ func (StrategyEvent) TableName() string { return "strategy_event" }
 // BalanceSample 分钟级余额/权益心跳表（balance 事件，实测占全部事件 61%）。
 type BalanceSample struct {
 	Id            uint64    `gorm:"column:id;primaryKey;autoIncrement" description:"主键"`
-	EventHash     []byte    `gorm:"column:event_hash;type:binary(16);not null;uniqueIndex:uk_balance_sample_hash" description:"幂等哈希"`
+	EventHash     []byte    `gorm:"column:event_hash;type:binary(16);size:16;not null;unique" description:"幂等哈希"`
 	Ts            time.Time `gorm:"column:ts;type:datetime;not null;index:idx_balance_sample_ts;index:idx_balance_sample_inst_uid_ts,priority:3" description:"采样时刻"`
 	InstanceKey   string    `gorm:"column:instance_key;type:varchar(64);not null;index:idx_balance_sample_inst_uid_ts,priority:1" description:"实例键"`
 	ConfigVersion uint64    `gorm:"column:config_version;type:bigint unsigned;not null;default:0" description:"生效配置版本号"`
@@ -100,7 +104,7 @@ func (BalanceSample) TableName() string { return "balance_sample" }
 // 业务查询必须每次带 event != 'dev_sample' 才不被污染。
 type DevSample struct {
 	Id            uint64    `gorm:"column:id;primaryKey;autoIncrement" description:"主键"`
-	EventHash     []byte    `gorm:"column:event_hash;type:binary(16);not null;uniqueIndex:uk_dev_sample_hash" description:"幂等哈希"`
+	EventHash     []byte    `gorm:"column:event_hash;type:binary(16);size:16;not null;unique" description:"幂等哈希"`
 	Ts            time.Time `gorm:"column:ts;type:datetime;not null;index:idx_dev_sample_ts;index:idx_dev_sample_inst_ts,priority:3" description:"窗口落盘时刻"`
 	InstanceKey   string    `gorm:"column:instance_key;type:varchar(64);not null;index:idx_dev_sample_inst_ts,priority:1" description:"实例键"`
 	ConfigVersion uint64    `gorm:"column:config_version;type:bigint unsigned;not null;default:0" description:"生效配置版本号"`

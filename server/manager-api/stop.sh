@@ -32,15 +32,28 @@ if [ -f "$PID_FILE" ]; then
   echo "$APP_NAME stopped by pid file, pid: $PID"
 fi
 
+# 兜底：按端口找残留进程。只认**监听**该端口的进程，并核对进程名——
+# `lsof -ti :PORT` 会把连着这个端口的客户端（例如 next-server）一起列出来，
+# 10-03 就误杀过一次前端。
+KILLED=0
 if command -v lsof >/dev/null 2>&1; then
-  PIDS="$(lsof -ti ":$PORT" || true)"
-  if [ -n "$PIDS" ]; then
-    for PID in $PIDS; do
-      stop_pid "$PID"
-    done
-    echo "$APP_NAME stopped by port $PORT, pid: $PIDS"
-    exit 0
-  fi
+  PIDS="$(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)"
+  for PID in $PIDS; do
+    COMM="$(ps -o comm= -p "$PID" 2>/dev/null || true)"
+    case "$COMM" in
+      "$APP_NAME"*)
+        stop_pid "$PID"
+        echo "$APP_NAME stopped by listening port $PORT, pid: $PID"
+        KILLED=1
+        ;;
+      *)
+        echo "port $PORT is listened by '$COMM' (pid $PID), not $APP_NAME; left untouched"
+        ;;
+    esac
+  done
+fi
+if [ "$KILLED" = 1 ]; then
+  exit 0
 fi
 
-echo "$APP_NAME is not running"
+echo "$APP_NAME is not running (or stopped by pid file)"

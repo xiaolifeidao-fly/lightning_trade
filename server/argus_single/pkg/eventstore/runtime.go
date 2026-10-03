@@ -47,6 +47,65 @@ func Setup(ctx context.Context, opts Options) (*Store, error) {
 	return store, nil
 }
 
+// 后台重试的退避：1→2→4→8→10 分钟封顶。
+const (
+	retryBackoffInitial = time.Minute
+	retryBackoffMax     = 10 * time.Minute
+)
+
+// nextBackoff 下一次重试间隔（纯函数，便于测试）。
+func nextBackoff(prev time.Duration) time.Duration {
+	if prev <= 0 {
+		return retryBackoffInitial
+	}
+	next := prev * 2
+	if next > retryBackoffMax {
+		return retryBackoffMax
+	}
+	return next
+}
+
+// SetupWithRetry 先同步 Setup 一次；失败且不是"未配置"时，在后台按退避重试直到成功
+// 或 ctx 结束。成功（无论首次还是重试）都回调 onReady（调用方在里面灌配置版本与账户映射）。
+//
+// 10-03 事故：Setup 只在启动时跑一次，一把锁让它失败后，进程这一辈子都只写 JSONL，
+// 65 分钟没有任何自愈。重试期间的事件只进 JSONL（真源），事后可用 argus-event-import 回灌。
+func SetupWithRetry(ctx context.Context, opts Options, onReady func(*Store)) (*Store, error) {
+	store, err := Setup(ctx, opts)
+	if err == nil {
+		if onReady != nil {
+			onReady(store)
+		}
+		return store, nil
+	}
+	if IsDisabled(err) {
+		return nil, err
+	}
+	go retrySetup(ctx, opts, onReady)
+	return nil, err
+}
+
+func retrySetup(ctx context.Context, opts Options, onReady func(*Store)) {
+	wait := nextBackoff(0)
+	for attempt := 1; ; attempt++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		store, err := Setup(ctx, opts)
+		if err == nil {
+			logrus.Infof("[eventstore] 第 %d 次重试后双写恢复", attempt)
+			if onReady != nil {
+				onReady(store)
+			}
+			return
+		}
+		wait = nextBackoff(wait)
+		logrus.Warnf("[eventstore] 第 %d 次重试仍失败，%s 后再试（期间只写 JSONL，不影响交易）: %v", attempt, wait, err)
+	}
+}
+
 // Default 当前默认 store（未装配时为 nil，全部方法都能安全地在 nil 上调用）。
 func Default() *Store {
 	defaultMu.RLock()
