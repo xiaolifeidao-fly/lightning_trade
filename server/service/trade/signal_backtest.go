@@ -482,6 +482,12 @@ func applySignalParamKnobs(p signal.Params, dto tradeDTO.SignalBacktestParamsDTO
 	if dto.AddMinRoiPct != nil {
 		p.AddMinRoiPct = *dto.AddMinRoiPct
 	}
+	if dto.AddMinStepPct != nil {
+		p.AddMinStepPct = *dto.AddMinStepPct
+	}
+	if dto.AddMinIntervalMin != nil {
+		p.AddMinIntervalMin = *dto.AddMinIntervalMin
+	}
 	if dto.EquityStopPct != nil {
 		p.EquityStopPct = *dto.EquityStopPct
 	}

@@ -79,6 +79,8 @@ func signalParamFields() []signalParamField {
 		numField("trade.trend_gate.window_hours", "trendGateWindowHours", func(p signal.Params) float64 { return p.TrendGateWindowHours }, "%.2f"),
 		numField("trade.trend_gate.threshold_pct", "trendGateThresholdPct", func(p signal.Params) float64 { return p.TrendGateThresholdPct }, "%.2f"),
 		numField("(研究)add_gate.min_roi_pct", "addMinRoiPct", func(p signal.Params) float64 { return p.AddMinRoiPct }, "%.0f"),
+		numField("(研究)add_space.min_step_pct", "addMinStepPct", func(p signal.Params) float64 { return p.AddMinStepPct }, "%.2f"),
+		numField("(研究)add_space.min_interval_min", "addMinIntervalMin", func(p signal.Params) float64 { return float64(p.AddMinIntervalMin) }, "%.0f"),
 		numField("(研究)equity_stop_pct", "equityStopPct", func(p signal.Params) float64 { return p.EquityStopPct }, "%.1f"),
 		numField("(研究)open_gate.max_vol_bpm", "openMaxVolBpm", func(p signal.Params) float64 { return p.OpenMaxVolBpm }, "%.2f"),
 		numField("(研究)open_gate.max_signals_60m", "openMaxSignals60", func(p signal.Params) float64 { return float64(p.OpenMaxSignals60) }, "%.0f"),

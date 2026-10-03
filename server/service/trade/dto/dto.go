@@ -792,6 +792,8 @@ type SignalBacktestParamsDTO struct {
 	TrendGateWindowHours       *float64 `json:"trendGateWindowHours"`       // trade.trend_gate.window_hours
 	TrendGateThresholdPct      *float64 `json:"trendGateThresholdPct"`      // trade.trend_gate.threshold_pct
 	AddMinRoiPct               *float64 `json:"addMinRoiPct"`
+	AddMinStepPct              *float64 `json:"addMinStepPct"`     // (研究) 加仓间距：与上次成交价距离 %
+	AddMinIntervalMin          *int     `json:"addMinIntervalMin"` // (研究) 加仓间距：与上次成交间隔 分钟
 	EquityStopPct              *float64 `json:"equityStopPct"`
 	OpenMaxVolBpm              *float64 `json:"openMaxVolBpm"` // 开仓波动闸（研究旋钮）：新开仓时前 60m 波动 ≥ 该值不开；0=关闭
 	OpenMaxSignals60           *int     `json:"openMaxSignals60"`

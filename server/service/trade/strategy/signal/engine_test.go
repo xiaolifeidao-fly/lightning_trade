@@ -631,3 +631,87 @@ func TestDailyLossHaltBlocksFreshOpenUntilNextDay(t *testing.T) {
 		t.Errorf("次日应放行开空(eod): %+v", res.Episodes)
 	}
 }
+
+// 加仓间距（价格步长）：与上一次成交价距离不足 AddMinStepPct% 的同向加仓被拦（计 SkipAddSpace），
+// 够距离的放行；全新开仓不受影响；0=关闭时与从前一致。
+func TestAddSpacingBlocksAddsTooCloseInPrice(t *testing.T) {
+	p := baseParams()
+	p.AddMinStepPct = 0.3
+	p.CatastropheStopPct = 400
+	p.SmallActivatePct, p.MediumActivatePct, p.LargeActivatePct = 1e9, 1e9, 1e9
+	// 60000 开 1 张多；59900（距 0.17%）加仓应被拦；59700（距上次成交 60000 的 0.5%）应放行；
+	// 之后 59650（距 59700 仅 0.08%）再被拦。
+	bars := []Bar{
+		{Ts: ts(1), Open: 60000, High: 60000, Low: 60000, Close: 60000},
+		{Ts: ts(2), Open: 59900, High: 59900, Low: 59900, Close: 59900},
+		{Ts: ts(3), Open: 59700, High: 59700, Low: 59700, Close: 59700},
+		{Ts: ts(4), Open: 59650, High: 59650, Low: 59650, Close: 59650},
+		{Ts: ts(5), Open: 59650, High: 59650, Low: 59650, Close: 59650},
+	}
+	sigs := []Signal{
+		{Ts: ts(0).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1},
+		{Ts: ts(1).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1}, // 59900：太近，拦
+		{Ts: ts(2).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1}, // 59700：放行
+		{Ts: ts(3).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1}, // 59650：太近，拦
+	}
+	res, err := Replay(Input{Params: p, Signals: sigs, Bars: bars})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SkipAddSpace != 2 {
+		t.Errorf("间距拦截 = %d, 期望 2", res.SkipAddSpace)
+	}
+	if res.MaxStack != 2 {
+		t.Errorf("最大堆积 = %d, 期望 2", res.MaxStack)
+	}
+	p.AddMinStepPct = 0
+	off, _ := Replay(Input{Params: p, Signals: sigs, Bars: bars})
+	if off.SkipAddSpace != 0 || off.MaxStack != 4 {
+		t.Errorf("关闭时应不拦：skip=%d stack=%d", off.SkipAddSpace, off.MaxStack)
+	}
+}
+
+// 加仓间距（时间间隔）：距上一次成交不足 AddMinIntervalMin 分钟的同向加仓被拦，够间隔的放行。
+func TestAddSpacingBlocksAddsTooCloseInTime(t *testing.T) {
+	p := baseParams()
+	p.AddMinIntervalMin = 2
+	p.CatastropheStopPct = 400
+	p.SmallActivatePct, p.MediumActivatePct, p.LargeActivatePct = 1e9, 1e9, 1e9
+	bars := []Bar{
+		{Ts: ts(1), Open: 60000, High: 60000, Low: 60000, Close: 60000},
+		{Ts: ts(2), Open: 59000, High: 59000, Low: 59000, Close: 59000}, // 距 ts(1) 1 分钟：拦
+		{Ts: ts(3), Open: 58000, High: 58000, Low: 58000, Close: 58000}, // 距 ts(1) 2 分钟：放行
+		{Ts: ts(4), Open: 57000, High: 57000, Low: 57000, Close: 57000}, // 距 ts(3) 1 分钟：拦
+		{Ts: ts(5), Open: 57000, High: 57000, Low: 57000, Close: 57000},
+	}
+	sigs := []Signal{
+		{Ts: ts(0).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1},
+		{Ts: ts(1).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1},
+		{Ts: ts(2).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1},
+		{Ts: ts(3).Add(time.Second), Side: "long", Event: EvOpen, OrderSize: 1},
+	}
+	res, err := Replay(Input{Params: p, Signals: sigs, Bars: bars})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SkipAddSpace != 2 || res.MaxStack != 2 {
+		t.Errorf("间隔拦截 = %d（期望 2），最大堆积 = %d（期望 2）", res.SkipAddSpace, res.MaxStack)
+	}
+}
+
+func TestValidateAddSpacingRange(t *testing.T) {
+	p := baseParams()
+	p.AddMinStepPct = 6
+	if err := p.Validate(); err == nil || !strings.Contains(err.Error(), "addMinStepPct") {
+		t.Errorf("步长 >5 应被拒, got %v", err)
+	}
+	p.AddMinStepPct = 0.3
+	p.AddMinIntervalMin = 2000
+	if err := p.Validate(); err == nil || !strings.Contains(err.Error(), "addMinIntervalMin") {
+		t.Errorf("间隔 >1440 应被拒, got %v", err)
+	}
+	p.AddMinIntervalMin = 30
+	if err := p.Validate(); err != nil {
+		t.Errorf("合法值应通过, got %v", err)
+	}
+}

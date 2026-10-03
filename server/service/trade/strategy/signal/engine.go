@@ -61,6 +61,9 @@ type book struct {
 	// pendingExit 被扰动推迟的出场原因（见 Perturb.ExitLateProb）；空 = 无。
 	// 下一根 bar 上、该根信号成交之后，按该根收盘平掉整个仓。削零 reset 时一并清掉。
 	pendingExit string
+	// lastFillPx / lastFillTs 上一次开仓或加仓的成交价与时刻（减仓不更新）——加仓间距旋钮的参照点。
+	lastFillPx float64
+	lastFillTs time.Time
 }
 
 func (b *book) roi(px float64, leverage int) float64 {
@@ -94,6 +97,7 @@ func (b *book) add(px float64, n int, at time.Time) {
 	b.avg = (b.avg*float64(b.size) + px*float64(n)) / float64(b.size+n)
 	b.size += n
 	b.addCount++
+	b.lastFillPx, b.lastFillTs = px, at
 	if b.size > b.maxSize {
 		b.maxSize = b.size
 	}
@@ -109,6 +113,7 @@ func (b *book) reset() {
 	b.maxSize = 0
 	b.openedAt = time.Time{}
 	b.pendingExit = ""
+	b.lastFillPx, b.lastFillTs = 0, time.Time{}
 }
 
 // Engine 事件驱动的盘口信号回测引擎。非并发安全：一个 run 一个实例。
@@ -139,6 +144,8 @@ type Engine struct {
 	skipRegime int
 	// skipAddRoi 被加仓闸拦住的同向加仓次数（机制"有没有咬住"的证据，见 trendStopCount 的理由）。
 	skipAddRoi int
+	// skipAddSpace 被加仓间距（AddMinStepPct / AddMinIntervalMin）拦住的同向加仓次数。
+	skipAddSpace int
 	// trendStopCount 兜底线被收紧过多少次判定（不是平仓次数——每根 bar 的每次
 	// 判定都计一次）。它是"这一格里机制到底有没有咬住"的唯一证据：
 	// 扫参时某格与基线结果相同，可能是机制没生效、也可能是生效了但没改变结局，
@@ -259,6 +266,21 @@ func (e *Engine) entryCap(at time.Time) int {
 		return e.cap
 	}
 	return scaledCap(e.cap, sc)
+}
+
+// passAddSpacing 加仓间距：与上一次开/加仓成交相比，价格距离 < AddMinStepPct% 或
+// 时间间隔 < AddMinIntervalMin 分钟就不加。两个旋钮都为 0 时恒放行。只在同向加仓路径上调用。
+func (e *Engine) passAddSpacing(nb *book, px float64, at time.Time) bool {
+	if nb.lastFillPx <= 0 {
+		return true
+	}
+	if e.p.AddMinStepPct > 0 && math.Abs(px-nb.lastFillPx)/nb.lastFillPx*100 < e.p.AddMinStepPct {
+		return false
+	}
+	if e.p.AddMinIntervalMin > 0 && at.Sub(nb.lastFillTs) < time.Duration(e.p.AddMinIntervalMin)*time.Minute {
+		return false
+	}
+	return true
 }
 
 // admitEntry 本次入场（目标张数 want）是否放行，并把拦下的原因计到对应计数上。
@@ -440,6 +462,11 @@ func (e *Engine) OnSignal(s Signal, px float64) {
 		// 上限之前，三种拦截各自计数，扫参时才分得清"这一格是谁拦的"。
 		if e.p.AddMinRoiPct != 0 && nb.roi(px, e.p.Leverage) < e.p.AddMinRoiPct {
 			e.skipAddRoi++
+			return
+		}
+		// 加仓间距：离上一次成交太近（价格或时间）就不加，让仓位摊开在走势上。
+		if !e.passAddSpacing(nb, px, s.Ts) {
+			e.skipAddSpace++
 			return
 		}
 		if !e.admitEntry(nb.size+orderSize, s.Ts) {

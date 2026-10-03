@@ -311,6 +311,35 @@ func grid(dim string) []tradeDTO.SignalBacktestGroupDTO {
 			}
 		}
 		return out
+	case "addspace":
+		// 加仓间距：离上一次开/加仓成交不足 X%（价格）或 N 分钟（时间）就不加同向仓。
+		// 动机（10-03 追补第一节）：A/B 同一条信号流，两周 A +11%、B −17%。B 的 cap 8 在一簇信号里
+		// 三十分钟堆满（09-28 22:56→23:25，8 张均价 82,881 ≈ 开仓价），之后 46 小时无法再摊平；
+		// A 的 22 张要十几个小时堆、均价跟着价格走。同是 −3.2% 的兜底线，对 B 是"离开仓价 3.2%"，
+		// 对 A 是"离一路下移的均价 3.2%"。三周里 B 的 4 笔兜底全是 3.2~3.5% 的针或磨、随后回头。
+		//
+		// 与 addgate（浮亏深于 X 停摊）的区别：间距不看浮亏深度，不会变成变相收紧止损。
+		// 步长 0.3% ≈ 37.5% ROI；8 张铺满需要 2.1% 的逆向行程，均价会落在开仓价下方约 1%，
+		// 兜底线相对开仓价从 −3.2% 变成约 −4.2%——这正是 A 现在的几何。
+		//
+		// 事前判据：训练与测试两段、强弱两档，对 addspace_off 同向 ≥12/16、兜底不劣 ≥12/16、
+		// Δ最小不超过一次兜底（B −20、A −55）。
+		// 事前预测：B 兜底数降、单笔赢缩小（堆得慢、赢时张数少）、净值升；A 几乎不变（它本来就摊开）。
+		// 若 B 的兜底数不降，说明 B 的死因不在堆仓节奏而只在止损距离——那就只剩 eq20 那条路。
+		// 可证伪点：步长越大越好 = 机制成立；0.15 好、0.5 差 = 只是少参与；全部 ≈ off = B 的簇状加仓不是问题。
+		var out []tradeDTO.SignalBacktestGroupDTO
+		out = append(out, g("addspace_off", pinGate(tradeDTO.SignalBacktestParamsDTO{})))
+		for _, v := range []float64{0.15, 0.3, 0.5} {
+			out = append(out, g(fmt.Sprintf("step%.2f", v),
+				pinGate(tradeDTO.SignalBacktestParamsDTO{AddMinStepPct: f64(v)})))
+		}
+		for _, m := range []int{15, 30, 60} {
+			out = append(out, g(fmt.Sprintf("int%d", m),
+				pinGate(tradeDTO.SignalBacktestParamsDTO{AddMinIntervalMin: i32(m)})))
+		}
+		out = append(out, g("step0.30_int30",
+			pinGate(tradeDTO.SignalBacktestParamsDTO{AddMinStepPct: f64(0.3), AddMinIntervalMin: i32(30)})))
+		return out
 	case "tiers":
 		// 移动止盈的小/中档激活线。上面 trail 维"只扫大档"的前提——"两账户全程顶格、
 		// 持仓始终落在大档"——被 09-26 复盘推翻：A 09-23 那笔多单在 2 张时 ROI 到过
@@ -375,7 +404,7 @@ func main() {
 	account := flag.String("account", "", "账户标签（strategy_event.account_label，必填）")
 	start := flag.String("start", "2026-09-08 21:00:00", "窗口起")
 	end := flag.String("end", "2026-09-15 14:40:00", "窗口止")
-	dim := flag.String("dim", "baseline", "baseline|trend|trendstop|regime|cap|stop|gate|trail|addgate|eqstop|eqadd|eqaddcell|volgate|densgate|breaker|tiers")
+	dim := flag.String("dim", "baseline", "baseline|trend|trendstop|regime|cap|stop|gate|trail|addgate|eqstop|eqadd|eqaddcell|volgate|densgate|breaker|tiers|addspace")
 	platform := flag.String("platform", "deepcoin", "1m 路径回放平台")
 	conc := flag.Int("concurrency", 4, "并发组数")
 	// 显式基线旋钮。默认 0 = 用服务端的基线解析器；但解析器对 risk_equity 与

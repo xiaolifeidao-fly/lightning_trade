@@ -49,6 +49,7 @@ type Result struct {
 	SkipTrend    int
 	SkipRegime   int // 只被行情路由压低后的上限拦住的入场次数
 	SkipAddRoi   int // 被加仓闸（AddMinRoiPct）拦住的同向加仓次数
+	SkipAddSpace int // 被加仓间距（AddMinStepPct / AddMinIntervalMin）拦住的同向加仓次数
 	SkipVolGate  int // 被开仓波动闸（OpenMaxVolBpm）拦住的全新开仓次数
 	SkipDens     int // 被开仓密度闸（OpenMaxSignals60）拦住的全新开仓次数
 	SkipHalt     int // 被日亏熔断拦住的全新开仓次数
@@ -180,6 +181,7 @@ func fill(res *Result, e *Engine) {
 	res.SkipTrend = e.skipTrend
 	res.SkipRegime = e.skipRegime
 	res.SkipAddRoi = e.skipAddRoi
+	res.SkipAddSpace = e.skipAddSpace
 	res.SkipVolGate = e.skipVolGate
 	res.SkipDens = e.skipDens
 	res.SkipHalt = e.skipHalt

@@ -115,6 +115,15 @@ type Params struct {
 	// 只接受负值——它是"浮亏到多深就停止摊平"的旋钮，不是"只在赢时加"的金字塔旋钮。
 	// 实盘尚无对应键（研究旋钮，同 regime_scale 先例）；落地前要先补实盘与校验器。
 	AddMinRoiPct float64 `json:"addMinRoiPct"`
+	// 加仓间距（研究旋钮，实盘无键）。动机见诊断报告 10-03 追补：A/B 同一条信号流，B 两周 −17%、A +11%，
+	// 结构原因是 B 的 cap 8 在三十分钟内被一簇信号堆满、均价 ≈ 开仓价，−3.2% 的兜底线对 B 是"离开仓价 3.2%"；
+	// A 的 22 张要十几个小时堆、均价跟着价格走。这两个旋钮让加仓**摊开**：
+	//   AddMinStepPct    本次加仓价与上一次开/加仓成交价的距离（%，双向）不足它就不加；0=关闭。
+	//   AddMinIntervalMin 距上一次开/加仓成交不足它（分钟）就不加；0=关闭。
+	// 只拦同向加仓；全新开仓与反向减仓不受影响。两者都是"摊开"而非"停摊"——与 AddMinRoiPct 的区别是
+	// 它们不看浮亏深度，不会变成变相收紧止损（09-19 对加仓闸的否定理由）。
+	AddMinStepPct     float64 `json:"addMinStepPct"`
+	AddMinIntervalMin int     `json:"addMinIntervalMin"`
 	// EquityStopPct 本金回撤兜底（研究旋钮，实盘无键）：>0 时兜底改按**未实现亏损 ≥ EquityStopPct% × RiskEquity**
 	// 触发，ROI 兜底不再生效（替换，不是叠加）。动机见诊断报告 09-19 中午追补：ROI 兜底按均价定义，
 	// 摊平把均价拉向现价、把 ROI 拉浅，于是"停止摊平"等价于"收紧兜底"——凡是改均价轨迹的机制都被它连坐。
@@ -334,6 +343,12 @@ func (p Params) Validate() error {
 	}
 	if p.AddMinRoiPct < -p.CatastropheStopPct {
 		return fmt.Errorf("addMinRoiPct=%.0f 低于兜底线 −%.0f：兜底先触发、加仓闸永不生效（静默失效）", p.AddMinRoiPct, p.CatastropheStopPct)
+	}
+	if p.AddMinStepPct < 0 || p.AddMinStepPct > 5 {
+		return fmt.Errorf("addMinStepPct 应在 (0,5]（%%，与上一次成交价的距离）或 0=关闭, got %.2f", p.AddMinStepPct)
+	}
+	if p.AddMinIntervalMin < 0 || p.AddMinIntervalMin > 1440 {
+		return fmt.Errorf("addMinIntervalMin 应在 (0,1440]（分钟）或 0=关闭, got %d", p.AddMinIntervalMin)
 	}
 	return argusTrade.ValidateRiskParams(view)
 }
